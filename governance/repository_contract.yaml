@@ -1,0 +1,96 @@
+{
+  "schema_version": "senex-repository-contract-v1",
+  "repository": "simonkey888/SeneX-Prophet",
+  "contract_base_sha": "aeb50867738b7ae7199f621a730080e09465458e",
+  "contract_base_tree_sha": "6f05c5c921ce7607dd5a39bd3cb0147e074ac451",
+  "fact_classes": ["VERIFIED_FACT", "PROPOSED_POLICY", "UNRESOLVED"],
+  "authority_domains": {
+    "legacy": {"class": "VERIFIED_FACT", "branch": "main", "sha": "d8da2ccd472488c93a2523948552cf8cf02e42ae"},
+    "production": {"class": "VERIFIED_FACT", "branch": "feat/h011-v3-discovery-refresh", "observed_sha": "2f8503533543832147caf4c8e97a0cc6f5af3cbc"},
+    "candidate": {"class": "VERIFIED_FACT", "branch": "feat/h011-v3-control-plane-coverage", "sha": "aeb50867738b7ae7199f621a730080e09465458e"},
+    "research": {"class": "VERIFIED_FACT", "branch": "feat/h011-v3-tradingview-research-bridge", "sha": "33b4eaffffc3577c52e02d407f13a6fc61777ad6", "authoritative": false}
+  },
+  "path_ownership": [
+    {"pattern": "polymarket/**", "owner": "H011_PRODUCT", "class": "VERIFIED_FACT"},
+    {"pattern": "senecio_polymarket/**", "owner": "LEGACY_ORACLE", "class": "VERIFIED_FACT"},
+    {"pattern": "research/**", "owner": "OPTIONAL_RESEARCH", "class": "VERIFIED_FACT"},
+    {"pattern": "senecio_output/**", "owner": "GENERATED_RUNTIME_HISTORY", "class": "VERIFIED_FACT"},
+    {"pattern": "governance/**", "owner": "REPOSITORY_CONSTITUTION", "class": "PROPOSED_POLICY"},
+    {"pattern": "tests/governance/**", "owner": "REPOSITORY_CONSTITUTION_TESTS", "class": "PROPOSED_POLICY"},
+    {"pattern": "tools/verify_repository_contract.py", "owner": "REPOSITORY_CONSTITUTION", "class": "PROPOSED_POLICY"},
+    {"pattern": ".github/workflows/senex-repository-contract.yml", "owner": "REPOSITORY_CONSTITUTION_CI", "class": "PROPOSED_POLICY"},
+    {"pattern": "docs/REPOSITORY_AUTHORITY.md", "owner": "REPOSITORY_CONSTITUTION_DOCS", "class": "PROPOSED_POLICY"}
+  ],
+  "allowed_change_paths": [
+    "governance/repository_contract.yaml",
+    "governance/repository_manifest.json",
+    "governance/repository_manifest.json.sha256",
+    "tools/verify_repository_contract.py",
+    "tests/governance/**",
+    ".github/workflows/senex-repository-contract.yml",
+    "docs/REPOSITORY_AUTHORITY.md"
+  ],
+  "production_paths": ["polymarket/**", "polymarket/Dockerfile.h011-v3"],
+  "legacy_paths": ["senecio_polymarket/**", "Dockerfile", "predict_only.py", "oracle_lab.py", ".github/workflows/oracle.yml"],
+  "research_paths": ["research/**"],
+  "generated_runtime_paths": ["senecio_output/**", "polymarket/results/**", "results/**", "raw_chain_v1/**"],
+  "do_not_touch_hashes": {
+    "senecio_polymarket/oracle/institutional_core.py": "8d93224ea40118665f5e654b20fb9b6be30cef44842830abfe4befc800db968d",
+    "senecio_polymarket/oracle/predict_only.py": "eb7aee5e725ea48e3f64d87484c3632d25c63ca351a30e599dbd72d3cd26793e",
+    "senecio_polymarket/oracle/market_ev.py": "587caa35cc22e397df2c64b1b3c46aaf0a681e937295fbce2050962bac85f754",
+    "polymarket/Dockerfile.h011-v3": "ff126c299d67b1ef73ba40b869f8a462be8c89554e3c5db2063f3b67891de571"
+  },
+  "allowed_entrypoints": {
+    "candidate_runtime": ["polymarket/h011_v3_runtime.py"],
+    "read_only_api": ["polymarket/dashboard_v3.py"],
+    "scanner": ["polymarket/vwap_detector_v2.py"],
+    "container": ["polymarket/Dockerfile.h011-v3"]
+  },
+  "authoritative_raw_root": "/app/polymarket/results/h011_v3/raw_chain_v1",
+  "authoritative_raw_writers": [
+    {"path": "polymarket/h011_v3_raw_transaction.py", "symbol": "publish_raw_scan", "counted_as": "PRIMARY"}
+  ],
+  "workflow_policy": {
+    "default_permissions": {"contents": "read"},
+    "actions_must_be_full_sha_pinned": true,
+    "workflow_dispatch_for_contract_ci": false,
+    "repository_write_steps": false,
+    "deploy_steps": false,
+    "secrets": false
+  },
+  "temporary_workflow_policy": {
+    "owner_required": true,
+    "expires_at_required": true,
+    "contents_write_forbidden": true,
+    "unpinned_actions_forbidden": true
+  },
+  "safety_invariants": {
+    "paper_only": {"value": true, "override": false},
+    "orders_enabled": {"value": false, "override": false},
+    "live_capital_locked": {"value": true, "override": false}
+  },
+  "override_schema": {
+    "required": ["mission_id", "base_sha", "head_sha", "allowed_paths", "issued_by", "issued_at", "expires_at", "reason", "old_hashes", "new_hashes"],
+    "exact_path_match": true,
+    "expired_rejected": true,
+    "extra_path_rejected": true,
+    "safety_invariant_override_forbidden": true
+  },
+  "gates": [
+    "DO_NOT_TOUCH_HASH_CHANGED",
+    "FORBIDDEN_RUNTIME_OUTPUT_TRACKED",
+    "PRODUCTION_PATH_CHANGED",
+    "PRODUCTION_PATH_CHANGE_AUTHORIZED",
+    "UNCLASSIFIED_DUPLICATE",
+    "IMPORT_GRAPH_REGRESSION",
+    "AUTHORITATIVE_RAW_WRITER_COUNT",
+    "SAFETY_FLAGS_PRESENT",
+    "WALLET_OR_ORDER_CODE_INTRODUCED",
+    "RESEARCH_AUTHORITY_VIOLATION",
+    "TEMPORARY_WORKFLOW_REINTRODUCED"
+  ],
+  "unknown_configuration": {
+    "class": "UNRESOLVED",
+    "northflank": ["configured_branch", "auto_deploy", "deployment_id", "build_id", "image_digest", "command_override", "mount_path", "volume_identity", "backup_state"]
+  }
+}

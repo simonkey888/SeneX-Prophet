@@ -1,0 +1,5 @@
+name: temporary audit
+on: pull_request
+permissions:
+  contents: read
+jobs: {}

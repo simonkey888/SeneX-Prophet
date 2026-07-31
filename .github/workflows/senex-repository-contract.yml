@@ -1,0 +1,84 @@
+name: SENEX Repository Contract
+
+on:
+  pull_request:
+    branches:
+      - feat/h011-v3-control-plane-coverage
+    paths:
+      - "governance/**"
+      - "tools/verify_repository_contract.py"
+      - "tests/governance/**"
+      - "docs/REPOSITORY_AUTHORITY.md"
+      - ".github/workflows/senex-repository-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-repository-contract-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repository-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact head and scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-control-plane-coverage"
+          git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+
+      - name: Compile governance code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall tools/verify_repository_contract.py tests/governance
+
+      - name: Governance unit and adversarial tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests/governance -p 'test_repository_contract.py' -v
+
+      - name: Verify manifest sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Install candidate test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+
+      - name: Global regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q
+
+      - name: Run exact-head repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/verify_repository_contract.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --report /tmp/senex-repository-contract-report.json
