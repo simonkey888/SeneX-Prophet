@@ -1,0 +1,6 @@
+name: temporary audit
+# expires_at: 2026-08-01T00:00:00Z
+on: pull_request
+permissions:
+  contents: write
+jobs: {}
