@@ -1,4 +1,4 @@
-name: SENEX Materialize Paper Trial
+name: SENEX Materialize Paper Trial Fix
 
 on:
   push:
@@ -22,41 +22,29 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Patch and verify exact bundle
+      - name: Reconstruct and verify exact fix bundle
         shell: bash
         run: |
           set -euo pipefail
-          cat \
-            audit/senex_bundle_parts/part-00 \
-            audit/senex_bundle_parts/part-01a \
-            audit/senex_bundle_parts/part-01b \
-            audit/senex_bundle_parts/part-02 \
-            audit/senex_bundle_parts/part-03 \
-            audit/senex_bundle_parts/part-04a \
-            audit/senex_bundle_parts/part-04b \
-            audit/senex_bundle_parts/part-05a \
-            audit/senex_bundle_parts/part-05b \
-            audit/senex_bundle_parts/part-06 \
-            > /tmp/current-remote.b64
-          echo "068d9b336fa3185372d9765b1f8c8983a7b39ee929b21c80ec6278378ee20393  /tmp/current-remote.b64" | sha256sum -c -
-          python audit/senex_bundle_patch.py /tmp/current-remote.b64 /tmp/senex-exact.b64
-          echo "2aa0bc1c5d60e6c81f17d917feb0c7cd7be7b4fbdf550d8987e8d3158885fe7c  /tmp/senex-exact.b64" | sha256sum -c -
-          base64 --decode /tmp/senex-exact.b64 > /tmp/senex.bundle
-          echo "0979ffe8ede463381141c150cf97e0e6692cf111d6bf04467c3ad478c80fa5d7  /tmp/senex.bundle" | sha256sum -c -
-          git bundle verify /tmp/senex.bundle
-          git fetch /tmp/senex.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/paper
-          test "$(git rev-parse refs/remotes/bundle/paper)" = "105360f5a8b6d38c5d1722feb3ec00151bd8a0d1"
-          test "$(git rev-parse refs/remotes/bundle/paper^{tree})" = "25079ff21825d8690466456a499e8b8ea1ac63c4"
-          test "$(git rev-list --count 39e1cf1bdad31a2b6f2178949a2977c837ebdf18..refs/remotes/bundle/paper)" = "5"
-          test "$(git merge-base 39e1cf1bdad31a2b6f2178949a2977c837ebdf18 refs/remotes/bundle/paper)" = "39e1cf1bdad31a2b6f2178949a2977c837ebdf18"
+          cp audit/senex_bundle_parts/part-00 /tmp/senex-fix.b64
+          echo "10a72e885c88315d6de42546aadf38aa0a694d77c3dc1881e709ca70634d5510  /tmp/senex-fix.b64" | sha256sum -c -
+          base64 --decode /tmp/senex-fix.b64 > /tmp/senex-fix.bundle
+          echo "0d410cffd46fd0c8f2cf94019df9f1ed6a630d84ed38ced5696b1afb58b7ccca  /tmp/senex-fix.bundle" | sha256sum -c -
+          git bundle verify /tmp/senex-fix.bundle
+          git fetch /tmp/senex-fix.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/paper-fix
+          test "$(git rev-parse refs/remotes/bundle/paper-fix)" = "a3ab36ccdc5784edf1625c36bc245a7165cfb9e4"
+          test "$(git rev-parse refs/remotes/bundle/paper-fix^{tree})" = "00e6e6471c64ad05d962a44eed3c5c0173fa1dd6"
+          test "$(git rev-parse refs/remotes/bundle/paper-fix^)" = "105360f5a8b6d38c5d1722feb3ec00151bd8a0d1"
+          test "$(git rev-list --count 105360f5a8b6d38c5d1722feb3ec00151bd8a0d1..refs/remotes/bundle/paper-fix)" = "1"
 
-      - name: Fast-forward final branch without force
+      - name: Fast-forward paper-trial branch without force
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse origin/release/senex-paper-trial-v1)" = "105360f5a8b6d38c5d1722feb3ec00151bd8a0d1"
           auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
           git -c http.extraheader="AUTHORIZATION: basic ${auth}" push \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
-            refs/remotes/bundle/paper:refs/heads/release/senex-paper-trial-v1
+            refs/remotes/bundle/paper-fix:refs/heads/release/senex-paper-trial-v1
