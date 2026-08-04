@@ -8,10 +8,10 @@ on:
       - ".github/workflows/senex-materialize-paper-trial.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  capture:
+  materialize:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Capture actual remote transport bytes
+      - name: Patch and verify exact bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -38,14 +38,25 @@ jobs:
             audit/senex_bundle_parts/part-05b \
             audit/senex_bundle_parts/part-06 \
             > /tmp/current-remote.b64
-          sha256sum /tmp/current-remote.b64
-          wc -c /tmp/current-remote.b64
-          cp /tmp/current-remote.b64 current-remote.b64
+          echo "068d9b336fa3185372d9765b1f8c8983a7b39ee929b21c80ec6278378ee20393  /tmp/current-remote.b64" | sha256sum -c -
+          python audit/senex_bundle_patch.py /tmp/current-remote.b64 /tmp/senex-exact.b64
+          echo "2aa0bc1c5d60e6c81f17d917feb0c7cd7be7b4fbdf550d8987e8d3158885fe7c  /tmp/senex-exact.b64" | sha256sum -c -
+          base64 --decode /tmp/senex-exact.b64 > /tmp/senex.bundle
+          echo "0979ffe8ede463381141c150cf97e0e6692cf111d6bf04467c3ad478c80fa5d7  /tmp/senex.bundle" | sha256sum -c -
+          git bundle verify /tmp/senex.bundle
+          git fetch /tmp/senex.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/paper
+          test "$(git rev-parse refs/remotes/bundle/paper)" = "105360f5a8b6d38c5d1722feb3ec00151bd8a0d1"
+          test "$(git rev-parse refs/remotes/bundle/paper^{tree})" = "25079ff21825d8690466456a499e8b8ea1ac63c4"
+          test "$(git rev-list --count 39e1cf1bdad31a2b6f2178949a2977c837ebdf18..refs/remotes/bundle/paper)" = "5"
+          test "$(git merge-base 39e1cf1bdad31a2b6f2178949a2977c837ebdf18 refs/remotes/bundle/paper)" = "39e1cf1bdad31a2b6f2178949a2977c837ebdf18"
 
-      - name: Upload captured transport
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: senex-current-remote-transport-${{ github.sha }}
-          path: current-remote.b64
-          if-no-files-found: error
-          retention-days: 1
+      - name: Fast-forward final branch without force
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${auth}" push \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            refs/remotes/bundle/paper:refs/heads/release/senex-paper-trial-v1
