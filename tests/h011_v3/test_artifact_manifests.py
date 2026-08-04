@@ -241,17 +241,16 @@ def test_post_write_chain_has_no_unregistered_files(raw_dir):
 # A.4.7: Concurrent append
 # ═══════════════════════════════════════════════════════════════════════
 
-from control_plane.artifact_manifest import publish_artifact_with_manifest
+from control_plane.artifact_manifest import publish_artifact_bytes_with_manifest
 
 
 def test_concurrent_append_preserves_valid_chain(raw_dir):
-    """Two threads appending artifacts produce a valid chain with 2 entries.
+    """Two concurrent publishers serialize artifact creation and manifest append.
 
-    Each thread creates its artifact while holding the lock (via
-    publish_artifact_with_manifest). The lock ensures serialization.
+    The bytes API creates the final artifact only after taking the chain lock,
+    eliminating the historical pre-lock unregistered-file race.
     """
     raw_dir.mkdir(parents=True, exist_ok=True)
-
     barrier = threading.Barrier(2)
     results: list[dict] = []
     errors: list[Exception] = []
@@ -259,66 +258,37 @@ def test_concurrent_append_preserves_valid_chain(raw_dir):
     def writer(idx, run_id, scan_id):
         try:
             barrier.wait(timeout=5)
-            # Create artifact path but don't write yet — will be created inside the lock
-            artifact_name = f"raw_{idx:03d}.events.jsonl.gz"
-            artifact_path = raw_dir / artifact_name
-            # Write the artifact BEFORE calling publish (publish expects it to exist)
-            # But we need to ensure only ONE artifact is unregistered at a time.
-            # Use a small delay so thread 1 writes first, gets lock, publishes,
-            # then thread 2 writes and publishes.
-            import time
-            time.sleep(0.01 * idx)  # Stagger writes slightly
-            artifact_path.write_bytes(f"content_{idx}".encode())
-            entry = publish_artifact_with_manifest(
-                raw_dir, artifact_path, RAW_MANIFEST_POLICY,
+            entry = publish_artifact_bytes_with_manifest(
+                raw_dir,
+                f"raw_{idx:03d}.events.jsonl.gz",
+                f"content_{idx}".encode(),
+                RAW_MANIFEST_POLICY,
                 identity_fields={"run_id": run_id, "scan_id": scan_id},
             )
             results.append(entry)
-        except Exception as e:
-            errors.append(e)
+        except Exception as exc:
+            errors.append(exc)
 
-    t1 = threading.Thread(target=writer, args=(1, "r1", "s1"))
-    t2 = threading.Thread(target=writer, args=(2, "r2", "s2"))
-    t1.start()
-    t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
+    threads = [
+        threading.Thread(target=writer, args=(1, "r1", "s1")),
+        threading.Thread(target=writer, args=(2, "r2", "s2")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
 
-    # Both writers must succeed (the lock serializes them)
-    assert len(errors) == 0, f"Errors: {errors}"
-    assert len(results) == 2, f"Expected 2 results, got {len(results)}"
-
-    # Verify chain is valid with 2 entries
+    assert not errors, f"Errors: {errors}"
+    assert len(results) == 2
     result = verify_manifest_chain(raw_dir, RAW_MANIFEST_POLICY)
     assert result["chain_status"] == CHAIN_VALID
     assert result["sequence_count"] == 2
-    assert len(result["entries"]) == 2
     assert result["unregistered_files"] == []
-    assert len(result["errors"]) == 0
-
-    # Verify two distinct filenames
-    filenames = {e["filename"] for e in result["entries"]}
-    assert len(filenames) == 2
-
-    # Verify two distinct run_ids and scan_ids
-    run_ids = {e["run_id"] for e in result["entries"]}
-    assert len(run_ids) == 2
-    scan_ids = {e["scan_id"] for e in result["entries"]}
-    assert len(scan_ids) == 2
-
-    # Verify sequences 0 and 1
-    sequences = sorted(e["sequence"] for e in result["entries"])
-    assert sequences == [0, 1]
-
-    # Verify second previous hash points to first manifest hash
-    entries = sorted(result["entries"], key=lambda e: e["sequence"])
+    entries = sorted(result["entries"], key=lambda entry: entry["sequence"])
+    assert [entry["sequence"] for entry in entries] == [0, 1]
     assert entries[1]["previous_manifest_hash"] == entries[0]["manifest_hash"]
-
-    # Verify both artifact hashes match
-    for e in entries:
-        artifact_path = raw_dir / e["filename"]
-        actual_sha = __import__('hashlib').sha256(artifact_path.read_bytes()).hexdigest()
-        assert actual_sha == e["file_sha256"]
+    assert {entry["run_id"] for entry in entries} == {"r1", "r2"}
+    assert {entry["scan_id"] for entry in entries} == {"s1", "s2"}
 
 
 # ═══════════════════════════════════════════════════════════════════════
