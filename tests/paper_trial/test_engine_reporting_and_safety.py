@@ -81,6 +81,16 @@ def test_fixture_trial_writes_and_hashes_all_artifacts(tmp_path: Path):
     assert verify_artifact_bundle(tmp_path)
 
 
+def test_fixture_trial_artifacts_are_host_readable(tmp_path: Path):
+    run_trial(
+        output_dir=tmp_path,
+        config=TrialConfig(duration_minutes=1, minimum_windows=1, poll_seconds=1),
+        fixture=True,
+    )
+    for name in (*REQUIRED_ARTIFACTS, "SHA256SUMS"):
+        assert (tmp_path / name).stat().st_mode & 0o444 == 0o444, name
+
+
 def test_zero_mutation_of_authoritative_raw_evidence(tmp_path: Path):
     raw = tmp_path / "raw_chain_v1"
     raw.mkdir()

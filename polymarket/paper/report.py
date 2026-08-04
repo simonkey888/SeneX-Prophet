@@ -56,9 +56,17 @@ class TrialArtifactWriter:
         missing = [name for name in REQUIRED_ARTIFACTS if not (self.root / name).is_file()]
         if missing:
             raise ValueError(f"missing required artifacts: {missing}")
+
+        # Trial artifacts are sanitized evidence intended for verification and upload
+        # by the host runner after a container exits. Normalize their mode so a
+        # root-running container cannot leave a 0600 file unreadable to the host.
+        for name in REQUIRED_ARTIFACTS:
+            os.chmod(self.root / name, 0o644)
+
         hashes = {name: sha256_file(self.root / name) for name in REQUIRED_ARTIFACTS}
         sidecar = self.root / "SHA256SUMS"
         sidecar.write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items())), encoding="utf-8")
+        os.chmod(sidecar, 0o644)
         hashes["SHA256SUMS"] = sha256_file(sidecar)
         return hashes
 
