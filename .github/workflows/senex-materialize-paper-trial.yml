@@ -26,9 +26,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp audit/senex_bundle_parts/part-00 /tmp/senex-observed-fix.b64
-          echo "b61962f8ed77bae630a872f0e2a5a4272c85aa2dfd63d6dda9feb7fd516eb683  /tmp/senex-observed-fix.b64" | sha256sum -c -
-          base64 --decode /tmp/senex-observed-fix.b64 > /tmp/senex-observed-fix.bundle
+          base64 --decode audit/senex_bundle_parts/part-00 > /tmp/senex-observed-fix.bundle
           echo "c877ffe8aed1067420fb06fef3d06ded8ab910ef00d116094d7e0318c4be1b47  /tmp/senex-observed-fix.bundle" | sha256sum -c -
           git bundle verify /tmp/senex-observed-fix.bundle
           git fetch /tmp/senex-observed-fix.bundle refs/heads/materialize/senex-paper-final:refs/remotes/bundle/observed-fix
