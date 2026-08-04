@@ -1,4 +1,4 @@
-name: SENEX Materialize Active Window Fix
+name: SENEX Materialize Observed Semantics Fix
 
 on:
   push:
@@ -22,21 +22,22 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Reconstruct and verify exact active-window bundle
+      - name: Reconstruct and verify exact observed-semantics bundle
         shell: bash
         run: |
           set -euo pipefail
-          cp audit/senex_bundle_parts/part-00 /tmp/senex-active-fix.b64
-          echo "adda7f538df936443028be2ca8984984a78b8634aae3cf02a0f2584e709eb680  /tmp/senex-active-fix.b64" | sha256sum -c -
-          base64 --decode /tmp/senex-active-fix.b64 > /tmp/senex-active-fix.bundle
-          echo "bc87316c1c06df9087524a8c843b3aaa5dfbd1b0272805851a54b359c0faa437  /tmp/senex-active-fix.bundle" | sha256sum -c -
-          git bundle verify /tmp/senex-active-fix.bundle
-          git fetch /tmp/senex-active-fix.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/active-fix
-          test "$(git rev-parse refs/remotes/bundle/active-fix)" = "0b0571083fe79b691efd064c9e958651bcdb609d"
-          test "$(git rev-parse refs/remotes/bundle/active-fix^{tree})" = "ef113d343c343a8b032f46020c3e4888ef54b1f2"
-          test "$(git rev-parse refs/remotes/bundle/active-fix^)" = "a3ab36ccdc5784edf1625c36bc245a7165cfb9e4"
+          cp audit/senex_bundle_parts/part-00 /tmp/senex-observed-fix.b64
+          echo "b61962f8ed77bae630a872f0e2a5a4272c85aa2dfd63d6dda9feb7fd516eb683  /tmp/senex-observed-fix.b64" | sha256sum -c -
+          base64 --decode /tmp/senex-observed-fix.b64 > /tmp/senex-observed-fix.bundle
+          echo "c877ffe8aed1067420fb06fef3d06ded8ab910ef00d116094d7e0318c4be1b47  /tmp/senex-observed-fix.bundle" | sha256sum -c -
+          git bundle verify /tmp/senex-observed-fix.bundle
+          git fetch /tmp/senex-observed-fix.bundle refs/heads/materialize/senex-paper-final:refs/remotes/bundle/observed-fix
+          test "$(git rev-parse refs/remotes/bundle/observed-fix)" = "24b38368c5786fc771fd5c761bc4288886649e21"
+          test "$(git rev-parse refs/remotes/bundle/observed-fix^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
+          test "$(git rev-parse refs/remotes/bundle/observed-fix^)" = "b7a3c724af4a23fd2ad15f231e4beaa8735eef99"
+          test "$(git rev-parse origin/release/senex-paper-trial-v1)" = "b7a3c724af4a23fd2ad15f231e4beaa8735eef99"
 
-      - name: Publish isolated fix branch without force
+      - name: Fast-forward paper-trial branch without force
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -45,4 +46,4 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
           git -c http.extraheader="AUTHORIZATION: basic ${auth}" push \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
-            refs/remotes/bundle/active-fix:refs/heads/ops/senex-paper-active-window-fix-20260804
+            refs/remotes/bundle/observed-fix:refs/heads/release/senex-paper-trial-v1
