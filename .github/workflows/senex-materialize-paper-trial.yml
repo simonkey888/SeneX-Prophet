@@ -1,5 +1,6 @@
 name: SENEX Materialize Observed Semantics Fix
 
+# bundle-revision: compact-final-20260804
 on:
   push:
     branches:
@@ -27,9 +28,9 @@ jobs:
         run: |
           set -euo pipefail
           base64 --decode audit/senex_bundle_parts/part-00 > /tmp/senex-observed-fix.bundle
-          echo "c877ffe8aed1067420fb06fef3d06ded8ab910ef00d116094d7e0318c4be1b47  /tmp/senex-observed-fix.bundle" | sha256sum -c -
+          echo "0b528eb131a79310d249668cc354bda44f39e1aa2ba20f02310a9d828981c305  /tmp/senex-observed-fix.bundle" | sha256sum -c -
           git bundle verify /tmp/senex-observed-fix.bundle
-          git fetch /tmp/senex-observed-fix.bundle refs/heads/materialize/senex-paper-final:refs/remotes/bundle/observed-fix
+          git fetch /tmp/senex-observed-fix.bundle refs/heads/materialize/obsfix:refs/remotes/bundle/observed-fix
           test "$(git rev-parse refs/remotes/bundle/observed-fix)" = "24b38368c5786fc771fd5c761bc4288886649e21"
           test "$(git rev-parse refs/remotes/bundle/observed-fix^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
           test "$(git rev-parse refs/remotes/bundle/observed-fix^)" = "b7a3c724af4a23fd2ad15f231e4beaa8735eef99"
