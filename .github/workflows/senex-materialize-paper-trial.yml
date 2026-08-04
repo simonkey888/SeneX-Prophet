@@ -8,10 +8,10 @@ on:
       - ".github/workflows/senex-materialize-paper-trial.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  diagnose:
+  capture:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -22,28 +22,30 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Diagnose all staged bundle segments
+      - name: Capture actual remote transport bytes
         shell: bash
         run: |
-          set -u
-          failures=0
-          verify_blob() {
-            local expected="$1"
-            local path="$2"
-            local actual
-            actual="$(git hash-object "$path")"
-            printf '%s expected=%s actual=%s bytes=%s\n' "$path" "$expected" "$actual" "$(wc -c < "$path")"
-            if [ "$actual" != "$expected" ]; then failures=$((failures + 1)); fi
-          }
-          verify_blob 71b2d2fc695030b27b3fc38882d3578fd7c8217a audit/senex_bundle_parts/part-00
-          verify_blob dd3b440556377e8ecb5453d1452021cd08ea7245 audit/senex_bundle_parts/part-01a
-          verify_blob 1f682512a121bab2874b1221eb41e60eb5b5b7e8 audit/senex_bundle_parts/part-01b
-          verify_blob 475c3e8a3fe4393ede2692a1a977df40196175a7 audit/senex_bundle_parts/part-02
-          verify_blob 7b3d17a53e1fe704dc9f4ba2b78baf78308d2bb3 audit/senex_bundle_parts/part-03
-          verify_blob 97076b4590e659f2fa02415fa42f026904edddf1 audit/senex_bundle_parts/part-04a
-          verify_blob e15b1f9bbd1e06fd229fa4885d0e593b4b1b91af audit/senex_bundle_parts/part-04b
-          verify_blob 5c9acbe896d2bad69c03141adb3dd6457067fb43 audit/senex_bundle_parts/part-05a
-          verify_blob e48a4173f44ad245018e3d08713f2dfbde19fcfc audit/senex_bundle_parts/part-05b
-          verify_blob 6bfbd554fd5c5f0825f7f7e7b241142bd96a0182 audit/senex_bundle_parts/part-06
-          printf 'segment_failures=%s\n' "$failures"
-          test "$failures" -eq 0
+          set -euo pipefail
+          cat \
+            audit/senex_bundle_parts/part-00 \
+            audit/senex_bundle_parts/part-01a \
+            audit/senex_bundle_parts/part-01b \
+            audit/senex_bundle_parts/part-02 \
+            audit/senex_bundle_parts/part-03 \
+            audit/senex_bundle_parts/part-04a \
+            audit/senex_bundle_parts/part-04b \
+            audit/senex_bundle_parts/part-05a \
+            audit/senex_bundle_parts/part-05b \
+            audit/senex_bundle_parts/part-06 \
+            > /tmp/current-remote.b64
+          sha256sum /tmp/current-remote.b64
+          wc -c /tmp/current-remote.b64
+          cp /tmp/current-remote.b64 current-remote.b64
+
+      - name: Upload captured transport
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-current-remote-transport-${{ github.sha }}
+          path: current-remote.b64
+          if-no-files-found: error
+          retention-days: 1
