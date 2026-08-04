@@ -23,3 +23,15 @@
 - FULL_GATE: complete test suite and exact-head CI
 - RESULT: locally stable; CI required
 - FALLBACK: none
+
+## BLOCKER-PUBLIC-CLOB-001
+
+- CLASS: observed-trial runtime-semantics defect
+- EVIDENCE: observed run `30958766816` declared 60 minutes but ended after 4.160064 seconds; 36 completed Gamma windows were counted although all 36 historical CLOB `/book` requests returned HTTP 404
+- ROOT_CAUSE: current-window offset exclusion, discovery-before-book accounting, Gamma-only early exit, failed-window promotion into observed counts, and CI assertions that did not require real duration or valid two-book sets
+- ATTEMPT: prioritize the current five-minute bucket; prefilter `active=true`, `closed=false`, `acceptingOrders=true`, and future `endDate`; classify expected closed/no-book separately from actionable source failures; count a window only after both token books validate and are evidence-backed; make elapsed duration the only non-fixture stop condition
+- CHANGE: public source error classification, active-window discovery contract, distinct Gamma/valid-book/closed/unexpected counters, clock-injected duration semantics, summary schema, exact-head workflow assertions, and deterministic hostile tests
+- FOCUSED_TEST: current-window inclusion, closed-window exclusion, ended-versus-active CLOB 404 classification, Gamma-only no-early-exit, valid two-book counting, and injected 60-second duration
+- FULL_GATE: 65 governance+paper tests, 626 global tests, 28/28 repository gates, deterministic manifest generation, exact-head CI, fixture artifact, real 60-minute observed artifact, and digest audit
+- RESULT: local validation PASS; exact-head remote revalidation required
+- FALLBACK: none; acceptance requires both at least 3600 elapsed seconds and at least 12 distinct valid two-book windows

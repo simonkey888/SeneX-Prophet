@@ -242,6 +242,12 @@ class PaperTrialSummary(RecordMixin):
     trial_id: str
     start_utc: str
     end_utc: str
+    duration_seconds: float
+    gamma_discovered_windows: int
+    valid_order_book_windows: int
+    valid_order_books: int
+    expected_closed_no_book_windows: int
+    unexpected_source_failures: int
     windows_observed: int
     markets_observed: int
     decisions_total: int

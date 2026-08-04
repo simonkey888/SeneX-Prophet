@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
 
@@ -30,6 +30,41 @@ from polymarket.paper.risk import PaperRiskConfig, PaperRiskEngine
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
+
+
+class PublicSourceError(RuntimeError):
+    """Sanitized public-source failure with enough metadata for classification."""
+
+    def __init__(self, *, url: str, status_code: int | None, error_class: str):
+        super().__init__(f"{error_class} status={status_code} url={url}")
+        self.url = str(url)
+        self.status_code = status_code
+        self.error_class = str(error_class)
+
+
+@dataclass(frozen=True)
+class BtcWindowDiscovery:
+    discovered_windows: tuple[str, ...]
+    eligible_markets: tuple[dict[str, Any], ...]
+    expected_closed_no_book_windows: tuple[str, ...]
+    malformed_windows: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TrialClock:
+    monotonic: Callable[[], float]
+    epoch: Callable[[], float]
+    sleep: Callable[[float], None]
+    now_utc: Callable[[], str]
+
+
+def default_clock() -> TrialClock:
+    return TrialClock(
+        monotonic=time.monotonic,
+        epoch=time.time,
+        sleep=time.sleep,
+        now_utc=utc_now,
+    )
 
 
 def canonical_hash(value: Any) -> str:
@@ -109,18 +144,23 @@ class PublicDataClient:
             response.raise_for_status()
             value = response.json()
         except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
             self.failures += 1
             self.requests.append({
                 "timestamp_utc": timestamp,
                 "method": "GET",
                 "url": url,
                 "params": params or {},
-                "status": getattr(getattr(exc, "response", None), "status_code", None),
+                "status": status_code,
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
                 "result": "ERROR",
                 "error_class": type(exc).__name__,
             })
-            raise
+            raise PublicSourceError(
+                url=url,
+                status_code=status_code,
+                error_class=type(exc).__name__,
+            ) from exc
         digest = hashlib.sha256(body).hexdigest()
         self.requests.append({
             "timestamp_utc": timestamp,
@@ -147,33 +187,74 @@ class PublicDataClient:
         self.evidence.append(evidence_record)
         return value
 
-    def recent_btc_windows(self, *, now_epoch: int, count: int) -> list[dict[str, Any]]:
-        windows: list[dict[str, Any]] = []
+    @staticmethod
+    def _end_epoch(market: dict[str, Any], event: dict[str, Any]) -> float | None:
+        end_date = str(market.get("endDate") or event.get("endDate") or "")
+        try:
+            return datetime.fromisoformat(end_date.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return None
+
+    def discover_active_btc_windows(self, *, now_epoch: int) -> BtcWindowDiscovery:
+        """Discover and prioritize the current tradable BTC five-minute window."""
         current = (now_epoch // 300) * 300
-        for offset in range(1, count + 1):
-            epoch = current - (offset * 300)
-            slug = f"btc-updown-5m-{epoch}"
-            try:
-                events = self.get_json(f"{GAMMA_BASE}/events", {"slug": slug})
-            except Exception:
-                continue
-            if isinstance(events, dict):
-                events = [events]
-            for event in events or []:
-                markets = event.get("markets") or []
-                if not markets:
+        slug = f"btc-updown-5m-{current}"
+        events = self.get_json(f"{GAMMA_BASE}/events", {"slug": slug})
+        if isinstance(events, dict):
+            events = [events]
+        discovered: set[str] = set()
+        expected_closed: set[str] = set()
+        malformed: set[str] = set()
+        eligible: list[dict[str, Any]] = []
+        for event in events or []:
+            discovered.add(slug)
+            for market in event.get("markets") or []:
+                end_epoch = self._end_epoch(market, event)
+                if end_epoch is None:
+                    malformed.add(slug)
                     continue
-                market = markets[0]
-                market["_window_slug"] = slug
-                market["_window_epoch"] = epoch
-                windows.append(market)
-                break
-        return windows
+                if (
+                    event.get("active") is False
+                    or market.get("active") is False
+                    or market.get("closed") is True
+                    or market.get("acceptingOrders") is not True
+                    or end_epoch <= now_epoch
+                ):
+                    expected_closed.add(slug)
+                    continue
+                candidate = dict(market)
+                candidate["_window_slug"] = slug
+                candidate["_window_epoch"] = current
+                candidate["_window_end_epoch"] = end_epoch
+                eligible.append(candidate)
+        return BtcWindowDiscovery(
+            discovered_windows=tuple(sorted(discovered)),
+            eligible_markets=tuple(eligible),
+            expected_closed_no_book_windows=tuple(sorted(expected_closed)),
+            malformed_windows=tuple(sorted(malformed)),
+        )
+
+    def active_btc_windows(self, *, now_epoch: int) -> list[dict[str, Any]]:
+        """Compatibility wrapper returning only eligible current-window markets."""
+        return list(self.discover_active_btc_windows(now_epoch=now_epoch).eligible_markets)
 
     def book(self, token_id: str) -> tuple[dict[str, Any], str]:
         payload = self.get_json(f"{CLOB_BASE}/book", {"token_id": token_id})
         evidence_hash = self.evidence[-1]["sha256"]
         return payload, evidence_hash
+
+
+def classify_book_failure(*, exc: Exception, market: dict[str, Any], now_epoch: int) -> str:
+    status_code = getattr(exc, "status_code", None)
+    end_epoch = market.get("_window_end_epoch")
+    ended_or_non_accepting = (
+        market.get("closed") is True
+        or market.get("acceptingOrders") is not True
+        or (isinstance(end_epoch, (int, float)) and float(end_epoch) <= now_epoch)
+    )
+    if status_code == 404 and ended_or_non_accepting:
+        return "NO_ORDERBOOK_OR_CLOSED"
+    return "SOURCE_FAILURE"
 
 
 def _parse_list(value: Any) -> list[str]:
@@ -220,9 +301,17 @@ def _fixture_observations(timestamp_utc: str) -> list[tuple[dict[str, Any], dict
     return [(record, books, {tokens[0]: "UP", tokens[1]: "DOWN"})]
 
 
-def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -> dict[str, Any]:
-    started_utc = utc_now()
-    started_monotonic = time.monotonic()
+def run_trial(
+    *,
+    output_dir: Path,
+    config: TrialConfig,
+    fixture: bool = False,
+    clock: TrialClock | None = None,
+    client_factory: Callable[[], PublicDataClient] = PublicDataClient,
+) -> dict[str, Any]:
+    runtime_clock = clock or default_clock()
+    started_utc = runtime_clock.now_utc()
+    started_monotonic = runtime_clock.monotonic()
     sha = code_sha()
     config_dict = asdict(config)
     config_sha = sha256_json(config_dict)
@@ -255,25 +344,57 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
     risk_decisions: list[dict[str, Any]] = []
     abstentions: list[dict[str, Any]] = []
     observed_windows: set[str] = set()
-    source_windows: set[str] = set()
+    gamma_discovered_windows: set[str] = set()
+    expected_closed_no_book_windows: set[str] = set()
+    malformed_source_windows: set[str] = set()
+    valid_order_book_keys: set[str] = set()
     observed_markets: set[str] = set()
+    unexpected_source_failures = 0
     stale_events = 0
     integrity_failures = 0
-    client = PublicDataClient()
+    client = client_factory()
     try:
         while True:
-            now_utc = utc_now()
+            now_utc = runtime_clock.now_utc()
             observations: list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, str]]] = []
             if fixture:
                 observations = _fixture_observations(now_utc)
             else:
-                markets = client.recent_btc_windows(now_epoch=int(time.time()), count=config.max_recent_windows)
+                markets: tuple[dict[str, Any], ...] = ()
+                now_epoch = int(runtime_clock.epoch())
+                try:
+                    discovery = client.discover_active_btc_windows(now_epoch=now_epoch)
+                except Exception as exc:
+                    unexpected_source_failures += 1
+                    abstentions.append({
+                        "timestamp_utc": now_utc,
+                        "market_id": None,
+                        "reason": "SOURCE_FAILURE",
+                        "detail": type(exc).__name__,
+                        "source": "GAMMA",
+                    })
+                else:
+                    gamma_discovered_windows.update(discovery.discovered_windows)
+                    expected_closed_no_book_windows.update(discovery.expected_closed_no_book_windows)
+                    malformed_source_windows.update(discovery.malformed_windows)
+                    unexpected_source_failures += len(discovery.malformed_windows)
+                    markets = discovery.eligible_markets
                 for market in markets:
-                    source_windows.add(str(market.get("_window_slug") or market.get("id") or "UNKNOWN_WINDOW"))
-                    observed_markets.add(str(market.get("conditionId") or market.get("condition_id") or market.get("id") or market.get("_window_slug")))
+                    window_slug = str(market.get("_window_slug") or market.get("id") or "UNKNOWN_WINDOW")
+                    if window_slug in observed_windows:
+                        continue
                     tokens = _parse_list(market.get("clobTokenIds"))
                     outcomes = _parse_list(market.get("outcomes"))
                     if len(tokens) != 2:
+                        unexpected_source_failures += 1
+                        malformed_source_windows.add(window_slug)
+                        abstentions.append({
+                            "timestamp_utc": now_utc,
+                            "market_id": str(market.get("id") or window_slug),
+                            "reason": "SOURCE_FAILURE",
+                            "detail": "INVALID_TOKEN_CARDINALITY",
+                            "window_slug": window_slug,
+                        })
                         continue
                     market_id = str(market.get("conditionId") or market.get("condition_id") or market.get("id") or market.get("_window_slug"))
                     books: dict[str, PublicOrderBook] = {}
@@ -283,23 +404,49 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
                         try:
                             payload, evidence_hash = client.book(token)
                             payloads[token] = payload
-                            books[token] = PublicOrderBook.from_payload(
+                            book = PublicOrderBook.from_payload(
                                 market_id=market_id,
                                 token_id=token,
                                 timestamp_utc=now_utc,
                                 payload=payload,
                                 source_evidence_hash=evidence_hash,
                             )
+                            book.validate(
+                                now_utc=now_utc,
+                                staleness_seconds=config.book_staleness_seconds,
+                            )
+                            books[token] = book
                         except Exception as exc:
                             failed = True
+                            reason = classify_book_failure(
+                                exc=exc,
+                                market=market,
+                                now_epoch=int(runtime_clock.epoch()),
+                            )
+                            if reason == "NO_ORDERBOOK_OR_CLOSED":
+                                expected_closed_no_book_windows.add(window_slug)
+                            else:
+                                unexpected_source_failures += 1
                             abstentions.append({
                                 "timestamp_utc": now_utc,
                                 "market_id": market_id,
-                                "reason": "SOURCE_FAILURE",
+                                "reason": reason,
                                 "detail": type(exc).__name__,
+                                "status_code": getattr(exc, "status_code", None),
+                                "window_slug": window_slug,
                             })
                             break
                     if failed:
+                        continue
+                    if len(books) != 2 or len(payloads) != 2:
+                        unexpected_source_failures += 1
+                        abstentions.append({
+                            "timestamp_utc": now_utc,
+                            "market_id": market_id,
+                            "reason": "SOURCE_FAILURE",
+                            "detail": "INCOMPLETE_TWO_BOOK_SET",
+                            "window_slug": window_slug,
+                        })
                         continue
                     snapshot = simulate_complete_set(payloads[tokens[0]], payloads[tokens[1]], config.requested_shares, config.fee_bps / 10_000.0)
                     record = {
@@ -320,11 +467,12 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
                     }
                     outcome_map = {token: (outcomes[index] if index < len(outcomes) else f"OUTCOME_{index}") for index, token in enumerate(tokens)}
                     observations.append((record, books, outcome_map))
-            if not observations and not source_windows:
+            if not fixture and not observations and not markets:
                 abstentions.append({"timestamp_utc": now_utc, "market_id": None, "reason": "NO_PUBLIC_BTC_WINDOW_AVAILABLE"})
             for record, books, outcomes in observations:
                 window = str(record.get("window_slug") or record.get("market_id"))
                 observed_windows.add(window)
+                valid_order_book_keys.update(f"{window}:{token}" for token in books)
                 observed_markets.add(str(record.get("market_id")))
                 per_leg_limit = config.virtual_starting_equity_usd * config.max_order_notional_pct / 100.0 / 2.0
                 result = engine.process_h011_record(
@@ -364,14 +512,14 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
                     source_evidence_hash=result.decision.source_evidence_hash,
                     prices=prices,
                 ).to_dict())
-            elapsed_minutes = (time.monotonic() - started_monotonic) / 60.0
-            if fixture or len(observed_windows | source_windows) >= config.minimum_windows or elapsed_minutes >= config.duration_minutes:
+            elapsed_seconds = runtime_clock.monotonic() - started_monotonic
+            if fixture or elapsed_seconds >= config.duration_minutes * 60:
                 break
-            time.sleep(max(1, config.poll_seconds))
+            runtime_clock.sleep(max(1, config.poll_seconds))
     finally:
         client.close()
-    ended_utc = utc_now()
-    observed_windows.update(source_windows)
+    ended_utc = runtime_clock.now_utc()
+    duration_seconds = round(runtime_clock.monotonic() - started_monotonic, 6)
     raw_verified = True if fixture else verify_evidence_chain(client.evidence)
     if not raw_verified:
         integrity_failures += 1
@@ -406,6 +554,12 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
         "trial_id": trial_id,
         "start_utc": started_utc,
         "end_utc": ended_utc,
+        "duration_seconds": duration_seconds,
+        "gamma_discovered_windows": len(gamma_discovered_windows),
+        "valid_order_book_windows": len(observed_windows),
+        "valid_order_books": len(valid_order_book_keys),
+        "expected_closed_no_book_windows": len(expected_closed_no_book_windows),
+        "unexpected_source_failures": unexpected_source_failures,
         "windows_observed": len(observed_windows),
         "markets_observed": len(observed_markets),
         "decisions_total": len(decisions),
@@ -423,6 +577,12 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
         trial_id=trial_id,
         start_utc=started_utc,
         end_utc=ended_utc,
+        duration_seconds=duration_seconds,
+        gamma_discovered_windows=len(gamma_discovered_windows),
+        valid_order_book_windows=len(observed_windows),
+        valid_order_books=len(valid_order_book_keys),
+        expected_closed_no_book_windows=len(expected_closed_no_book_windows),
+        unexpected_source_failures=unexpected_source_failures,
         windows_observed=len(observed_windows),
         markets_observed=len(observed_markets),
         decisions_total=len(decisions),
@@ -437,7 +597,7 @@ def run_trial(*, output_dir: Path, config: TrialConfig, fixture: bool = False) -
         ending_equity=final_snapshot.equity_usd,
         max_drawdown=final_snapshot.max_drawdown_pct,
         risk_rejections=sum(1 for item in risk_decisions if not item["allowed"]),
-        source_failures=client.failures,
+        source_failures=unexpected_source_failures,
         stale_data_events=stale_events,
         integrity_failures=integrity_failures,
         replay_result=replay_result,
