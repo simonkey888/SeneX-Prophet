@@ -393,6 +393,102 @@ def write_manifest_atomic(
         os.close(lock_fd)
 
 
+def publish_artifact_bytes_with_manifest(
+    directory: Path,
+    artifact_name: str,
+    artifact_bytes: bytes,
+    policy: ManifestPolicy,
+    identity_fields: dict[str, str],
+    extra_manifest_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Atomically create an artifact and append its manifest under one lock.
+
+    This is the concurrency-safe API for callers that own the artifact bytes.
+    It removes the race inherent in publishing a final-path artifact that was
+    created before the chain lock was acquired. No sleeps or retries are used.
+    """
+    if not isinstance(artifact_bytes, (bytes, bytearray)):
+        raise TypeError("artifact_bytes must be bytes")
+    artifact_path = directory / artifact_name
+    combined_fields = {**identity_fields, **(extra_manifest_fields or {})}
+    _validate_extra_fields(extra_manifest_fields, policy)
+    for field in policy.identity_fields:
+        value = combined_fields.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Required identity field '{field}' missing or empty")
+    if not _matches_glob(artifact_name, policy.artifact_glob):
+        raise ValueError(f"Artifact {artifact_name} does not match glob {policy.artifact_glob}")
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / policy.lock_filename()
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    artifact_created = False
+    sidecar_path = artifact_path.with_suffix(artifact_path.suffix + ".sha256")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        precheck = verify_manifest_chain(directory, policy)
+        if not precheck["valid"]:
+            raise RuntimeError(f"Cannot publish: chain is not valid: {precheck['errors']}")
+        for field in policy.identity_fields:
+            value = combined_fields[field]
+            if value in {entry.get(field) for entry in precheck["entries"]}:
+                raise ValueError(f"Duplicate {field}: {value}")
+        sequence = len(precheck["entries"])
+        previous_hash = precheck["entries"][-1]["manifest_hash"] if precheck["entries"] else None
+        file_sha256 = hashlib.sha256(bytes(artifact_bytes)).hexdigest()
+        fd = os.open(str(artifact_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
+        artifact_created = True
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(bytes(artifact_bytes))
+            handle.flush()
+            os.fsync(handle.fileno())
+        sidecar_tmp = sidecar_path.with_name(sidecar_path.name + ".tmp")
+        sidecar_tmp.write_text(file_sha256 + "\n", encoding="ascii")
+        with sidecar_tmp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(sidecar_tmp, sidecar_path)
+        entry: dict[str, Any] = {
+            "sequence": sequence,
+            "filename": artifact_name,
+            "file_sha256": file_sha256,
+            "previous_manifest_hash": previous_hash,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        entry.update(combined_fields)
+        entry["manifest_hash"] = _compute_manifest_hash(entry)
+        manifest_path = directory / f"{policy.manifest_prefix}_{sequence:06d}.json"
+        manifest_content = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
+        manifest_fd = os.open(str(manifest_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o444)
+        with os.fdopen(manifest_fd, "wb") as handle:
+            handle.write(manifest_content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        dir_fd = os.open(str(directory), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        recheck = verify_manifest_chain(directory, policy)
+        if not recheck["valid"]:
+            raise RuntimeError(f"Chain corrupt after publish: {recheck['errors']}")
+        return entry
+    except Exception:
+        if artifact_created:
+            # Fail closed. Cleanup is safe only while the chain lock is held and
+            # only if no manifest references the candidate filename.
+            manifests = verify_manifest_chain(directory, policy, allowed_unregistered={artifact_name})
+            referenced = any(entry.get("filename") == artifact_name for entry in manifests.get("entries", []))
+            if not referenced:
+                for candidate in (sidecar_path, artifact_path):
+                    try:
+                        candidate.unlink()
+                    except FileNotFoundError:
+                        pass
+        raise
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers (fail-closed)
 # ═══════════════════════════════════════════════════════════════════════
