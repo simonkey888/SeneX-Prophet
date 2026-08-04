@@ -150,7 +150,13 @@ jobs:
           python - "${RUNNER_TEMP}/paper-observed/trial_summary.json" <<'PY'
           import json, sys
           summary=json.load(open(sys.argv[1]))
-          assert summary['windows_observed'] >= 12
+          assert summary['duration_seconds'] >= 3600
+          assert summary['valid_order_book_windows'] >= 12
+          assert summary['valid_order_books'] >= 24
+          assert summary['windows_observed'] == summary['valid_order_book_windows']
+          assert summary['gamma_discovered_windows'] >= summary['valid_order_book_windows']
+          assert summary['unexpected_source_failures'] <= 12
+          assert summary['source_failures'] == summary['unexpected_source_failures']
           assert summary['replay_result'] == 'PASS'
           assert summary['raw_chain_verified'] is True
           assert summary['paper_only'] is True
