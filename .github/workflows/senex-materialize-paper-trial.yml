@@ -1,0 +1,74 @@
+name: SENEX Materialize Paper Trial
+
+on:
+  push:
+    branches:
+      - ops/senex-paper-trial-materialize-20260804
+    paths:
+      - ".github/workflows/senex-materialize-paper-trial.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact bootstrap head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Verify bundle segments and fast-forward target branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verify_blob() {
+            local expected="$1"
+            local path="$2"
+            local actual
+            actual="$(git hash-object "$path")"
+            printf '%s expected=%s actual=%s bytes=%s\n' "$path" "$expected" "$actual" "$(wc -c < "$path")"
+            test "$actual" = "$expected"
+          }
+
+          verify_blob 71b2d2fc695030b27b3fc38882d3578fd7c8217a audit/senex_bundle_parts/part-00
+          verify_blob dd3b440556377e8ecb5453d1452021cd08ea7245 audit/senex_bundle_parts/part-01a
+          verify_blob 1f682512a121bab2874b1221eb41e60eb5b5b7e8 audit/senex_bundle_parts/part-01b
+          verify_blob 475c3e8a3fe4393ede2692a1a977df40196175a7 audit/senex_bundle_parts/part-02
+          verify_blob 7b3d17a53e1fe704dc9f4ba2b78baf78308d2bb3 audit/senex_bundle_parts/part-03
+          verify_blob 97076b4590e659f2fa02415fa42f026904edddf1 audit/senex_bundle_parts/part-04a
+          verify_blob e15b1f9bbd1e06fd229fa4885d0e593b4b1b91af audit/senex_bundle_parts/part-04b
+          verify_blob 5c9acbe896d2bad69c03141adb3dd6457067fb43 audit/senex_bundle_parts/part-05a
+          verify_blob e48a4173f44ad245018e3d08713f2dfbde19fcfc audit/senex_bundle_parts/part-05b
+          verify_blob 6bfbd554fd5c5f0825f7f7e7b241142bd96a0182 audit/senex_bundle_parts/part-06
+
+          cat \
+            audit/senex_bundle_parts/part-00 \
+            audit/senex_bundle_parts/part-01a \
+            audit/senex_bundle_parts/part-01b \
+            audit/senex_bundle_parts/part-02 \
+            audit/senex_bundle_parts/part-03 \
+            audit/senex_bundle_parts/part-04a \
+            audit/senex_bundle_parts/part-04b \
+            audit/senex_bundle_parts/part-05a \
+            audit/senex_bundle_parts/part-05b \
+            audit/senex_bundle_parts/part-06 \
+            | base64 --decode > /tmp/senex.bundle
+
+          echo "0979ffe8ede463381141c150cf97e0e6692cf111d6bf04467c3ad478c80fa5d7  /tmp/senex.bundle" | sha256sum -c -
+          git bundle verify /tmp/senex.bundle
+          git fetch /tmp/senex.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/paper
+          test "$(git rev-parse refs/remotes/bundle/paper)" = "105360f5a8b6d38c5d1722feb3ec00151bd8a0d1"
+          test "$(git rev-list --count 39e1cf1bdad31a2b6f2178949a2977c837ebdf18..refs/remotes/bundle/paper)" = "5"
+          test "$(git merge-base 39e1cf1bdad31a2b6f2178949a2977c837ebdf18 refs/remotes/bundle/paper)" = "39e1cf1bdad31a2b6f2178949a2977c837ebdf18"
+
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${auth}" push \
+            "https://github.com/${GITHUB_REPOSITORY}.git" \
+            refs/remotes/bundle/paper:refs/heads/release/senex-paper-trial-v1
