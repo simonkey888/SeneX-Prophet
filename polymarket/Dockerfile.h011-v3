@@ -16,15 +16,15 @@ LABEL org.opencontainers.image.revision="${SENEX_CODE_SHA}"
 
 WORKDIR /app
 
-COPY --link polymarket/requirements-h011-v3.txt /tmp/requirements-h011-v3.txt
+COPY --link polymarket/requirements-h011-v3-runtime.txt /tmp/requirements-h011-v3-runtime.txt
 RUN python -m pip install \
       --no-cache-dir \
       --no-compile \
       --no-deps \
       --only-binary=:all: \
       --require-hashes \
-      -r /tmp/requirements-h011-v3.txt \
-    && rm -f /tmp/requirements-h011-v3.txt
+      -r /tmp/requirements-h011-v3-runtime.txt \
+    && rm -f /tmp/requirements-h011-v3-runtime.txt
 
 # Copy only the complete runtime package. Repository data and secrets are never
 # baked into the image. File modes are normalized for reproducible layers.
