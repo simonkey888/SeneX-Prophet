@@ -6,21 +6,21 @@ on:
     paths: [.github/workflows/arq-crash-recovery-bootstrap.yml]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: senex-arq-crash-recovery-bootstrap
   cancel-in-progress: false
 
 jobs:
-  apply-and-verify:
+  apply-verify-package:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
           ref: feat/senex-paper-execution-truth-v1
       - name: Verify authorized lineage
         run: |
@@ -52,14 +52,24 @@ jobs:
         run: |
           set -euo pipefail
           PYTHONPATH=.:polymarket python -m pytest -q
-      - name: Commit verified correction
+      - name: Package verified index
         run: |
           set -euo pipefail
-          git config user.name "SENEX ARQ"
-          git config user.email "simonkey888@users.noreply.github.com"
+          mkdir -p /tmp/senex-verified
           git add -A
           test -n "$(git status --porcelain)"
-          git commit -m "fix(paper): make sequential recovery crash-consistent"
-          git push origin HEAD:feat/senex-paper-execution-truth-v1
-          git rev-parse HEAD
-          git rev-parse HEAD^{tree}
+          BASE_HEAD="$(git rev-parse HEAD)"
+          FINAL_TREE="$(git write-tree)"
+          git diff --cached --binary > /tmp/senex-verified/crash-recovery.patch
+          git archive --format=tar.gz --output=/tmp/senex-verified/crash-recovery-tree.tar.gz "${FINAL_TREE}"
+          printf '%s\n' "${BASE_HEAD}" > /tmp/senex-verified/base-head.txt
+          printf '%s\n' "${FINAL_TREE}" > /tmp/senex-verified/final-tree.txt
+          git status --short > /tmp/senex-verified/status.txt
+          (cd /tmp/senex-verified && sha256sum crash-recovery.patch crash-recovery-tree.tar.gz base-head.txt final-tree.txt status.txt > SHA256SUMS)
+      - name: Upload verified tree
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-crash-recovery-verified-${{ github.sha }}
+          path: /tmp/senex-verified
+          retention-days: 14
+          if-no-files-found: error
