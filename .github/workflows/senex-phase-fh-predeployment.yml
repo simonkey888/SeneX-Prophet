@@ -1,0 +1,131 @@
+name: SENEX Phase F-H Predeployment Evidence
+
+on:
+  pull_request:
+    branches:
+      - feat/h011-v3-discovery-refresh
+    paths:
+      - "tools/build_phase_f_h_evidence.py"
+      - "tests/operations/**"
+      - "docs/operations/**"
+      - ".github/workflows/senex-phase-fh-predeployment.yml"
+      - "governance/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-phase-fh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TERM: xterm
+  EXACT_SHA: ${{ github.event.pull_request.head.sha }}
+  PRODUCT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.EXACT_SHA }}
+
+      - name: Verify exact base and head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
+          test "${{ github.event.pull_request.base.sha }}" = "${PRODUCT_BASE_SHA}"
+          test "$(git merge-base "${PRODUCT_BASE_SHA}" "${EXACT_SHA}")" = "${PRODUCT_BASE_SHA}"
+          git diff --check "${PRODUCT_BASE_SHA}...${EXACT_SHA}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+
+      - name: Run exact-head tests and governance gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall tools/build_phase_f_h_evidence.py tests/operations
+          PYTHONPATH=.:polymarket python -m pytest -q tests/operations tests/governance tests/paper_trial tests/monitoring
+          PYTHONPATH=.:polymarket python -m pytest -q
+          cp governance/repository_manifest.json /tmp/manifest.committed
+          cp governance/component_registry.json /tmp/registry.committed
+          cp governance/migration_map.json /tmp/migration.committed
+          cp governance/target_architecture.yaml /tmp/architecture.committed
+          python tools/verify_repository_contract.py --generate
+          cmp /tmp/manifest.committed governance/repository_manifest.json
+          cmp /tmp/registry.committed governance/component_registry.json
+          cmp /tmp/migration.committed governance/migration_map.json
+          cmp /tmp/architecture.committed governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          python tools/verify_repository_contract.py --base "${PRODUCT_BASE_SHA}" --head "${EXACT_SHA}" --report /tmp/repository-contract.json
+
+      - name: Build deterministic fixture contract evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/fixture"
+          PYTHONPATH=.:polymarket python polymarket/paper/trial_runner.py \
+            --output-dir "${RUNNER_TEMP}/fixture" \
+            --fixture \
+            --duration-minutes 1 \
+            --minimum-windows 1 \
+            --code-sha "${EXACT_SHA}"
+          (cd "${RUNNER_TEMP}/fixture" && sha256sum -c SHA256SUMS)
+
+      - name: Build Phase F-H evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/phase-fh"
+          python tools/build_phase_f_h_evidence.py \
+            --repo-root . \
+            --output-dir "${RUNNER_TEMP}/phase-fh" \
+            --source-sha "${EXACT_SHA}" \
+            --fixture-report "${RUNNER_TEMP}/fixture/observed_runner_integration_report.json" \
+            --northflank-status BLOCKED_MISSING_CREDENTIAL
+          (cd "${RUNNER_TEMP}/phase-fh" && sha256sum -c SHA256SUMS)
+          python - "${RUNNER_TEMP}/phase-fh/phase_c_h_checkpoint.json" <<'PY'
+          import json,sys
+          report=json.load(open(sys.argv[1]))
+          assert report['phase_c'] == 'BLOCKED_MISSING_CREDENTIAL'
+          assert report['phase_f'] == 'BLOCKED_CORPUS_UNAVAILABLE'
+          assert report['phase_h_predeployment'] == 'PASS'
+          assert report['mission_complete'] is False
+          assert report['production_mutated'] is False
+          assert report['safety_invariants'] == {
+              'paper_only': True,
+              'orders_enabled': False,
+              'live_capital_locked': True,
+              'wallet_or_private_key_access': False,
+              'real_order_network_calls': 0,
+              'real_capital_actions': 0,
+          }
+          PY
+
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-phase-fh-predeployment-${{ env.EXACT_SHA }}
+          path: |
+            ${{ runner.temp }}/phase-fh
+            ${{ runner.temp }}/fixture
+            /tmp/repository-contract.json
+          retention-days: 14
+          if-no-files-found: error
