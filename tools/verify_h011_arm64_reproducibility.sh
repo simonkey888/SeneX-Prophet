@@ -30,7 +30,7 @@ printf '%s\n' "$HEAD_TREE" > "$EVIDENCE/head-tree.txt"
 printf '%s\n' "$SOURCE_DATE_EPOCH" > "$EVIDENCE/source-date-epoch.txt"
 
 python3 "$ROOT/tools/verify_h011_dependency_lock.py" \
-  --runtime "$ROOT/polymarket/requirements-h011-v3.txt" \
+  --runtime "$ROOT/polymarket/requirements-h011-v3-runtime.txt" \
   --test "$ROOT/polymarket/requirements-h011-v3-test.txt" \
   --output "$EVIDENCE/dependency-lock.json" > "$EVIDENCE/dependency-lock.stdout"
 python3 "$ROOT/tools/verify_paper_only_repository.py" \
@@ -55,7 +55,7 @@ download_lock(){
   find "$dest" -type f -name '*.whl' -print0 | sort -z | xargs -0 sha256sum > "$dest/SHA256SUMS"
 }
 for platform in manylinux2014_aarch64 manylinux2014_x86_64; do
-  download_lock "$ROOT/polymarket/requirements-h011-v3.txt" "$platform" "$WORK/runtime-$platform" "$EVIDENCE/runtime-$platform.log" || fail "RUNTIME_WHEEL_RESOLUTION_${platform}_FAILED"
+  download_lock "$ROOT/polymarket/requirements-h011-v3-runtime.txt" "$platform" "$WORK/runtime-$platform" "$EVIDENCE/runtime-$platform.log" || fail "RUNTIME_WHEEL_RESOLUTION_${platform}_FAILED"
   download_lock "$ROOT/polymarket/requirements-h011-v3-test.txt" "$platform" "$WORK/test-$platform" "$EVIDENCE/test-$platform.log" || fail "TEST_WHEEL_RESOLUTION_${platform}_FAILED"
 done
 
