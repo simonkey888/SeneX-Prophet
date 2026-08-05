@@ -70,4 +70,72 @@ class ContractTests(unittest.TestCase):
             p=Path(d)/"m.json"; p.write_text("{}\n"); s=Path(d)/"m.json.sha256"; s.write_text(f"{mod.sha256_bytes(p.read_bytes())}  other.json\n")
             self.assertFalse(mod.verify_sidecar(p,s)[0])
 
+    def test_24_exact_package_marker_classification_passes(self):
+        groups = {
+            "__init__.py": [
+                "polymarket/monitoring/__init__.py",
+                "polymarket/paper/__init__.py",
+            ]
+        }
+        contract = {
+            "classified_duplicate_basenames": {
+                "__init__.py": {
+                    "paths": groups["__init__.py"],
+                    "classification": "DISTINCT_PACKAGE_MARKERS",
+                    "reason": "separate domains",
+                }
+            }
+        }
+        self.assertEqual(mod.unclassified_duplicate_paths(groups, contract), [])
+
+    def test_25_extra_duplicate_path_still_fails(self):
+        groups = {
+            "__init__.py": [
+                "polymarket/monitoring/__init__.py",
+                "polymarket/paper/__init__.py",
+                "polymarket/other/__init__.py",
+            ]
+        }
+        contract = {
+            "classified_duplicate_basenames": {
+                "__init__.py": {
+                    "paths": groups["__init__.py"][:2],
+                    "classification": "DISTINCT_PACKAGE_MARKERS",
+                    "reason": "separate domains",
+                }
+            }
+        }
+        self.assertEqual(
+            mod.unclassified_duplicate_paths(groups, contract),
+            sorted(groups["__init__.py"]),
+        )
+
+    def test_26_classified_historical_research_reference_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            path = root / "research" / "design.md"
+            path.parent.mkdir()
+            path.write_text("raw_chain_v1 historical design")
+            contract = {
+                "research_authoritative_root_reference_allowlist": {
+                    "research/design.md": {
+                        "classification": "NON_AUTHORITATIVE_HISTORICAL_DESIGN",
+                        "reason": "retained evidence",
+                        "current_authority": "runtime writer",
+                    }
+                }
+            }
+            self.assertEqual(
+                mod.research_authority_violations(
+                    root, ["research/design.md"], contract
+                ),
+                [],
+            )
+            self.assertEqual(
+                mod.research_authority_violations(
+                    root, ["research/design.md"], {}
+                ),
+                ["research/design.md"],
+            )
+
 if __name__ == "__main__": unittest.main()

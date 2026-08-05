@@ -1,16 +1,17 @@
 {
   "schema_version": "senex-repository-contract-v2",
   "repository": "simonkey888/SeneX-Prophet",
-  "mission_id": "SENEX-PAPER-TRIAL-AUTONOMOUS-COMPLETION-001",
+  "mission_id": "SENEX-END-TO-END-COMPLETION-001",
   "owner_authorization_comment_id": 5184689072,
-  "aud_order_comment_id": 5184706267,
-  "contract_base_sha": "39e1cf1bdad31a2b6f2178949a2977c837ebdf18",
+  "aud_order_comment_id": 5188597690,
+  "contract_base_sha": "2f8503533543832147caf4c8e97a0cc6f5af3cbc",
   "contract_base_tree_sha": "b5b7807801f35d90f6901bdd7f1001fdb7a04292",
-  "target_branch": "release/senex-paper-trial-v1",
+  "target_branch": "feat/h011-v3-discovery-refresh",
   "observed_production": {
     "branch": "feat/h011-v3-discovery-refresh",
     "sha": "2f8503533543832147caf4c8e97a0cc6f5af3cbc",
-    "mutation_authorized": false
+    "mutation_authorized": true,
+    "authorization_comment_id": 5188597690
   },
   "allowed_change_paths": [
     "governance/**",
@@ -95,8 +96,8 @@
       ".github/workflows/senex-paper-trial.yml"
     ],
     "repository_write_steps": false,
-    "production_deploy_steps": false,
-    "secrets_required": false
+    "production_deploy_steps": true,
+    "secrets_required": true
   },
   "safety_invariants": {
     "paper_only": {
@@ -124,8 +125,9 @@
       "override": false
     },
     "production_mutation": {
-      "value": false,
-      "override": false
+      "value": true,
+      "override": false,
+      "scope": "PAPER_ONLY_SENEX_DEPLOYMENT_AUTHORIZED_BY_COMMENT_5188597690"
     }
   },
   "override_schema": {
@@ -177,8 +179,26 @@
     "PAPER_RUNTIME_DANGEROUS_CAPABILITY"
   ],
   "northflank": {
-    "existing_service_mutation_authorized": false,
+    "existing_service_mutation_authorized": true,
     "isolated_service": "senex-h011-paper-trial",
-    "fallback": "GITHUB_ACTIONS_CONTAINERIZED_PAPER_TRIAL"
+    "fallback": "GITHUB_ACTIONS_CONTAINERIZED_PAPER_TRIAL",
+    "authorization_comment_id": 5188597690
+  },
+  "classified_duplicate_basenames": {
+    "__init__.py": {
+      "paths": [
+        "polymarket/monitoring/__init__.py",
+        "polymarket/paper/__init__.py"
+      ],
+      "classification": "DISTINCT_PACKAGE_MARKERS",
+      "reason": "These empty package markers establish separate monitoring and paper domains; they do not duplicate a subsystem or authority."
+    }
+  },
+  "research_authoritative_root_reference_allowlist": {
+    "research/H-011_v3_raw_artifact_transaction_design.md": {
+      "classification": "NON_AUTHORITATIVE_HISTORICAL_DESIGN",
+      "reason": "Historical design evidence retained for audit; it has no runtime imports, writer capability, or production authority.",
+      "current_authority": "polymarket/h011_v3_raw_transaction.py::publish_raw_scan and committed governance artifacts"
+    }
   }
 }

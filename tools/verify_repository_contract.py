@@ -672,6 +672,58 @@ def _architecture_map(architecture: Mapping[str, Any]) -> dict[str, Mapping[str,
     return {str(item["domain_id"]): item for item in architecture.get("domains", [])}
 
 
+def unclassified_duplicate_paths(
+    groups: Mapping[str, Sequence[str]],
+    contract: Mapping[str, Any],
+) -> list[str]:
+    configured = contract.get("classified_duplicate_basenames", {})
+    violations: list[str] = []
+    for basename, paths in sorted(groups.items()):
+        actual = sorted(str(path) for path in paths)
+        if len(actual) <= 1:
+            continue
+        item = configured.get(basename) if isinstance(configured, Mapping) else None
+        expected = (
+            sorted(str(path) for path in item.get("paths", []))
+            if isinstance(item, Mapping)
+            else []
+        )
+        classified = bool(
+            isinstance(item, Mapping)
+            and str(item.get("classification", "")).strip()
+            and str(item.get("reason", "")).strip()
+        )
+        if classified and expected == actual:
+            continue
+        violations.extend(actual)
+    return sorted(set(violations))
+
+
+def research_authority_violations(
+    root: Path,
+    paths: Sequence[str],
+    contract: Mapping[str, Any],
+) -> list[str]:
+    configured = contract.get("research_authoritative_root_reference_allowlist", {})
+    violations: list[str] = []
+    for rel in paths:
+        path = root / rel
+        if not rel.startswith("research/") or not path.is_file():
+            continue
+        if "raw_chain_v1" not in path.read_text(encoding="utf-8", errors="ignore"):
+            continue
+        item = configured.get(rel) if isinstance(configured, Mapping) else None
+        classified = bool(
+            isinstance(item, Mapping)
+            and item.get("classification") == "NON_AUTHORITATIVE_HISTORICAL_DESIGN"
+            and str(item.get("reason", "")).strip()
+            and str(item.get("current_authority", "")).strip()
+        )
+        if not classified:
+            violations.append(rel)
+    return sorted(set(violations))
+
+
 def evaluate(root: Path, contract: dict[str, Any], base: str, head: str, auth: dict[str, Any] | None) -> list[GateResult]:
     ch = changed(root, base, head)
     added = changed(root, base, head, True)
@@ -693,8 +745,16 @@ def evaluate(root: Path, contract: dict[str, Any], base: str, head: str, auth: d
     groups: dict[str, list[str]] = {}
     for rel in py_added:
         groups.setdefault(Path(rel).name, []).append(rel)
-    duplicates = [rel for group in groups.values() if len(group) > 1 for rel in group]
-    results.append(bad(R0_GATE_IDS[4], ["new unclassified duplicate basename"], duplicates) if duplicates else ok(R0_GATE_IDS[4], "no new unclassified duplicate family"))
+    duplicates = unclassified_duplicate_paths(groups, contract)
+    results.append(
+        bad(
+            R0_GATE_IDS[4],
+            ["new duplicate basename lacks an exact classification"],
+            duplicates,
+        )
+        if duplicates
+        else ok(R0_GATE_IDS[4], "no new unclassified duplicate family")
+    )
     regressions: list[str] = []
     for rel in ch:
         path = root / rel
@@ -737,8 +797,16 @@ def evaluate(root: Path, contract: dict[str, Any], base: str, head: str, auth: d
                 introduced_danger.append(rel)
                 danger_evidence.extend(f"{rel}: {finding}" for finding in findings)
     results.append(bad(R0_GATE_IDS[8], danger_evidence, introduced_danger) if introduced_danger else ok(R0_GATE_IDS[8], "no paper wallet/order capability introduced"))
-    research = [rel for rel in ch if rel.startswith("research/") and "raw_chain_v1" in (root / rel).read_text(encoding="utf-8", errors="ignore")]
-    results.append(bad(R0_GATE_IDS[9], ["research references authoritative raw root"], research) if research else ok(R0_GATE_IDS[9], "no research authority violation"))
+    research = research_authority_violations(root, ch, contract)
+    results.append(
+        bad(
+            R0_GATE_IDS[9],
+            ["research references authoritative raw root without an explicit non-authoritative classification"],
+            research,
+        )
+        if research
+        else ok(R0_GATE_IDS[9], "no research authority violation")
+    )
     workflow_paths: list[str] = []
     workflow_evidence: list[str] = []
     for rel in ch:
