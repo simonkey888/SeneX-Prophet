@@ -80,11 +80,9 @@ def main() -> None:
     )
     text = replace_once(text, architecture_block, architecture_block + helpers, "helper insertion")
 
-    old_duplicate = textwrap.dedent(
-        '''\
-            duplicates = [rel for group in groups.values() if len(group) > 1 for rel in group]
-            results.append(bad(R0_GATE_IDS[4], ["new unclassified duplicate basename"], duplicates) if duplicates else ok(R0_GATE_IDS[4], "no new unclassified duplicate family"))
-        '''
+    old_duplicate = (
+        '    duplicates = [rel for group in groups.values() if len(group) > 1 for rel in group]\n'
+        '    results.append(bad(R0_GATE_IDS[4], ["new unclassified duplicate basename"], duplicates) if duplicates else ok(R0_GATE_IDS[4], "no new unclassified duplicate family"))\n'
     )
     new_duplicate = textwrap.dedent(
         '''\
@@ -100,13 +98,12 @@ def main() -> None:
             )
         '''
     )
+    new_duplicate = textwrap.indent(new_duplicate, "    ")
     text = replace_once(text, old_duplicate, new_duplicate, "duplicate gate")
 
-    old_research = textwrap.dedent(
-        '''\
-            research = [rel for rel in ch if rel.startswith("research/") and "raw_chain_v1" in (root / rel).read_text(encoding="utf-8", errors="ignore")]
-            results.append(bad(R0_GATE_IDS[9], ["research references authoritative raw root"], research) if research else ok(R0_GATE_IDS[9], "no research authority violation"))
-        '''
+    old_research = (
+        '    research = [rel for rel in ch if rel.startswith("research/") and "raw_chain_v1" in (root / rel).read_text(encoding="utf-8", errors="ignore")]\n'
+        '    results.append(bad(R0_GATE_IDS[9], ["research references authoritative raw root"], research) if research else ok(R0_GATE_IDS[9], "no research authority violation"))\n'
     )
     new_research = textwrap.dedent(
         '''\
@@ -122,6 +119,7 @@ def main() -> None:
             )
         '''
     )
+    new_research = textwrap.indent(new_research, "    ")
     text = replace_once(text, old_research, new_research, "research gate")
     tool.write_text(text, encoding="utf-8")
 
@@ -178,73 +176,73 @@ def main() -> None:
     additions = textwrap.dedent(
         '''\
 
-            def test_24_exact_package_marker_classification_passes(self):
-                groups = {
-                    "__init__.py": [
-                        "polymarket/monitoring/__init__.py",
-                        "polymarket/paper/__init__.py",
-                    ]
-                }
-                contract = {
-                    "classified_duplicate_basenames": {
-                        "__init__.py": {
-                            "paths": groups["__init__.py"],
-                            "classification": "DISTINCT_PACKAGE_MARKERS",
-                            "reason": "separate domains",
-                        }
+        def test_24_exact_package_marker_classification_passes(self):
+            groups = {
+                "__init__.py": [
+                    "polymarket/monitoring/__init__.py",
+                    "polymarket/paper/__init__.py",
+                ]
+            }
+            contract = {
+                "classified_duplicate_basenames": {
+                    "__init__.py": {
+                        "paths": groups["__init__.py"],
+                        "classification": "DISTINCT_PACKAGE_MARKERS",
+                        "reason": "separate domains",
                     }
                 }
-                self.assertEqual(mod.unclassified_duplicate_paths(groups, contract), [])
+            }
+            self.assertEqual(mod.unclassified_duplicate_paths(groups, contract), [])
 
-            def test_25_extra_duplicate_path_still_fails(self):
-                groups = {
-                    "__init__.py": [
-                        "polymarket/monitoring/__init__.py",
-                        "polymarket/paper/__init__.py",
-                        "polymarket/other/__init__.py",
-                    ]
+        def test_25_extra_duplicate_path_still_fails(self):
+            groups = {
+                "__init__.py": [
+                    "polymarket/monitoring/__init__.py",
+                    "polymarket/paper/__init__.py",
+                    "polymarket/other/__init__.py",
+                ]
+            }
+            contract = {
+                "classified_duplicate_basenames": {
+                    "__init__.py": {
+                        "paths": groups["__init__.py"][:2],
+                        "classification": "DISTINCT_PACKAGE_MARKERS",
+                        "reason": "separate domains",
+                    }
                 }
+            }
+            self.assertEqual(
+                mod.unclassified_duplicate_paths(groups, contract),
+                sorted(groups["__init__.py"]),
+            )
+
+        def test_26_classified_historical_research_reference_passes(self):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                path = root / "research" / "design.md"
+                path.parent.mkdir()
+                path.write_text("raw_chain_v1 historical design")
                 contract = {
-                    "classified_duplicate_basenames": {
-                        "__init__.py": {
-                            "paths": groups["__init__.py"][:2],
-                            "classification": "DISTINCT_PACKAGE_MARKERS",
-                            "reason": "separate domains",
+                    "research_authoritative_root_reference_allowlist": {
+                        "research/design.md": {
+                            "classification": "NON_AUTHORITATIVE_HISTORICAL_DESIGN",
+                            "reason": "retained evidence",
+                            "current_authority": "runtime writer",
                         }
                     }
                 }
                 self.assertEqual(
-                    mod.unclassified_duplicate_paths(groups, contract),
-                    sorted(groups["__init__.py"]),
+                    mod.research_authority_violations(
+                        root, ["research/design.md"], contract
+                    ),
+                    [],
                 )
-
-            def test_26_classified_historical_research_reference_passes(self):
-                with tempfile.TemporaryDirectory() as d:
-                    root = Path(d)
-                    path = root / "research" / "design.md"
-                    path.parent.mkdir()
-                    path.write_text("raw_chain_v1 historical design")
-                    contract = {
-                        "research_authoritative_root_reference_allowlist": {
-                            "research/design.md": {
-                                "classification": "NON_AUTHORITATIVE_HISTORICAL_DESIGN",
-                                "reason": "retained evidence",
-                                "current_authority": "runtime writer",
-                            }
-                        }
-                    }
-                    self.assertEqual(
-                        mod.research_authority_violations(
-                            root, ["research/design.md"], contract
-                        ),
-                        [],
-                    )
-                    self.assertEqual(
-                        mod.research_authority_violations(
-                            root, ["research/design.md"], {}
-                        ),
-                        ["research/design.md"],
-                    )
+                self.assertEqual(
+                    mod.research_authority_violations(
+                        root, ["research/design.md"], {}
+                    ),
+                    ["research/design.md"],
+                )
         '''
     )
     additions = textwrap.indent(additions, "    ")
