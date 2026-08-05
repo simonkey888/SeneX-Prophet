@@ -1,0 +1,79 @@
+name: SENEX Materialize Execution Truth
+
+on:
+  push:
+    branches:
+      - ops/senex-execution-truth-materialize-20260804
+    paths:
+      - ".github/workflows/senex-materialize-execution-truth.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact transport head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Verify and reconstruct source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find audit -maxdepth 1 -name 'execution_truth_patch.part*' | wc -l)" = "6"
+          cat audit/execution_truth_patch.part* | base64 --decode > /tmp/execution-truth.patch.gz
+          echo "9882b19b6bc6d900d78ec658b1f90573eb6b204d68c4f94b35ffc8715b9ca992  /tmp/execution-truth.patch.gz" | sha256sum -c -
+          gzip -dc /tmp/execution-truth.patch.gz > /tmp/execution-truth.patch
+
+      - name: Verify exact base and absent target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release/senex-paper-trial-v1
+          test "$(git rev-parse origin/release/senex-paper-trial-v1)" = "00f018484f6e39f4cc7c518df02e1f1b0ab97df8"
+          test "$(git rev-parse origin/release/senex-paper-trial-v1^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
+          if git ls-remote --exit-code --heads origin refs/heads/feat/senex-paper-execution-truth-v1 >/dev/null 2>&1; then
+            echo "target branch already exists" >&2
+            exit 41
+          fi
+
+      - name: Apply exact source patch and generate deterministic governance artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B materialize 00f018484f6e39f4cc7c518df02e1f1b0ab97df8
+          git apply --check /tmp/execution-truth.patch
+          git apply --index /tmp/execution-truth.patch
+          python -m pip install --disable-pip-version-check -q -r polymarket/requirements-h011-v3.txt
+          for pass in 1 2 3 4; do
+            python tools/verify_repository_contract.py --generate > "/tmp/generate-${pass}.json"
+            git add governance/component_registry.json governance/repository_manifest.json governance/repository_manifest.json.sha256
+          done
+          test "$(git write-tree)" = "c6c09b3ea3f69e5c1d5cb2060bc8fc87213e358c"
+          git diff --cached --check
+
+      - name: Commit exact tree and fast-forward target branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "SENEX ARQ"
+          git config user.email "simonkey888@users.noreply.github.com"
+          git commit -m "feat(paper): enforce execution truth and monitoring"
+          test "$(git rev-parse HEAD^)" = "00f018484f6e39f4cc7c518df02e1f1b0ab97df8"
+          test "$(git rev-parse HEAD^{tree})" = "c6c09b3ea3f69e5c1d5cb2060bc8fc87213e358c"
+          test "$(git rev-list --count 00f018484f6e39f4cc7c518df02e1f1b0ab97df8..HEAD)" = "1"
+          basic="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${basic}" push --porcelain origin HEAD:refs/heads/feat/senex-paper-execution-truth-v1
