@@ -1,12 +1,12 @@
-name: SENEX Materialize Observed Semantics Fix
+name: SENEX Materialize Observed Trial Semantics
 
-# bundle-revision: compact-final-20260804
 on:
   push:
     branches:
       - ops/senex-paper-trial-materialize-20260804
     paths:
       - ".github/workflows/senex-materialize-paper-trial.yml"
+      - "audit/senex_observed.bundle"
 
 permissions:
   contents: write
@@ -23,20 +23,32 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Reconstruct and verify exact observed-semantics bundle
+      - name: Verify and import remediation bundle
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode audit/senex_bundle_parts/part-00 > /tmp/senex-observed-fix.bundle
-          echo "0b528eb131a79310d249668cc354bda44f39e1aa2ba20f02310a9d828981c305  /tmp/senex-observed-fix.bundle" | sha256sum -c -
-          git bundle verify /tmp/senex-observed-fix.bundle
-          git fetch /tmp/senex-observed-fix.bundle refs/heads/materialize/obsfix:refs/remotes/bundle/observed-fix
-          test "$(git rev-parse refs/remotes/bundle/observed-fix)" = "24b38368c5786fc771fd5c761bc4288886649e21"
-          test "$(git rev-parse refs/remotes/bundle/observed-fix^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
-          test "$(git rev-parse refs/remotes/bundle/observed-fix^)" = "b7a3c724af4a23fd2ad15f231e4beaa8735eef99"
-          test "$(git rev-parse origin/release/senex-paper-trial-v1)" = "b7a3c724af4a23fd2ad15f231e4beaa8735eef99"
+          echo "ed7256012212fa75d122aff7bce477e5f9c53e1e5c304ccb8e81cf744f6f960e  audit/senex_observed.bundle" | sha256sum -c -
+          git bundle verify audit/senex_observed.bundle
+          git fetch audit/senex_observed.bundle refs/heads/release/senex-paper-trial-v1:refs/remotes/bundle/remediation
+          test "$(git rev-parse refs/remotes/bundle/remediation)" = "616e99078da1ff29ab2a74aa370634dcb3820823"
+          test "$(git rev-parse refs/remotes/bundle/remediation^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
+          test "$(git rev-list --count a3ab36ccdc5784edf1625c36bc245a7165cfb9e4..refs/remotes/bundle/remediation)" = "2"
 
-      - name: Fast-forward paper-trial branch without force
+      - name: Cherry-pick exact remediation onto current branch head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "SENEX ARQ"
+          git config user.email "simonkey888@users.noreply.github.com"
+          git checkout -B materialize origin/release/senex-paper-trial-v1
+          test "$(git rev-parse HEAD)" = "6e5368264df5c8fcfc72ff73dd07a96f23ec0aed"
+          git cherry-pick 0b0571083fe79b691efd064c9e958651bcdb609d
+          git cherry-pick 616e99078da1ff29ab2a74aa370634dcb3820823
+          test "$(git rev-parse HEAD^{tree})" = "2f160251195b64979963d5da6f6b35a80d4742f7"
+          test "$(git rev-list --count 6e5368264df5c8fcfc72ff73dd07a96f23ec0aed..HEAD)" = "2"
+          git diff --check 6e5368264df5c8fcfc72ff73dd07a96f23ec0aed...HEAD
+
+      - name: Fast-forward final branch without force
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -45,4 +57,4 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
           git -c http.extraheader="AUTHORIZATION: basic ${auth}" push \
             "https://github.com/${GITHUB_REPOSITORY}.git" \
-            refs/remotes/bundle/observed-fix:refs/heads/release/senex-paper-trial-v1
+            HEAD:refs/heads/release/senex-paper-trial-v1
