@@ -7,7 +7,6 @@ import json
 import re
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 
 REQUIRED_MARKERS = (
@@ -37,10 +36,15 @@ def _multi_local_assignment_errors(text: str) -> list[str]:
         except ValueError as exc:
             errors.append(f"line {number}: cannot parse declaration: {exc}")
             continue
-        assignments = [token for token in tokens if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token)]
+        assignments = [
+            token
+            for token in tokens
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token)
+        ]
         if len(assignments) > 1:
             errors.append(
-                f"line {number}: multiple local assignments are forbidden under set -u: {assignments}"
+                f"line {number}: multiple local assignments are forbidden "
+                f"under set -u: {assignments}"
             )
     return errors
 
@@ -48,7 +52,10 @@ def _multi_local_assignment_errors(text: str) -> list[str]:
 def audit(script: Path) -> dict[str, object]:
     text = script.read_text(encoding="utf-8")
     completed = subprocess.run(
-        ["bash", "-n", str(script)], text=True, capture_output=True, check=False
+        ["bash", "-n", str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
     )
     errors: list[str] = []
     if completed.returncode:
@@ -62,12 +69,20 @@ def audit(script: Path) -> dict[str, object]:
         for number, line in enumerate(text.splitlines(), 1):
             if unsafe.search(line):
                 errors.append(
-                    f"line {number}: optional CI variable {name} must use an explicit default"
+                    f"line {number}: optional CI variable {name} must use "
+                    "an explicit default"
                 )
-    fixture = "set -u\nf(){ local n=$1 out=\"$n/x\"; :; }\n"
+    fixture = (
+        "set -u\n"
+        "bad_fixture() {\n"
+        "  local n=$1 out=\"$n/x\"\n"
+        "}\n"
+    )
     fixture_errors = _multi_local_assignment_errors(fixture)
     if not fixture_errors:
-        errors.append("static checker self-test failed to reject same-statement local expansion")
+        errors.append(
+            "static checker self-test failed to reject same-statement local expansion"
+        )
     return {
         "schema_version": "senex-h011-shell-harness-audit-v1",
         "status": "PASS" if not errors else "FAIL",
