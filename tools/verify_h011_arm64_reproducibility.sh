@@ -401,11 +401,26 @@ else
   die "PYTEST_PRESENT_IN_RUNTIME_IMAGE"
 fi
 
+docker run --rm \
+  --platform linux/arm64 \
+  -v "$RESULTS:/app/polymarket/results" \
+  -e SENECIO_CODE_SHA="$HEAD_SHA" \
+  "$IMAGE" \
+  python3 /app/polymarket/h011_v3_runtime.py \
+    --synthetic-publish \
+    --run-id arm64-baseline-run \
+    --scan-id arm64-baseline-scan \
+  > "$EVIDENCE/synthetic-publish.log" 2>&1 \
+  || die "SYNTHETIC_BASELINE_PUBLISH_FAILED"
+[[ -s "$EVIDENCE/synthetic-publish.log" ]] \
+  || die "SYNTHETIC_BASELINE_EVIDENCE_MISSING"
+
 docker run -d \
   --platform linux/arm64 \
   --name "$CONTAINER" \
   -p 127.0.0.1:18080:8080 \
   -e H011_ORDERS_ENABLED=false \
+  -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
   -e H011_RESULTS_DIR=/app/polymarket/results \
   -e SENECIO_CODE_SHA="$HEAD_SHA" \
   -e PORT=8080 \
@@ -419,7 +434,7 @@ if grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\[::\]):18080([[:space:]]|$)' "$EVIDENCE
   die "PUBLIC_18080_LISTENER"
 fi
 
-deadline=$((SECONDS + 1200))
+deadline=$((SECONDS + 300))
 ready="false"
 while (( SECONDS < deadline )); do
   if curl -fsS "$BASE_URL/readyz" \
@@ -445,12 +460,18 @@ done
 cp "$EVIDENCE/api_v3_integrity.json" "$EVIDENCE/integrity-before.json"
 cp "$EVIDENCE/api_v3_replay.json" "$EVIDENCE/replay-before.json"
 pre_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-before.json")"
+[[ "$pre_seq" =~ ^[0-9]+$ ]] \
+  || die "PRE_RESTART_RAW_SEQUENCE_MISSING"
 pre_artifact="$(jq -r '.raw_chain.artifact_name' "$EVIDENCE/integrity-before.json")"
 pre_sha="$(jq -r '.raw_chain.artifact_sha256' "$EVIDENCE/integrity-before.json")"
 [[ -n "$pre_artifact" && "$pre_artifact" != "null" ]] \
   || die "PRE_RESTART_RAW_ARTIFACT_MISSING"
 [[ -n "$pre_sha" && "$pre_sha" != "null" ]] \
   || die "PRE_RESTART_RAW_SHA_MISSING"
+jq -e \
+  '.raw_chain.run_id=="arm64-baseline-run" and .raw_chain.scan_id=="arm64-baseline-scan"' \
+  "$EVIDENCE/integrity-before.json" >/dev/null \
+  || die "SYNTHETIC_BASELINE_IDENTITY_MISMATCH"
 sha256sum "$RESULTS/h011_v3/raw_chain_v1/$pre_artifact" \
   > "$EVIDENCE/pre-tip.sha256"
 [[ "$(awk '{print $1}' "$EVIDENCE/pre-tip.sha256")" == "$pre_sha" ]] \
@@ -464,7 +485,7 @@ jq -e '.Running==false and .OOMKilled==false and .ExitCode==0' \
   || die "GRACEFUL_SHUTDOWN_STATE_FAILED"
 docker start "$CONTAINER" > "$EVIDENCE/docker-start.txt"
 
-deadline=$((SECONDS + 1200))
+deadline=$((SECONDS + 300))
 restarted="false"
 while (( SECONDS < deadline )); do
   if curl -fsS "$BASE_URL/api/v3/integrity" \
@@ -482,6 +503,8 @@ curl -fsS "$BASE_URL/api/v3/integrity" | jq -S . \
 curl -fsS "$BASE_URL/api/v3/replay" | jq -S . \
   > "$EVIDENCE/replay-after.json"
 post_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-after.json")"
+[[ "$post_seq" =~ ^[0-9]+$ ]] \
+  || die "POST_RESTART_RAW_SEQUENCE_MISSING"
 (( post_seq >= pre_seq )) || die "RAW_CHAIN_SEQUENCE_REGRESSION"
 sha256sum "$RESULTS/h011_v3/raw_chain_v1/$pre_artifact" \
   > "$EVIDENCE/post-tip.sha256"

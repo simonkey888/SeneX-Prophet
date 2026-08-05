@@ -16,6 +16,13 @@ REQUIRED_MARKERS = (
     "write_result()",
     "--self-test",
     "--controlled-failure",
+    "--synthetic-publish",
+    "--run-id arm64-baseline-run",
+    "--scan-id arm64-baseline-scan",
+    "H011_RUNTIME_DIAGNOSTIC_ONLY=true",
+    "PRE_RESTART_RAW_SEQUENCE_MISSING",
+    "POST_RESTART_RAW_SEQUENCE_MISSING",
+    "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",
 )
 OPTIONAL_CI_VARIABLES = (
     "GITHUB_RUN_ID",

@@ -51,3 +51,11 @@ H-011 filtering is isolated in
 `polymarket/Dockerfile.h011-v3.dockerignore`. The repository root has no
 restrictive `.dockerignore`, so the independent root Dockerfile retains its
 required `senecio_polymarket/**` context.
+## Deterministic runtime baseline
+
+The ARM64 runtime gate publishes a fixed synthetic committed scan into the
+shared results volume before starting the service. The service then runs with
+`H011_RUNTIME_DIAGNOSTIC_ONLY=true`, so endpoint, shutdown and restart/replay
+checks do not depend on current Polymarket network state. Both pre- and
+post-restart raw-chain sequences must be decimal integers, and the committed
+baseline identity must match the fixed run and scan IDs.
