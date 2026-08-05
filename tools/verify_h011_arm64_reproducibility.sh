@@ -83,7 +83,9 @@ inspect_oci(){
 }
 
 build_once(){
-  local n=$1 builder="senex-repro-${n}-${GITHUB_RUN_ID:-local}" archive="$WORK/build-${n}.oci.tar"
+  local n=$1
+  local builder="senex-repro-${n}-${GITHUB_RUN_ID:-local}"
+  local archive="$WORK/build-${n}.oci.tar"
   docker buildx create --name "$builder" --driver docker-container --use >/dev/null
   docker buildx inspect --builder "$builder" --bootstrap > "$EVIDENCE/build-${n}-builder.txt"
   docker buildx build --builder "$builder" --no-cache --platform linux/arm64 \
