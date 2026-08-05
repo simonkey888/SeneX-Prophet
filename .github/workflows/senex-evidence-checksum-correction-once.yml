@@ -31,48 +31,47 @@ jobs:
 
           script=Path('tools/verify_h011_arm64_reproducibility.sh')
           text=script.read_text()
-          old='''  find "$EVIDENCE" -type f ! -name SHA256SUMS -print0 \\
-            | sort -z | xargs -0 sha256sum > "$EVIDENCE/SHA256SUMS.tmp" 2>/dev/null || true
-            if [[ -f "$EVIDENCE/SHA256SUMS.tmp" ]]; then
-              mv "$EVIDENCE/SHA256SUMS.tmp" "$EVIDENCE/SHA256SUMS"
-            fi
-          '''
-          new='''  (
-              cd "$EVIDENCE"
-              find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.tmp -print0 \\
-                | sort -z | xargs -0 sha256sum > SHA256SUMS.tmp
-              mv SHA256SUMS.tmp SHA256SUMS
-            ) || true
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one checksum block, found {text.count(old)}')
-          script.write_text(text.replace(old,new))
+          start_marker='  find "$EVIDENCE" -type f ! -name SHA256SUMS -print0'
+          end_marker='  RESULT_WRITTEN="1"\n'
+          start=text.find(start_marker)
+          end=text.find(end_marker,start)
+          if start < 0 or end < 0:
+              raise SystemExit(f'checksum block boundaries missing: start={start} end={end}')
+          if text.find(start_marker,start+1) >= 0:
+              raise SystemExit('checksum start marker is ambiguous')
+          replacement=(
+              '  (\n'
+              '    cd "$EVIDENCE"\n'
+              '    find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.tmp -print0 \\\n'
+              '      | sort -z | xargs -0 sha256sum > SHA256SUMS.tmp\n'
+              '    mv SHA256SUMS.tmp SHA256SUMS\n'
+              '  ) || true\n'
+          )
+          script.write_text(text[:start]+replacement+text[end:])
 
           workflow=Path('.github/workflows/h011-arm64-reproducibility.yml')
           text=workflow.read_text()
-          first='''          PY
-
-                - name: Register ARM64 emulation
-          '''
-          first_new='''          PY
-                (cd "$evidence/harness-self-test" && sha256sum -c SHA256SUMS)
-
-                - name: Register ARM64 emulation
-          '''
+          first='          PY\n\n      - name: Register ARM64 emulation\n'
+          first_new=(
+              '          PY\n'
+              '          (cd "$evidence/harness-self-test" && sha256sum -c SHA256SUMS)\n'
+              '\n'
+              '      - name: Register ARM64 emulation\n'
+          )
           if text.count(first) != 1:
               raise SystemExit(f'expected one self-test insertion point, found {text.count(first)}')
           text=text.replace(first,first_new)
-          second='''      - name: Upload checksummed evidence
-          '''
-          second_new='''      - name: Verify portable evidence checksums
-                shell: bash
-                run: |
-                  set -euo pipefail
-                  cd "$RUNNER_TEMP/senex-arm64-evidence"
-                  sha256sum -c SHA256SUMS
-
-                - name: Upload checksummed evidence
-          '''
+          second='      - name: Upload checksummed evidence\n'
+          second_new=(
+              '      - name: Verify portable evidence checksums\n'
+              '        shell: bash\n'
+              '        run: |\n'
+              '          set -euo pipefail\n'
+              '          cd "$RUNNER_TEMP/senex-arm64-evidence"\n'
+              '          sha256sum -c SHA256SUMS\n'
+              '\n'
+              '      - name: Upload checksummed evidence\n'
+          )
           if text.count(second) != 1:
               raise SystemExit(f'expected one upload insertion point, found {text.count(second)}')
           workflow.write_text(text.replace(second,second_new))
@@ -84,6 +83,11 @@ jobs:
           bash tools/verify_h011_arm64_reproducibility.sh \
             --self-test /tmp/harness-self-test
           (cd /tmp/harness-self-test && sha256sum -c SHA256SUMS)
+          python3 - <<'PY'
+          import pathlib
+          import yaml
+          yaml.safe_load(pathlib.Path('.github/workflows/h011-arm64-reproducibility.yml').read_text())
+          PY
 
       - name: Remove temporary workflow and regenerate governance
         shell: bash
