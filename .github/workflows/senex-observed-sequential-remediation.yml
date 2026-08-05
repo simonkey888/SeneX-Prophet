@@ -1,0 +1,163 @@
+name: SENEX Observed Sequential Remediation
+
+on:
+  push:
+    branches:
+      - ops/senex-observed-sequential-remediation-20260805
+    paths:
+      - ".github/workflows/senex-observed-sequential-remediation.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact transport head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Reconstruct and verify correction script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            audit/observed_sequential_correction.part00 \
+            audit/observed_sequential_correction.part01 \
+            audit/observed_sequential_correction.part02 \
+            | base64 --decode > /tmp/apply_correction.py.gz
+          echo "08de2b9cd20f9c9d894016a0ec915235f4a672b4c1c3cfcfb9bac45375ffc6ee  /tmp/apply_correction.py.gz" | sha256sum -c -
+          gzip -dc /tmp/apply_correction.py.gz > /tmp/apply_correction.py
+          echo "0f18a7fcdb85c1276d5f6e03f21e3f49a5961b173ceef8f887b2327b2b1edb3e  /tmp/apply_correction.py" | sha256sum -c -
+          python -m py_compile /tmp/apply_correction.py
+
+      - name: Verify exact target head and switch to isolated work branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feat/senex-paper-execution-truth-v1
+          test "$(git rev-parse origin/feat/senex-paper-execution-truth-v1)" = "86e9fd5e402a7beeda966eb839a8f27d16937c30"
+          test "$(git rev-parse origin/feat/senex-paper-execution-truth-v1^{tree})" = "c6c09b3ea3f69e5c1d5cb2060bc8fc87213e358c"
+          git checkout -B remediation 86e9fd5e402a7beeda966eb839a8f27d16937c30
+          test -z "$(git status --short)"
+
+      - name: Apply bounded AUD correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/apply_correction.py
+          python -m compileall -q polymarket/paper polymarket/monitoring tools tests/paper_trial tests/monitoring
+          git diff --check
+          python - <<'PY'
+          import subprocess
+          allowed = {
+              'polymarket/paper/execution.py',
+              'polymarket/paper/engine.py',
+              'polymarket/paper/portfolio.py',
+              'polymarket/paper/report.py',
+              'polymarket/paper/trial_runner.py',
+              'polymarket/paper/fees.py',
+              'polymarket/monitoring/site.py',
+              'tools/build_execution_truth_artifacts.py',
+              'tests/paper_trial/test_engine_reporting_and_safety.py',
+              'tests/paper_trial/test_execution_truth_artifact_builder.py',
+              'tests/monitoring/test_monitoring_truth.py',
+          }
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          unexpected = sorted(changed - allowed)
+          assert changed, 'correction produced no changes'
+          assert not unexpected, unexpected
+          print({'changed_before_governance': sorted(changed)})
+          PY
+
+      - name: Install dependencies and regenerate deterministic governance artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q -r polymarket/requirements-h011-v3.txt
+          for pass in 1 2 3; do
+            python tools/verify_repository_contract.py --generate > "/tmp/generate-${pass}.json"
+          done
+          git add governance/component_registry.json governance/repository_manifest.json governance/repository_manifest.json.sha256
+          cp governance/repository_manifest.json /tmp/manifest-one.json
+          python tools/verify_repository_contract.py --generate > /tmp/generate-determinism.json
+          cmp /tmp/manifest-one.json governance/repository_manifest.json
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Focused runner, paper, monitoring and governance tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q tests/paper_trial tests/monitoring tests/governance
+
+      - name: Global regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q
+
+      - name: Commit exact remediation and verify repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
+          python - <<'PY'
+          import subprocess
+          allowed = {
+              'polymarket/paper/execution.py',
+              'polymarket/paper/engine.py',
+              'polymarket/paper/portfolio.py',
+              'polymarket/paper/report.py',
+              'polymarket/paper/trial_runner.py',
+              'polymarket/paper/fees.py',
+              'polymarket/monitoring/site.py',
+              'tools/build_execution_truth_artifacts.py',
+              'tests/paper_trial/test_engine_reporting_and_safety.py',
+              'tests/paper_trial/test_execution_truth_artifact_builder.py',
+              'tests/monitoring/test_monitoring_truth.py',
+              'governance/component_registry.json',
+              'governance/repository_manifest.json',
+              'governance/repository_manifest.json.sha256',
+          }
+          changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines())
+          unexpected = sorted(changed - allowed)
+          assert not unexpected, unexpected
+          print({'final_changed_paths': sorted(changed), 'count': len(changed)})
+          PY
+          git config user.name "SENEX ARQ"
+          git config user.email "simonkey888@users.noreply.github.com"
+          git commit -m "fix(paper): wire observed sequential execution"
+          test "$(git rev-parse HEAD^)" = "86e9fd5e402a7beeda966eb839a8f27d16937c30"
+          test "$(git rev-list --count 86e9fd5e402a7beeda966eb839a8f27d16937c30..HEAD)" = "1"
+          python tools/verify_repository_contract.py \
+            --base 00f018484f6e39f4cc7c518df02e1f1b0ab97df8 \
+            --head "$(git rev-parse HEAD)" \
+            --report /tmp/repository-contract-remediation.json
+          python - <<'PY'
+          import json
+          report = json.load(open('/tmp/repository-contract-remediation.json'))
+          assert report['pass'] is True, report
+          assert len(report['gates']) == 28, len(report['gates'])
+          assert all(g['status'] == 'PASS' for g in report['gates']), report
+          PY
+
+      - name: Fast-forward PR branch only after all gates pass
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          basic="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${basic}" \
+            push --porcelain origin HEAD:refs/heads/feat/senex-paper-execution-truth-v1
