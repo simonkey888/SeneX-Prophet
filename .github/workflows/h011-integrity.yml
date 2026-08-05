@@ -48,6 +48,7 @@ jobs:
           python tools/verify_h011_dependency_lock.py \
             --runtime polymarket/requirements-h011-v3-runtime.txt \
             --test polymarket/requirements-h011-v3-test.txt \
+            --ci polymarket/requirements-h011-v3.txt \
             --output /tmp/senex-paper-only/dependency-lock.json
           python tools/verify_paper_only_repository.py \
             --repo-root . \
