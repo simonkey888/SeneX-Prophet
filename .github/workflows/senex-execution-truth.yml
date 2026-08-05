@@ -79,6 +79,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git reset --hard "${EXACT_SHA}"
+          git clean -fdx
           cp governance/repository_manifest.json /tmp/manifest.committed
           cp governance/component_registry.json /tmp/registry.committed
           cp governance/migration_map.json /tmp/migration.committed
