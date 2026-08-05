@@ -51,15 +51,23 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def iter_corpus_files(roots: Iterable[Path]) -> list[dict[str, Any]]:
+def iter_corpus_files(roots: Iterable[tuple[Path, bool]]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for root in roots:
+    for root, external_root in roots:
         if not root.exists():
             continue
         paths = [root] if root.is_file() else sorted(path for path in root.rglob("*") if path.is_file())
         for path in paths:
             lowered = path.name.lower()
-            if not any(lowered.endswith(suffix) for suffix in CORPUS_SUFFIXES):
+            if external_root:
+                eligible = any(lowered.endswith(suffix) for suffix in CORPUS_SUFFIXES)
+            else:
+                eligible = (
+                    (lowered.startswith("raw_scan_") and lowered.endswith(".events.jsonl.gz"))
+                    or (lowered.startswith("manifest_") and lowered.endswith(".json"))
+                    or (lowered.startswith("discovery_") and lowered.endswith(".json.gz"))
+                )
+            if not eligible:
                 continue
             records.append(
                 {
@@ -148,17 +156,20 @@ def main() -> int:
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
 
-    roots = [repo_root / "polymarket/results/h011_v3/raw_chain_v1", repo_root / "polymarket/results/v3"]
-    roots.extend(Path(item).resolve() for item in args.corpus_root)
+    roots: list[tuple[Path, bool]] = [
+        (repo_root / "polymarket/results/h011_v3/raw_chain_v1", False),
+        (repo_root / "polymarket/results/v3", False),
+    ]
+    roots.extend((Path(item).resolve(), True) for item in args.corpus_root)
     env_roots = [item for item in os.environ.get("SENEX_HISTORICAL_CORPUS_ROOTS", "").split(os.pathsep) if item]
-    roots.extend(Path(item).resolve() for item in env_roots)
+    roots.extend((Path(item).resolve(), True) for item in env_roots)
 
     corpus_files = iter_corpus_files(roots)
     corpus_digest = hashlib.sha256(canonical_json(corpus_files).encode("utf-8")).hexdigest()
     inventory = {
         "source_sha": args.source_sha,
         "captured_at": datetime.now(timezone.utc).isoformat(),
-        "roots": [str(path) for path in roots],
+        "roots": [{"path": str(path), "external": external} for path, external in roots],
         "file_count": len(corpus_files),
         "total_bytes": sum(item["size"] for item in corpus_files),
         "inventory_sha256": corpus_digest,
