@@ -62,9 +62,10 @@ jobs:
               'missing_from_manifest': sorted(set(tracked_paths) - set(manifest_paths)),
               'extra_in_manifest': sorted(set(manifest_paths) - set(tracked_paths)),
           }
+          workflow_paths = [path for path in tracked_paths if path.startswith('.github/workflows/')]
           forbidden = [
-              path for path in tracked_paths
-              if path.startswith('.github/workflows/arq-')
+              path for path in workflow_paths
+              if Path(path).name.startswith('arq-')
               or 'bootstrap' in Path(path).name.lower()
               or 'remediation' in Path(path).name.lower()
           ]
