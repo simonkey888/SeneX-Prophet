@@ -160,14 +160,15 @@ run_self_test() {
   python3 "$ROOT/tools/verify_h011_shell_harness.py" \
     --script "$ROOT/tools/verify_h011_arm64_reproducibility.sh" \
     --output "$EVIDENCE/harness-static-audit.json"
-  set +e
-  env -i \
+  if env -i \
     PATH="$PATH" \
     HOME="${HOME:-/tmp}" \
     bash "$ROOT/tools/verify_h011_arm64_reproducibility.sh" \
-      --controlled-failure "$nested"
-  child_rc=$?
-  set -e
+      --controlled-failure "$nested"; then
+  child_rc="0"
+  else
+    child_rc=$?
+  fi
   [[ "$child_rc" -eq 97 ]] || die "HARNESS_SELF_TEST_WRONG_CHILD_RC_${child_rc}"
   [[ -d "$nested" ]] || die "ARGUMENT_AND_OUTPUT_DIRECTORY_INITIALIZATION_FAILED"
   [[ -f "$nested/result.env" ]] || die "CONTROLLED_FAILURE_RESULT_ENV_MISSING"
