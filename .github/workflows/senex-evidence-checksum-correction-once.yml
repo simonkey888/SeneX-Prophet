@@ -1,0 +1,114 @@
+name: SENEX Evidence Checksum Correction Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-reproducible-runtime-v2
+    paths:
+      - .github/workflows/senex-evidence-checksum-correction-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  correct-regenerate-and-self-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-reproducible-runtime-v2
+          persist-credentials: true
+
+      - name: Repair portable checksum manifest and workflow enforcement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script=Path('tools/verify_h011_arm64_reproducibility.sh')
+          text=script.read_text()
+          old='''  find "$EVIDENCE" -type f ! -name SHA256SUMS -print0 \\
+            | sort -z | xargs -0 sha256sum > "$EVIDENCE/SHA256SUMS.tmp" 2>/dev/null || true
+            if [[ -f "$EVIDENCE/SHA256SUMS.tmp" ]]; then
+              mv "$EVIDENCE/SHA256SUMS.tmp" "$EVIDENCE/SHA256SUMS"
+            fi
+          '''
+          new='''  (
+              cd "$EVIDENCE"
+              find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.tmp -print0 \\
+                | sort -z | xargs -0 sha256sum > SHA256SUMS.tmp
+              mv SHA256SUMS.tmp SHA256SUMS
+            ) || true
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one checksum block, found {text.count(old)}')
+          script.write_text(text.replace(old,new))
+
+          workflow=Path('.github/workflows/h011-arm64-reproducibility.yml')
+          text=workflow.read_text()
+          first='''          PY
+
+                - name: Register ARM64 emulation
+          '''
+          first_new='''          PY
+                (cd "$evidence/harness-self-test" && sha256sum -c SHA256SUMS)
+
+                - name: Register ARM64 emulation
+          '''
+          if text.count(first) != 1:
+              raise SystemExit(f'expected one self-test insertion point, found {text.count(first)}')
+          text=text.replace(first,first_new)
+          second='''      - name: Upload checksummed evidence
+          '''
+          second_new='''      - name: Verify portable evidence checksums
+                shell: bash
+                run: |
+                  set -euo pipefail
+                  cd "$RUNNER_TEMP/senex-arm64-evidence"
+                  sha256sum -c SHA256SUMS
+
+                - name: Upload checksummed evidence
+          '''
+          if text.count(second) != 1:
+              raise SystemExit(f'expected one upload insertion point, found {text.count(second)}')
+          workflow.write_text(text.replace(second,second_new))
+          PY
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python3 tools/verify_h011_shell_harness.py \
+            --script tools/verify_h011_arm64_reproducibility.sh \
+            --output /tmp/harness-static.json
+          bash tools/verify_h011_arm64_reproducibility.sh \
+            --self-test /tmp/harness-self-test
+          (cd /tmp/harness-self-test && sha256sum -c SHA256SUMS)
+
+      - name: Remove temporary workflow and regenerate governance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/senex-evidence-checksum-correction-once.yml
+          test -z "$(git ls-files .github/workflows/senex-evidence-checksum-correction-once.yml)"
+          python3 tools/verify_repository_contract.py --generate \
+            > /tmp/senex-governance-generation.json
+          git add \
+            tools/verify_h011_arm64_reproducibility.sh \
+            .github/workflows/h011-arm64-reproducibility.yml \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          git diff --check --cached
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Commit portable evidence tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'test(senex): enforce portable evidence checksums'
+          git push origin HEAD:fix/senex-arm64-reproducible-runtime-v2
