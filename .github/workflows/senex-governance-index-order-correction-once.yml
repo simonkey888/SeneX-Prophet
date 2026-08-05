@@ -1,0 +1,67 @@
+name: SENEX Governance Index Order Correction Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-reproducible-runtime-v2
+    paths:
+      - .github/workflows/senex-governance-index-order-correction-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-and-self-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-reproducible-runtime-v2
+          persist-credentials: true
+
+      - name: Remove only temporary workflow before generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(git ls-files polymarket/Dockerfile.h011-v3.dockerignore)"
+          git rm .github/workflows/senex-governance-index-order-correction-once.yml
+          test -z "$(git ls-files .github/workflows/senex-governance-index-order-correction-once.yml)"
+
+      - name: Regenerate from the actual final tracked set
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked_before="$(git ls-files | wc -l | tr -d ' ')"
+          python3 tools/verify_repository_contract.py --generate \
+            > /tmp/senex-governance-generation.json
+          python3 - "$tracked_before" <<'PY'
+          import json
+          import pathlib
+          import sys
+          manifest=json.loads(pathlib.Path('governance/repository_manifest.json').read_text())
+          tracked=int(sys.argv[1])
+          assert manifest['files_tracked_total'] == tracked, (manifest['files_tracked_total'], tracked)
+          paths={row['path'] for row in manifest['files']}
+          assert 'polymarket/Dockerfile.h011-v3.dockerignore' in paths
+          assert '.github/workflows/senex-governance-index-order-correction-once.yml' not in paths
+          PY
+          git add \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          git diff --check --cached
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Commit corrected canonical inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'governance(senex): include H-011 Docker context control'
+          git push origin HEAD:fix/senex-arm64-reproducible-runtime-v2
