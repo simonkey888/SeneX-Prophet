@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 from polymarket.clob_readonly import simulate_complete_set
 from polymarket.paper.broker import PublicOrderBook, SimulatedBroker
 from polymarket.paper.engine import PaperEngine
+from polymarket.paper.fees import FeeModelError, FeeSchedule, calculate_fee
 from polymarket.paper.models import PaperTrialSummary, deterministic_id, sha256_json
 from polymarket.paper.portfolio import AppendOnlyJournal, PaperPortfolio
 from polymarket.paper.report import REQUIRED_ARTIFACTS, TrialArtifactWriter, verify_artifact_bundle
@@ -109,7 +110,7 @@ class TrialConfig:
     poll_seconds: int = 15
     max_recent_windows: int = 36
     requested_shares: float = 2.0
-    fee_bps: float = 0.0
+    fee_bps: float = 0.0  # fixture compatibility only; observed fees come from market info
     virtual_starting_equity_usd: float = 10_000.0
     max_order_notional_pct: float = 1.0
     max_gross_exposure_pct: float = 5.0
@@ -243,6 +244,11 @@ class PublicDataClient:
         evidence_hash = self.evidence[-1]["sha256"]
         return payload, evidence_hash
 
+    def market_info(self, condition_id: str) -> tuple[dict[str, Any], str]:
+        payload = self.get_json(f"{CLOB_BASE}/clob-markets/{condition_id}")
+        evidence_hash = self.evidence[-1]["sha256"]
+        return payload, evidence_hash
+
 
 def classify_book_failure(*, exc: Exception, market: dict[str, Any], now_epoch: int) -> str:
     status_code = getattr(exc, "status_code", None)
@@ -269,12 +275,12 @@ def _parse_list(value: Any) -> list[str]:
     return []
 
 
-def _fixture_observations(timestamp_utc: str) -> list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, str]]]:
+def _fixture_observations(timestamp_utc: str) -> list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, PublicOrderBook], dict[str, str], dict[str, FeeSchedule]]]:
     market_id = "fixture-btc-updown-5m"
     tokens = ["fixture-yes", "fixture-no"]
     payloads = {
-        tokens[0]: {"asset_id": tokens[0], "bids": [{"price": "0.45", "size": "20"}], "asks": [{"price": "0.46", "size": "20"}]},
-        tokens[1]: {"asset_id": tokens[1], "bids": [{"price": "0.45", "size": "20"}], "asks": [{"price": "0.46", "size": "20"}]},
+        tokens[0]: {"asset_id": tokens[0], "timestamp": timestamp_utc, "bids": [{"price": "0.45", "size": "20"}], "asks": [{"price": "0.46", "size": "20"}]},
+        tokens[1]: {"asset_id": tokens[1], "timestamp": timestamp_utc, "bids": [{"price": "0.45", "size": "20"}], "asks": [{"price": "0.46", "size": "20"}]},
     }
     books = {
         token: PublicOrderBook.from_payload(
@@ -283,22 +289,39 @@ def _fixture_observations(timestamp_utc: str) -> list[tuple[dict[str, Any], dict
             timestamp_utc=timestamp_utc,
             payload=payload,
             source_evidence_hash=sha256_json(payload),
+            fixture_timestamp_utc=timestamp_utc,
         )
         for token, payload in payloads.items()
     }
-    snapshot = simulate_complete_set(payloads[tokens[0]], payloads[tokens[1]], 2.0, 0.0)
+    second_books = {
+        token: PublicOrderBook.from_payload(
+            market_id=market_id,
+            token_id=token,
+            timestamp_utc=timestamp_utc,
+            payload={**payload, "asks": [{"price": "0.461", "size": "20"}]},
+            source_evidence_hash=sha256_json({**payload, "second": True}),
+            fixture_timestamp_utc=timestamp_utc,
+        )
+        for token, payload in payloads.items()
+    }
+    schedule = FeeSchedule.deterministic_fixture(condition_id=market_id, fee_rate="0.07", enabled=True, itode=True)
+    schedules = {token: schedule for token in tokens}
+    fee_total = sum(float(calculate_fee(shares="2", price="0.46", schedule=schedule).fee_usd) for _ in tokens)
+    gross_edge = 2.0 * (1.0 - 0.46 - 0.46)
     record = {
         "market_id": market_id,
         "condition_id": market_id,
         "token_ids": tokens,
-        "shadow_execution": {"status": "SHADOW_EXECUTABLE", "net_edge": snapshot.net_edge_usdc},
+        "shadow_execution": {"status": "SHADOW_EXECUTABLE", "net_edge": gross_edge - fee_total},
         "evidence_verified": True,
         "raw_chain_verified": True,
         "replay_verified": True,
         "regime_known": True,
+        "fee_model_verified": True,
         "window_slug": market_id,
+        "window_end_epoch": None,
     }
-    return [(record, books, {tokens[0]: "UP", tokens[1]: "DOWN"})]
+    return [(record, books, second_books, {tokens[0]: "UP", tokens[1]: "DOWN"}, schedules)]
 
 
 def run_trial(
@@ -343,6 +366,7 @@ def run_trial(
     snapshots: list[dict[str, Any]] = []
     risk_decisions: list[dict[str, Any]] = []
     abstentions: list[dict[str, Any]] = []
+    sequential_executions: list[dict[str, Any]] = []
     observed_windows: set[str] = set()
     gamma_discovered_windows: set[str] = set()
     expected_closed_no_book_windows: set[str] = set()
@@ -356,7 +380,7 @@ def run_trial(
     try:
         while True:
             now_utc = runtime_clock.now_utc()
-            observations: list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, str]]] = []
+            observations: list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, PublicOrderBook] | None, dict[str, str], dict[str, FeeSchedule]]] = []
             if fixture:
                 observations = _fixture_observations(now_utc)
             else:
@@ -397,6 +421,34 @@ def run_trial(
                         })
                         continue
                     market_id = str(market.get("conditionId") or market.get("condition_id") or market.get("id") or market.get("_window_slug"))
+                    try:
+                        market_info_payload, market_info_hash = client.market_info(market_id)
+                        fee_schedule = FeeSchedule.from_market_info(
+                            condition_id=market_id,
+                            payload=market_info_payload,
+                            source_evidence_hash=market_info_hash,
+                        )
+                    except (AttributeError, PublicSourceError, FeeModelError) as exc:
+                        unexpected_source_failures += 1
+                        abstentions.append({
+                            "timestamp_utc": now_utc,
+                            "market_id": market_id,
+                            "reason": "FEE_MODEL_UNVERIFIED",
+                            "detail": getattr(exc, "reason", type(exc).__name__),
+                            "window_slug": window_slug,
+                        })
+                        continue
+                    if fee_schedule.fee_enabled and not fee_schedule.verified:
+                        abstentions.append({
+                            "timestamp_utc": now_utc,
+                            "market_id": market_id,
+                            "reason": "FEE_MODEL_UNVERIFIED",
+                            "detail": fee_schedule.conformance_reason,
+                            "fee_schedule_hash": fee_schedule.raw_schedule_hash,
+                            "window_slug": window_slug,
+                        })
+                        continue
+                    fee_schedules = {token: fee_schedule for token in tokens}
                     books: dict[str, PublicOrderBook] = {}
                     payloads: dict[str, dict[str, Any]] = {}
                     failed = False
@@ -448,28 +500,44 @@ def run_trial(
                             "window_slug": window_slug,
                         })
                         continue
-                    snapshot = simulate_complete_set(payloads[tokens[0]], payloads[tokens[1]], config.requested_shares, config.fee_bps / 10_000.0)
+                    snapshot = simulate_complete_set(payloads[tokens[0]], payloads[tokens[1]], config.requested_shares, 0.0)
+                    fee_total = sum(
+                        float(calculate_fee(
+                            shares=str(config.requested_shares),
+                            price=str(books[token].asks[0][0]),
+                            schedule=fee_schedules[token],
+                        ).fee_usd)
+                        for token in tokens
+                    )
+                    net_edge = snapshot.net_edge_usdc - fee_total
                     record = {
                         "market_id": market_id,
                         "condition_id": market_id,
                         "token_ids": tokens,
                         "shadow_execution": {
-                            "status": "SHADOW_EXECUTABLE" if snapshot.fully_fillable and snapshot.net_edge_usdc > 0 else "REJECTED",
-                            "net_edge": snapshot.net_edge_usdc,
+                            "status": "SHADOW_EXECUTABLE" if snapshot.fully_fillable and net_edge > 0 else "REJECTED",
+                            "net_edge": net_edge,
                             "fully_fillable": snapshot.fully_fillable,
+                            "fee_total_usd": fee_total,
+                            "fee_model_version": fee_schedule.model_version,
                         },
                         "evidence_verified": True,
                         "raw_chain_verified": True,
                         "replay_verified": True,
                         "regime_known": True,
+                        "fee_model_verified": True,
                         "window_slug": market.get("_window_slug"),
                         "window_epoch": market.get("_window_epoch"),
+                        "window_end_epoch": market.get("_window_end_epoch"),
                     }
                     outcome_map = {token: (outcomes[index] if index < len(outcomes) else f"OUTCOME_{index}") for index, token in enumerate(tokens)}
-                    observations.append((record, books, outcome_map))
+                    # Observed sequential execution requires a later snapshot. The
+                    # first observation remains valid evidence but cannot fabricate
+                    # second-leg execution from the same book.
+                    observations.append((record, books, None, outcome_map, fee_schedules))
             if not fixture and not observations and not markets:
                 abstentions.append({"timestamp_utc": now_utc, "market_id": None, "reason": "NO_PUBLIC_BTC_WINDOW_AVAILABLE"})
-            for record, books, outcomes in observations:
+            for record, books, second_books, outcomes, fee_schedules in observations:
                 window = str(record.get("window_slug") or record.get("market_id"))
                 observed_windows.add(window)
                 valid_order_book_keys.update(f"{window}:{token}" for token in books)
@@ -484,12 +552,21 @@ def run_trial(
                     config_sha=config_sha,
                     requested_shares=config.requested_shares,
                     max_notional_per_leg_usd=per_leg_limit,
+                    fee_schedules=fee_schedules,
+                    second_leg_books=second_books,
+                    second_timestamp_utc=now_utc if second_books is not None else None,
+                    configured_transport_delay_ms=500,
+                    maximum_pair_skew_ms=1000.0,
+                    window_end_epoch=record.get("window_end_epoch"),
+                    second_epoch=runtime_clock.epoch() if second_books is not None else None,
                 )
                 decisions.append(result.decision.to_dict())
                 orders.extend(intent.to_dict() for intent in result.intents)
                 if result.risk_decision is not None:
                     risk_decisions.append(result.risk_decision.to_dict())
                 fills.extend(fill.to_dict() for fill in result.fills)
+                if result.sequential_execution is not None:
+                    sequential_executions.append(result.sequential_execution.to_dict())
                 for reason in result.abstention_reasons:
                     abstentions.append({
                         "timestamp_utc": now_utc,
@@ -505,12 +582,21 @@ def run_trial(
                 for token, book in books.items():
                     if book.bids and book.asks:
                         prices[token] = (book.bids[0][0] + book.asks[0][0]) / 2.0
+                for token_id, mark_price in prices.items():
+                    if token_id in portfolio.positions and portfolio.positions[token_id].quantity > 0:
+                        portfolio.mark_position(
+                            token_id=token_id,
+                            price=mark_price,
+                            record=True,
+                            timestamp_utc=now_utc,
+                            source_evidence_hash=result.decision.source_evidence_hash,
+                        )
                 snapshots.append(portfolio.snapshot(
                     timestamp_utc=now_utc,
                     code_sha=sha,
                     config_sha=config_sha,
                     source_evidence_hash=result.decision.source_evidence_hash,
-                    prices=prices,
+                    prices={},
                 ).to_dict())
             elapsed_seconds = runtime_clock.monotonic() - started_monotonic
             if fixture or elapsed_seconds >= config.duration_minutes * 60:
@@ -610,6 +696,14 @@ def run_trial(
         real_order_network_calls=0,
         real_order_methods_reachable=0,
         wallet_private_key_dependencies=0,
+        equity_known=final_snapshot.equity_known,
+        unknown_valuation_positions=final_snapshot.unknown_valuation_positions,
+        pending_settlement_count=final_snapshot.pending_settlement_count,
+        realized_settled_pnl=final_snapshot.realized_settled_pnl,
+        marked_unsettled_pnl=final_snapshot.marked_unsettled_pnl,
+        fees_applied_usd=round(sum(float(fill["fee_usd"]) for fill in fills), 12),
+        sequential_executions=len(sequential_executions),
+        leg_risk_incidents=sum(1 for item in sequential_executions if item.get("completion_status") != "BOTH_LEGS_FILL"),
     )
     writer = TrialArtifactWriter(output_dir)
     writer.write_json("trial_manifest.json", {
@@ -628,6 +722,7 @@ def run_trial(
     writer.write_jsonl("paper_decisions.jsonl", decisions)
     writer.write_jsonl("paper_orders.jsonl", orders)
     writer.write_jsonl("paper_fills.jsonl", fills)
+    writer.write_jsonl("sequential_executions.jsonl", sequential_executions)
     # Journal already wrote portfolio_ledger.jsonl. Ensure an empty file exists.
     (output_dir / "portfolio_ledger.jsonl").touch(exist_ok=True)
     writer.write_jsonl("portfolio_snapshots.jsonl", snapshots + [final_snapshot.to_dict()])

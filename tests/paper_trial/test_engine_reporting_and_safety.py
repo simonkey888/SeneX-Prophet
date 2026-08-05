@@ -73,6 +73,7 @@ class GammaOnlyClient:
 
 class ValidBookClient(GammaOnlyClient):
     def discover_active_btc_windows(self, *, now_epoch: int) -> BtcWindowDiscovery:
+        self._now_epoch = now_epoch
         slug = f"btc-updown-5m-{(now_epoch // 300) * 300}"
         market = {
             "id": slug,
@@ -93,9 +94,14 @@ class ValidBookClient(GammaOnlyClient):
             malformed_windows=(),
         )
 
+    def market_info(self, condition_id: str):
+        payload = {"condition_id": condition_id, "fd": {"r": 0, "e": 2, "to": True}, "itode": False}
+        return payload, hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
     def book(self, token_id: str):
         payload = {
             "asset_id": token_id,
+            "timestamp": str(int(self._now_epoch * 1000)) if hasattr(self, "_now_epoch") else "1785885000000",
             "bids": [{"price": "0.45", "size": "20"}],
             "asks": [{"price": "0.46", "size": "20"}],
         }
@@ -115,6 +121,7 @@ def books():
         token: PublicOrderBook.from_payload(
             market_id="m", token_id=token, timestamp_utc=TS,
             source_evidence_hash=hashlib.sha256(token.encode()).hexdigest(),
+            fixture_timestamp_utc=TS,
             payload={"asset_id": token, "bids": [{"price": "0.45", "size": "10"}], "asks": [{"price": "0.46", "size": "10"}]},
         )
         for token in ("yes", "no")

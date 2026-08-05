@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from .broker import BrokerRejection, PublicOrderBook, SimulatedBroker
+from .execution import SequentialExecutionResult, SequentialPaperExecutor
+from .fees import FeeSchedule
 from .models import PaperDecision, PaperFill, PaperOrderIntent, PaperRiskDecision, sha256_json
 from .portfolio import PaperPortfolio
 from .risk import PaperRiskEngine
@@ -17,13 +19,22 @@ class PaperEngineResult:
     risk_decision: PaperRiskDecision | None = None
     fills: list[PaperFill] = field(default_factory=list)
     abstention_reasons: list[str] = field(default_factory=list)
+    sequential_execution: SequentialExecutionResult | None = None
 
 
 class PaperEngine:
-    def __init__(self, *, broker: SimulatedBroker, risk: PaperRiskEngine, portfolio: PaperPortfolio):
+    def __init__(
+        self,
+        *,
+        broker: SimulatedBroker,
+        risk: PaperRiskEngine,
+        portfolio: PaperPortfolio,
+        sequential_executor: SequentialPaperExecutor | None = None,
+    ):
         self.broker = broker
         self.risk = risk
         self.portfolio = portfolio
+        self.sequential_executor = sequential_executor or SequentialPaperExecutor(broker=broker)
 
     @staticmethod
     def _decision_from_h011(
@@ -58,6 +69,9 @@ class PaperEngine:
         elif record.get("regime_known") is False:
             action = "REGIME_UNKNOWN"
             reasons.append("REGIME_UNKNOWN")
+        elif record.get("fee_model_verified") is False:
+            action = "NO_TRADE"
+            reasons.append("FEE_MODEL_UNVERIFIED")
         elif status == "SHADOW_EXECUTABLE" and net_edge is not None and net_edge > 0 and len(tokens) == 2:
             action = "LONG"
             reasons.append("H011_COMPLETE_SET_EDGE")
@@ -90,17 +104,31 @@ class PaperEngine:
         config_sha: str,
         requested_shares: float,
         max_notional_per_leg_usd: float,
+        fee_schedules: Mapping[str, FeeSchedule] | None = None,
+        second_leg_books: Mapping[str, PublicOrderBook] | None = None,
+        second_timestamp_utc: str | None = None,
+        configured_transport_delay_ms: int = 500,
+        maximum_pair_skew_ms: float = 1_000.0,
+        window_end_epoch: float | None = None,
+        second_epoch: float | None = None,
     ) -> PaperEngineResult:
         evidence_hash = sha256_json({
             "record": dict(record),
-            "books": {token: {
-                "market_id": book.market_id,
-                "token_id": book.token_id,
-                "timestamp_utc": book.timestamp_utc,
-                "bids": list(book.bids),
-                "asks": list(book.asks),
-                "source_evidence_hash": book.source_evidence_hash,
-            } for token, book in sorted(books.items())},
+            "books": {
+                token: {
+                    "market_id": book.market_id,
+                    "token_id": book.token_id,
+                    "source_timestamp_utc": book.source_timestamp_utc,
+                    "received_timestamp_utc": book.received_timestamp_utc,
+                    "bids": list(book.bids),
+                    "asks": list(book.asks),
+                    "source_evidence_hash": book.source_evidence_hash,
+                }
+                for token, book in sorted(books.items())
+            },
+            "fee_schedules": {
+                token: schedule.to_evidence() for token, schedule in sorted((fee_schedules or {}).items())
+            },
         })
         decision = self._decision_from_h011(
             record=record,
@@ -117,6 +145,19 @@ class PaperEngine:
         missing = [token for token in decision.token_ids if token not in books]
         if missing:
             result.abstention_reasons.append("INVALID_BOOK")
+            return result
+        fixture_books = all(book.source_timestamp_provenance == "FIXTURE_EXPLICIT" for book in books.values())
+        if not fee_schedules and fixture_books:
+            schedule = FeeSchedule.deterministic_fixture(condition_id=decision.condition_id, fee_rate="0.07", enabled=True)
+            fee_schedules = {token: schedule for token in decision.token_ids}
+        if not fee_schedules or any(token not in fee_schedules for token in decision.token_ids):
+            result.abstention_reasons.append("FEE_MODEL_UNVERIFIED")
+            return result
+        if second_leg_books is None and fixture_books:
+            second_leg_books = books
+            second_timestamp_utc = timestamp_utc
+        if second_leg_books is None or second_timestamp_utc is None:
+            result.abstention_reasons.append("SECOND_LEG_SNAPSHOT_REQUIRED")
             return result
         intents = [
             PaperOrderIntent.build(
@@ -159,41 +200,25 @@ class PaperEngine:
         if not risk_decision.allowed:
             result.abstention_reasons.extend(risk_decision.reason_codes)
             return result
-        try:
-            proposed = [
-                self.broker.simulate(intent=intent, book=books[intent.token_id], now_utc=timestamp_utc)
-                for intent in intents
-            ]
-        except BrokerRejection as exc:
-            result.abstention_reasons.append(exc.reason)
-            return result
-        executable_shares = min(fill.filled_shares for fill in proposed)
-        if executable_shares <= 0:
-            result.abstention_reasons.append("EMPTY_LIQUIDITY")
-            return result
-        # Complete-set paper execution is applied symmetrically. If one leg is
-        # thinner, both legs are deterministically re-simulated at the common
-        # observed quantity; no fabricated liquidity and no leg imbalance.
-        common_intents = [
-            PaperOrderIntent.build(
-                decision=decision,
-                token_id=intent.token_id,
-                outcome=intent.outcome,
-                side=intent.side,
-                requested_shares=executable_shares,
-                max_notional_usd=intent.max_notional_usd,
-            )
-            for intent in intents
-        ]
-        fills = [
-            self.broker.simulate(intent=intent, book=books[intent.token_id], now_utc=timestamp_utc)
-            for intent in common_intents
-        ]
-        if any(abs(fill.filled_shares - executable_shares) > 1e-9 for fill in fills):
-            result.abstention_reasons.append("INVALID_BOOK")
-            return result
-        for fill in fills:
-            self.portfolio.apply_fill(fill)
-        result.intents = common_intents
-        result.fills = fills
+        executor = SequentialPaperExecutor(
+            broker=self.broker,
+            configured_transport_delay_ms=configured_transport_delay_ms,
+            maximum_pair_skew_ms=maximum_pair_skew_ms,
+        )
+        execution = executor.execute(
+            intents=(intents[0], intents[1]),
+            first_books=books,
+            second_books=second_leg_books,
+            fee_schedules=fee_schedules,
+            first_now_utc=timestamp_utc,
+            second_now_utc=second_timestamp_utc,
+            portfolio=self.portfolio,
+            window_end_epoch=window_end_epoch,
+            second_epoch=second_epoch,
+        )
+        result.sequential_execution = execution
+        result.fills = list(execution.fills)
+        if execution.completion_status != "BOTH_LEGS_FILL":
+            reason = execution.second_leg.reason or execution.first_leg.reason or execution.completion_status
+            result.abstention_reasons.append(reason)
         return result

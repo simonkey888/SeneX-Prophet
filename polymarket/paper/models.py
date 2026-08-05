@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+from decimal import Decimal
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -31,6 +32,8 @@ def _to_primitive(value: Any) -> Any:
         return [_to_primitive(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _to_primitive(item) for key, item in value.items()}
+    if isinstance(value, Decimal):
+        return format(value, "f")
     return value
 
 
@@ -124,6 +127,7 @@ class PaperOrderIntent(RecordMixin):
     side: str
     requested_shares: float
     max_notional_usd: float
+    condition_id: str = "UNKNOWN"
 
     @classmethod
     def build(
@@ -159,6 +163,7 @@ class PaperOrderIntent(RecordMixin):
             side=str(side).upper(),
             requested_shares=float(requested_shares),
             max_notional_usd=float(max_notional_usd),
+            condition_id=decision.condition_id,
         )
 
 
@@ -184,6 +189,12 @@ class PaperFill(RecordMixin):
     fee_usd: float
     partial: bool
     book_timestamp_utc: str
+    received_timestamp_utc: str = "UNKNOWN"
+    source_age_ms: float | None = None
+    fee_model_version: str = "UNVERIFIED"
+    fee_schedule_hash: str = "UNVERIFIED"
+    liquidity_classification: str = "TAKER"
+    condition_id: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -194,6 +205,10 @@ class PaperPosition(RecordMixin):
     quantity: float
     average_price: float
     realized_pnl: float
+    condition_id: str = "UNKNOWN"
+    settlement_state: str = "OPEN_UNMARKED"
+    mark_price: float | None = None
+    valuation_known: bool = False
 
 
 @dataclass(frozen=True)
@@ -207,10 +222,15 @@ class PaperPortfolioSnapshot(RecordMixin):
     provenance: str
     cash_usd: float
     realized_pnl: float
-    unrealized_pnl: float
-    equity_usd: float
-    gross_exposure_usd: float
+    unrealized_pnl: float | None
+    equity_usd: float | None
+    gross_exposure_usd: float | None
     max_drawdown_pct: float
+    equity_known: bool = True
+    unknown_valuation_positions: int = 0
+    pending_settlement_count: int = 0
+    realized_settled_pnl: float = 0.0
+    marked_unsettled_pnl: float | None = None
     positions: tuple[PaperPosition, ...] = field(default_factory=tuple)
 
 
@@ -258,8 +278,8 @@ class PaperTrialSummary(RecordMixin):
     partial_fills: int
     turnover: float
     realized_pnl: float
-    unrealized_pnl: float
-    ending_equity: float
+    unrealized_pnl: float | None
+    ending_equity: float | None
     max_drawdown: float
     risk_rejections: int
     source_failures: int
@@ -275,3 +295,11 @@ class PaperTrialSummary(RecordMixin):
     real_order_network_calls: int
     real_order_methods_reachable: int
     wallet_private_key_dependencies: int
+    equity_known: bool = True
+    unknown_valuation_positions: int = 0
+    pending_settlement_count: int = 0
+    realized_settled_pnl: float = 0.0
+    marked_unsettled_pnl: float | None = None
+    fees_applied_usd: float = 0.0
+    sequential_executions: int = 0
+    leg_risk_incidents: int = 0

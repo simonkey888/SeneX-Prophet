@@ -32,6 +32,7 @@ def book(*, bids=None, asks=None, timestamp=None) -> PublicOrderBook:
     return PublicOrderBook.from_payload(
         market_id="m", token_id="yes", timestamp_utc=timestamp or ts(),
         source_evidence_hash="d" * 64,
+        fixture_timestamp_utc=timestamp or ts(),
         payload={"asset_id": "yes", "bids": bids or [{"price": "0.40", "size": "20"}], "asks": asks or [{"price": "0.50", "size": "20"}]},
     )
 

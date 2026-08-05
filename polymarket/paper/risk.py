@@ -41,7 +41,7 @@ class PaperRiskEngine:
     ) -> PaperRiskDecision:
         intents = tuple(intents)
         requested = sum(intent.max_notional_usd for intent in intents)
-        projected = portfolio.gross_exposure_usd + requested
+        projected = (portfolio.gross_exposure_usd or 0.0) + requested
         reasons: list[str] = []
         if not paper_only:
             reasons.append("PAPER_ONLY_DISABLED")
@@ -59,7 +59,9 @@ class PaperRiskEngine:
             reasons.append("INSUFFICIENT_EDGE")
         if decision.deterministic_id in self.seen_decisions:
             reasons.append("DUPLICATE_DECISION")
-        equity = max(portfolio.equity_usd, 1e-9)
+        if portfolio.equity_usd is None or not portfolio.equity_known:
+            reasons.append("VALUATION_UNKNOWN")
+        equity = max(portfolio.equity_usd or portfolio.cash_usd, 1e-9)
         if requested / equity * 100.0 > self.config.max_order_notional_pct + 1e-9:
             reasons.append("EXPOSURE_LIMIT")
         if projected / equity * 100.0 > self.config.max_gross_exposure_pct + 1e-9:
