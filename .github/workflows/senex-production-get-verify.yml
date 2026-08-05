@@ -1,0 +1,93 @@
+name: SENEX Production GET Verification
+
+on:
+  push:
+    branches:
+      - ops/senex-paper-trial-materialize-20260804
+    paths:
+      - ".github/workflows/senex-production-get-verify.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  production-get:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact audit head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: GET public production endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://h011-web--senecio-h011--wbjggn89fnf8.code.run'
+          mkdir -p /tmp/production-get
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 30 "$base/healthz" -o /tmp/production-get/healthz.json
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 30 "$base/api/v3/state" -o /tmp/production-get/state.json
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 30 "$base/api/v3/integrity" -o /tmp/production-get/integrity.json
+          curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 30 "$base/api/v3/replay" -o /tmp/production-get/replay.json
+
+      - name: Verify production identity and safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('/tmp/production-get')
+          payloads = {name: json.loads((root / f'{name}.json').read_text()) for name in ('healthz','state','integrity','replay')}
+          state = payloads['state']
+          integrity = payloads['integrity']
+          replay = payloads['replay']
+          expected = '2f8503533543832147caf4c8e97a0cc6f5af3cbc'
+          candidates = []
+          for payload in payloads.values():
+              for key in ('code_sha','sha','version','commit_sha','runtime_sha'):
+                  value = payload.get(key) if isinstance(payload, dict) else None
+                  if isinstance(value, str): candidates.append(value)
+          assert expected in candidates, {'expected': expected, 'observed_candidates': candidates}
+          assert state.get('paper_only') is True, state
+          assert state.get('orders_enabled') is False, state
+          assert state.get('live_capital_locked') is True, state
+          assert integrity.get('chain_verified') is True, integrity
+          assert integrity.get('replay_verified') is True, integrity
+          assert integrity.get('legacy_mode') is False, integrity
+          assert replay.get('chain_verified') is True, replay
+          assert replay.get('replay_verified') is True, replay
+          report = {
+              'expected_production_sha': expected,
+              'observed_candidates': sorted(set(candidates)),
+              'paper_only': state.get('paper_only'),
+              'orders_enabled': state.get('orders_enabled'),
+              'live_capital_locked': state.get('live_capital_locked'),
+              'chain_verified': integrity.get('chain_verified'),
+              'replay_verified': integrity.get('replay_verified'),
+              'legacy_mode': integrity.get('legacy_mode'),
+              'production_changed': False,
+              'method': 'PUBLIC_GET_ONLY',
+          }
+          (root / 'verification.json').write_text(json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n')
+          print(json.dumps(report, sort_keys=True))
+          PY
+
+      - name: Hash GET evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/production-get
+          sha256sum healthz.json state.json integrity.json replay.json verification.json | tee SHA256SUMS
+
+      - name: Upload sanitized GET evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-production-get-${{ github.sha }}
+          path: /tmp/production-get
+          retention-days: 7
+          if-no-files-found: error
