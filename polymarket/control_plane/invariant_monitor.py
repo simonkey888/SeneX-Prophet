@@ -1,24 +1,43 @@
 """
-SENECIO H-011 V3 — Invariant monitor.
+SENECIO H-011 V3 — Invariant monitor (legacy compatibility shim).
 
-31 invariants. Never present "0 failures" if invariants were not run.
-Use UNKNOWN / NOT_RUN instead.
+This module previously contained its own independent catalog of 31 invariants.
+As of h011-v3-invariants-v2, the SINGLE SOURCE OF TRUTH is
+control_plane.coverage. This file re-exports from coverage.py for backward
+compatibility with any code that still imports from invariant_monitor.
+
+Do NOT add new invariant definitions here. All definitions live in coverage.py.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+from control_plane.coverage import (
+    INVARIANT_CATALOG,
+    CATALOG_VERSION,
+    invariant_catalog_hash,
+    invariant_summary as coverage_invariant_summary,
+    evaluate_all_invariants,
+    ScanContext,
+)
+
+# Re-export for backward compatibility
+# Format: list of (id, description, severity) — matching the old format
+INVARIANTS = [(inv_id, desc, sev) for inv_id, desc, sev, _ in INVARIANT_CATALOG]
+
 
 @dataclass(frozen=True)
 class InvariantResult:
+    """Legacy compatibility — prefer dict results from coverage.evaluate_all_invariants."""
+
     invariant_id: str
-    status: str  # PASS | FAIL | NOT_APPLICABLE | UNKNOWN
-    severity: str  # INFO | WARNING | CRITICAL | BLOCKING
+    status: str
+    severity: str
     reason: str
     evidence_hashes: tuple[str, ...]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "invariant_id": self.invariant_id,
             "status": self.status,
@@ -28,90 +47,61 @@ class InvariantResult:
         }
 
 
-# All 31 invariants
-INVARIANTS = [
-    ("INV-001", "run_id unique", "CRITICAL"),
-    ("INV-002", "scan_id unique", "CRITICAL"),
-    ("INV-003", "prediction_id unique", "CRITICAL"),
-    ("INV-004", "lifecycle event_id unique", "CRITICAL"),
-    ("INV-005", "raw events append-only", "BLOCKING"),
-    ("INV-006", "historical snapshots append-only", "BLOCKING"),
-    ("INV-007", "no hidden rejected records", "WARNING"),
-    ("INV-008", "UNKNOWN not collapsed to 0", "BLOCKING"),
-    ("INV-009", "UNKNOWN not collapsed to False", "BLOCKING"),
-    ("INV-010", "n=0 produces no numeric metric", "BLOCKING"),
-    ("INV-011", "conditionId not used as token_id", "BLOCKING"),
-    ("INV-012", "token leg_0 != token leg_1", "BLOCKING"),
-    ("INV-013", "both tokens belong to MarketTruthContract", "BLOCKING"),
-    ("INV-014", "V3 never accepts [ACTIVE] stub", "BLOCKING"),
-    ("INV-015", "V3 never writes legacy ledger", "BLOCKING"),
-    ("INV-016", "V3 no fallback to V2", "BLOCKING"),
-    ("INV-017", "W=300 for confirmatory cohort", "BLOCKING"),
-    ("INV-018", "W=3600 always legacy", "BLOCKING"),
-    ("INV-019", "realized_pnl null without real fills", "BLOCKING"),
-    ("INV-020", "balance/NAV absent in H-011 V3", "BLOCKING"),
-    ("INV-021", "shadow executable requires two books", "BLOCKING"),
-    ("INV-022", "shadow executable requires equal fillable", "BLOCKING"),
-    ("INV-023", "shadow executable requires known fee", "BLOCKING"),
-    ("INV-024", "shadow executable requires net_edge > 0", "BLOCKING"),
-    ("INV-025", "raw payload persisted before transform", "BLOCKING"),
-    ("INV-026", "snapshot_hash verifiable", "WARNING"),
-    ("INV-027", "lifecycle hash chain valid", "WARNING"),
-    ("INV-028", "dashboard and API use same snapshot_hash", "WARNING"),
-    ("INV-029", "paper_only = true", "BLOCKING"),
-    ("INV-030", "live_capital_locked = true", "BLOCKING"),
-    ("INV-031", "orders_enabled = false", "BLOCKING"),
-]
+def invariant_summary(results: list[InvariantResult | dict[str, Any]]) -> dict[str, int]:
+    """Summarize modern mappings and legacy ``InvariantResult`` instances.
+
+    ``control_plane.coverage`` remains the semantic authority. This shim only
+    normalizes the historical object representation before delegating, so
+    UNKNOWN, NOT_APPLICABLE, severities, and the 31-invariant catalog retain
+    their modern meanings.
+    """
+
+    normalized: list[dict[str, Any]] = []
+    for result in results:
+        if isinstance(result, InvariantResult):
+            normalized.append(result.to_dict())
+        elif isinstance(result, dict):
+            normalized.append(result)
+        else:
+            raise TypeError(
+                "invariant results must be dict or InvariantResult, "
+                f"got {type(result).__name__}"
+            )
+    return coverage_invariant_summary(normalized)
 
 
 def check_invariants(scan_data: dict) -> list[InvariantResult]:
-    """Check all invariants against scan data. Returns results."""
-    results = []
+    """Legacy compatibility — use coverage.evaluate_all_invariants instead.
 
-    for inv_id, description, severity in INVARIANTS:
-        # Default: UNKNOWN (not run)
-        result = InvariantResult(
-            invariant_id=inv_id,
-            status="UNKNOWN",
-            severity=severity,
-            reason=f"Not evaluated: {description}",
-            evidence_hashes=(),
+    This function converts the old-style scan_data dict into a ScanContext
+    and delegates to coverage.evaluate_all_invariants. Results are wrapped
+    in InvariantResult for backward compatibility.
+    """
+    # This is a best-effort conversion — most callers should migrate to
+    # using ScanContext directly.
+    results = evaluate_all_invariants(
+        ScanContext(
+            run_id=scan_data.get("run_id", ""),
+            scan_id=scan_data.get("scan_id", ""),
+            pipeline_version=scan_data.get("pipeline_version", "h011-integrity-v3"),
+            window_s=scan_data.get("window_s", 300),
+            paper_only=scan_data.get("paper_only", True),
+            live_capital_locked=scan_data.get("live_capital_locked", True),
+            orders_enabled=scan_data.get("orders_enabled", False),
+            funnel=scan_data.get("funnel", {}),
+            market_records=scan_data.get("market_records", []),
+            records=[],
+            source_health=scan_data.get("source_health", {}),
         )
-
-        # Check specific invariants that can be verified from scan_data
-        if inv_id == "INV-029":
-            result = InvariantResult(inv_id, "PASS" if scan_data.get("paper_only") is True else "FAIL", severity,
-                                     f"paper_only={scan_data.get('paper_only')}", ())
-        elif inv_id == "INV-030":
-            result = InvariantResult(inv_id, "PASS" if scan_data.get("live_capital_locked") is True else "FAIL", severity,
-                                     f"live_capital_locked={scan_data.get('live_capital_locked')}", ())
-        elif inv_id == "INV-031":
-            result = InvariantResult(inv_id, "PASS" if scan_data.get("orders_enabled") is False else "FAIL", severity,
-                                     f"orders_enabled={scan_data.get('orders_enabled')}", ())
-        elif inv_id == "INV-017":
-            result = InvariantResult(inv_id, "PASS" if scan_data.get("window_s") == 300 else "FAIL", severity,
-                                     f"window_s={scan_data.get('window_s')}", ())
-        elif inv_id == "INV-019":
-            records = scan_data.get("market_records", [])
-            all_null = all(r.get("realized_outcome", {}).get("realized_pnl") is None for r in records)
-            result = InvariantResult(inv_id, "PASS" if all_null else "FAIL", severity,
-                                     "All realized_pnl are null" if all_null else "Found non-null realized_pnl", ())
-        elif inv_id == "INV-020":
-            has_balance = any("balance" in r or "realized_pnl" in r for r in scan_data.get("market_records", []))
-            result = InvariantResult(inv_id, "PASS" if not has_balance else "FAIL", severity,
-                                     "No balance/NAV in records" if not has_balance else "Found balance/NAV", ())
-
-        results.append(result)
-
-    return results
-
-
-def invariant_summary(results: list[InvariantResult]) -> dict:
-    """Summary: pass/fail/unknown counts. Never '0 failures' if not run."""
-    return {
-        "pass": sum(1 for r in results if r.status == "PASS"),
-        "fail": sum(1 for r in results if r.status == "FAIL"),
-        "unknown": sum(1 for r in results if r.status == "UNKNOWN"),
-        "not_applicable": sum(1 for r in results if r.status == "NOT_APPLICABLE"),
-        "total": len(results),
-    }
+    )
+    # Wrap in InvariantResult for backward compatibility.
+    return [
+        InvariantResult(
+            invariant_id=r["invariant_id"],
+            status=r["status"],
+            severity=r["severity"],
+            reason=r["reason"],
+            evidence_hashes=tuple(),
+        )
+        for r in results
+    ]

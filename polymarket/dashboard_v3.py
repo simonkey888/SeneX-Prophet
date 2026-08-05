@@ -1,216 +1,291 @@
-"""
-SENECIO H-011 V3 — Control plane API and dashboard server.
+"""SENEX / SENECIO H-011 V3 committed control-plane API.
 
-All endpoints read from the same latest.json snapshot (single source of truth).
-No balance, NAV, realized PnL, or profit metrics.
+The committed manifest chain is authoritative. ``latest.json`` is a derived
+cache and is served only when it is bound to the latest verified manifest.
 """
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
-from control_plane.replay import replay_bundle
 import uvicorn
 
-app = FastAPI(title="SENECIO H-011 V3 Control Plane", docs_url=None, redoc_url=None)
+try:
+    from h011_v3_committed_snapshot import (
+        CommittedChainError,
+        NoCommittedScan,
+        load_committed_snapshot,
+        replay_latest_committed,
+        snapshot_age_sec,
+    )
+except ModuleNotFoundError:
+    from polymarket.h011_v3_committed_snapshot import (  # type: ignore
+        CommittedChainError,
+        NoCommittedScan,
+        load_committed_snapshot,
+        replay_latest_committed,
+        snapshot_age_sec,
+    )
 
+app = FastAPI(title="SENEX / SENECIO H-011 V3 Control Plane", docs_url=None, redoc_url=None)
 RESULTS_DIR = Path(os.environ.get("H011_RESULTS_DIR", "/app/polymarket/results"))
-V3_STATE_DIR = RESULTS_DIR / "v3" / "state"
-V3_RAW_DIR = RESULTS_DIR / "v3" / "raw"
+RAW_CHAIN_DIR = RESULTS_DIR / "h011_v3" / "raw_chain_v1"
+RUNTIME_STATE_FILE = RESULTS_DIR / "h011_v3" / "runtime_state.json"
 
 
-def _load_latest() -> dict | None:
-    latest = V3_STATE_DIR / "latest.json"
-    if not latest.exists():
-        return None
+def _runtime_state() -> dict[str, Any]:
     try:
-        return json.loads(latest.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+        payload = json.loads(RUNTIME_STATE_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {
+            "runtime_state": "STARTING",
+            "readiness": False,
+            "liveness": True,
+            "scanner_enabled": False,
+            "publication_enabled": False,
+            "recovery_status": "UNKNOWN",
+            "storage_status": "UNKNOWN",
+            "chain_verified": False,
+            "paper_only": True,
+            "orders_enabled": False,
+            "live_capital_locked": True,
+            "legacy_mode": False,
+        }
+
+
+def _committed() -> tuple[dict[str, Any], Any]:
+    return load_committed_snapshot(results_root=RESULTS_DIR, raw_directory=RAW_CHAIN_DIR)
+
+
+def _diagnostic_error(exc: Exception) -> dict[str, Any]:
+    runtime = _runtime_state()
+    return {
+        "error": type(exc).__name__,
+        "detail": str(exc),
+        "runtime": runtime,
+        "paper_only": True,
+        "orders_enabled": False,
+        "live_capital_locked": True,
+        "legacy_mode": False,
+    }
 
 
 @app.get("/api/v3/state")
 def api_state():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot available"}, status_code=503)
-    return JSONResponse(snap)
+    try:
+        snapshot, chain = _committed()
+    except (NoCommittedScan, CommittedChainError) as exc:
+        return JSONResponse(_diagnostic_error(exc), status_code=503)
+    snapshot = dict(snapshot)
+    snapshot["runtime"] = _runtime_state()
+    snapshot["raw_chain"] = chain.to_dict()
+    snapshot["snapshot_age_sec"] = snapshot_age_sec(snapshot)
+    return JSONResponse(snapshot)
 
 
 @app.get("/api/v3/integrity")
 def api_integrity():
-    snap = _load_latest()
-    if not snap:
+    runtime = _runtime_state()
+    try:
+        snapshot, chain = _committed()
+        replay = replay_latest_committed(results_root=RESULTS_DIR, raw_directory=RAW_CHAIN_DIR)
+    except (NoCommittedScan, CommittedChainError) as exc:
         return JSONResponse({
+            **_diagnostic_error(exc),
             "pipeline_version": "h011-integrity-v3",
-            "cohort_id": "h011-v3-w300-vwap-structure-v2",
             "window_s": 300,
-            "paper_only": True,
-            "live_capital_locked": True,
-            "orders_enabled": False,
-            "code_sha": "unknown",
-            "config_sha": "unknown",
-            "snapshot_hash": None,
             "raw_store_available": False,
             "replay_verified": False,
-            "invariants": {"pass": 0, "fail": 0, "unknown": 31},
+            "readiness": bool(runtime.get("readiness")),
         })
-    invariants = snap.get("invariants", {})
-    bundles = sorted(V3_RAW_DIR.glob("bundle_*.json"))
-    replay_result = replay_bundle(bundles[-1]) if bundles else None
-    raw_store_available = bool(replay_result and replay_result["raw_complete"])
-    replay_verified = bool(replay_result and replay_result["replay_verified"])
-    discovery = (snap.get("aggregate_metrics") or {}).get("discovery") or {}
+    discovery = (snapshot.get("aggregate_metrics") or {}).get("discovery") or {}
     return JSONResponse({
-        "pipeline_version": snap.get("pipeline_version", "h011-integrity-v3"),
-        "cohort_id": snap.get("cohort_id", "h011-v3-w300-vwap-structure-v2"),
-        "window_s": snap.get("window_s", 300),
-        "paper_only": snap.get("paper_only", True),
-        "live_capital_locked": snap.get("live_capital_locked", True),
-        "orders_enabled": snap.get("orders_enabled", False),
-        "code_sha": snap.get("code_sha", "unknown"),
-        "config_sha": snap.get("config_sha", "unknown"),
-        "snapshot_hash": snap.get("snapshot_hash"),
-        "semantic_hash": snap.get("semantic_hash", snap.get("snapshot_hash")),
-        "canonical_content_hash": snap.get("canonical_content_hash"),
-        "raw_store_available": raw_store_available,
-        "file_sha256_matches": bool(replay_result and replay_result["file_sha256_matches"]),
-        "replay_verified": replay_verified,
+        "pipeline_version": snapshot.get("pipeline_version", "h011-integrity-v3"),
+        "cohort_id": snapshot.get("cohort_id"),
+        "window_s": snapshot.get("window_s", 300),
+        "paper_only": True,
+        "live_capital_locked": True,
+        "orders_enabled": False,
+        "code_sha": snapshot.get("code_sha", "unknown"),
+        "config_sha": snapshot.get("config_sha", "unknown"),
+        "snapshot_hash": snapshot.get("snapshot_hash"),
+        "canonical_content_hash": snapshot.get("canonical_content_hash"),
+        "snapshot_age_sec": snapshot_age_sec(snapshot),
+        "raw_store_available": True,
+        "file_sha256_matches": replay["file_sha256_matches"],
+        "replay_verified": replay["replay_verified"],
+        "chain_verified": chain.chain_verified,
+        "raw_chain": chain.to_dict(),
+        "runtime": runtime,
+        "readiness": bool(runtime.get("readiness")) and chain.chain_verified,
+        "legacy_mode": False,
         "discovery_status": discovery.get("status", "UNKNOWN"),
         "discovery_complete": bool(discovery.get("discovery_complete", False)),
         "discovery_replay_verified": bool(discovery.get("discovery_replay_verified", False)),
         "markets_selected": int(discovery.get("markets_selected", 0) or 0),
-        "invariants": invariants.get("summary", {"pass": 0, "fail": 0, "unknown": 31}),
+        "invariants": (snapshot.get("invariants") or {}).get("summary", {}),
     })
+
+
+def _snapshot_section(name: str, default: Any):
+    try:
+        snapshot, _ = _committed()
+    except (NoCommittedScan, CommittedChainError) as exc:
+        return JSONResponse(_diagnostic_error(exc), status_code=503)
+    return JSONResponse(snapshot.get(name, default))
 
 
 @app.get("/api/v3/sources")
 def api_sources():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("source_health", {}))
+    return _snapshot_section("source_health", {})
 
 
 @app.get("/api/v3/funnel")
 def api_funnel():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("funnel", {}))
+    return _snapshot_section("funnel", {})
 
 
 @app.get("/api/v3/lifecycle")
 def api_lifecycle():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("lifecycle", {}))
+    return _snapshot_section("lifecycle", {})
 
 
 @app.get("/api/v3/invariants")
 def api_invariants():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("invariants", {}))
+    return _snapshot_section("invariants", {})
 
 
 @app.get("/api/v3/drift")
 def api_drift():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("drift", {}))
+    return _snapshot_section("drift", {})
 
 
 @app.get("/api/v3/operations")
 def api_operations():
-    snap = _load_latest()
-    if not snap:
+    try:
+        snapshot, _ = _committed()
+    except (NoCommittedScan, CommittedChainError):
         return JSONResponse({"operations": [], "total": 0})
-    records = snap.get("market_records", [])
-    ops = [r for r in records if r.get("record_status") == "SHADOW_EXECUTABLE"]
-    return JSONResponse({"operations": ops, "total": len(ops)})
+    operations = [
+        record for record in snapshot.get("market_records", [])
+        if record.get("record_status") == "SHADOW_EXECUTABLE"
+    ]
+    return JSONResponse({"operations": operations, "total": len(operations)})
 
 
 @app.get("/api/v3/replay")
 def api_replay():
-    bundles = sorted(V3_RAW_DIR.glob("bundle_*.json"))
-    if not bundles:
-        return JSONResponse({"replay_verified": False, "reason": "raw_bundle_unavailable"}, status_code=503)
-    result = replay_bundle(bundles[-1])
-    result["bundle"] = bundles[-1].name
-    return JSONResponse(result)
+    try:
+        return JSONResponse(replay_latest_committed(results_root=RESULTS_DIR, raw_directory=RAW_CHAIN_DIR))
+    except (NoCommittedScan, CommittedChainError) as exc:
+        return JSONResponse(_diagnostic_error(exc), status_code=503)
 
 
 @app.get("/api/v3/rejections")
 def api_rejections():
-    snap = _load_latest()
-    if not snap:
+    try:
+        snapshot, _ = _committed()
+    except (NoCommittedScan, CommittedChainError):
         return JSONResponse({"rejections": [], "total": 0})
-    records = snap.get("market_records", [])
-    rejs = [r for r in records if "REJECTED" in r.get("record_status", "") or r.get("record_status") == "HISTORICAL_SIGNAL_ONLY"]
-    return JSONResponse({"rejections": rejs, "total": len(rejs)})
+    rejected = [
+        record for record in snapshot.get("market_records", [])
+        if str(record.get("record_status", "")).startswith("REJECTED_")
+        or record.get("record_status") == "HISTORICAL_SIGNAL_ONLY"
+    ]
+    return JSONResponse({"rejections": rejected, "total": len(rejected)})
 
 
 @app.get("/api/v3/alerts")
 def api_alerts():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse({"alerts": snap.get("alerts", [])})
+    try:
+        snapshot, _ = _committed()
+    except (NoCommittedScan, CommittedChainError) as exc:
+        return JSONResponse({"alerts": [], **_diagnostic_error(exc)}, status_code=503)
+    return JSONResponse({"alerts": snapshot.get("alerts", [])})
 
 
-@app.get("/api/v3/stress")
-def api_stress():
-    snap = _load_latest()
-    if not snap:
-        return JSONResponse({"error": "no snapshot"}, status_code=503)
-    return JSONResponse(snap.get("aggregate_metrics", {}).get("stress", {}))
+@app.get("/livez")
+def livez():
+    return JSONResponse({"ok": True, "liveness": True})
+
+
+@app.get("/readyz")
+def readyz():
+    runtime = _runtime_state()
+    ready = bool(runtime.get("readiness"))
+    return JSONResponse({"ok": ready, "readiness": ready, "runtime_state": runtime.get("runtime_state")}, status_code=200 if ready else 503)
 
 
 @app.get("/healthz")
 def healthz():
-    snap = _load_latest()
-    if not snap:
+    runtime = _runtime_state()
+    blocking_runtime = str(runtime.get("runtime_state")) in {
+        "BLOCKED_RAW_INTEGRITY", "BLOCKED_STORAGE_UNVERIFIED", "SCANNER_FAILED"
+    }
+    try:
+        snapshot, chain = _committed()
+        summary = (snapshot.get("invariants") or {}).get("summary", {})
+        unknown = int(summary.get("unknown", 0) or 0)
+        failed = [
+            result for result in (snapshot.get("invariants") or {}).get("results", [])
+            if result.get("status") == "FAIL" and result.get("severity") in ("BLOCKING", "CRITICAL")
+        ]
+        blocking_alerts = [alert for alert in snapshot.get("alerts", []) if alert.get("blocking")]
+        operational_ok = not blocking_runtime and not failed and not blocking_alerts and chain.chain_verified
+        status = (
+            "BLOCKED" if not operational_ok
+            else "DEGRADED" if runtime.get("runtime_state") == "DEGRADED" or unknown > 0
+            else "HEALTHY"
+        )
+        return JSONResponse({
+            "ok": operational_ok,
+            "status": status,
+            "liveness": True,
+            "readiness": bool(runtime.get("readiness")) and chain.chain_verified,
+            "validation_complete": unknown == 0,
+            "unknown_invariants": unknown,
+            "snapshot_age_sec": snapshot_age_sec(snapshot),
+            "runtime": runtime,
+            "raw_chain": chain.to_dict(),
+            "blocking_alerts": [alert.get("code") for alert in blocking_alerts],
+            "failed_invariants": [result.get("invariant_id") for result in failed],
+            "source_summary": snapshot.get("source_health", {}),
+            "paper_only": True,
+            "orders_enabled": False,
+            "live_capital_locked": True,
+        })
+    except NoCommittedScan as exc:
+        status = "BLOCKED" if blocking_runtime else "NO_COMMITTED_SCAN"
+        return JSONResponse({
+            "ok": not blocking_runtime,
+            "status": status,
+            "liveness": True,
+            "readiness": bool(runtime.get("readiness")),
+            "validation_complete": False,
+            "snapshot_age_sec": None,
+            "runtime": runtime,
+            "detail": str(exc),
+            "paper_only": True,
+            "orders_enabled": False,
+            "live_capital_locked": True,
+        })
+    except CommittedChainError as exc:
         return JSONResponse({
             "ok": False,
-            "status": "UNKNOWN",
-            "snapshot_age_sec": None,
-            "blocking_alerts": [],
-            "failed_invariants": [],
-            "source_summary": {},
+            "status": "BLOCKED",
+            "liveness": True,
+            "readiness": False,
+            "runtime": runtime,
+            "detail": str(exc),
+            "paper_only": True,
+            "orders_enabled": False,
+            "live_capital_locked": True,
         })
-    alerts = snap.get("alerts", [])
-    blocking = [a for a in alerts if a.get("blocking")]
-    invariants = snap.get("invariants", {}).get("results", [])
-    failed = [i for i in invariants if i.get("status") == "FAIL" and i.get("severity") == "BLOCKING"]
-
-    summary = snap.get("invariants", {}).get("summary", {})
-    unknown = int(summary.get("unknown", 0) or 0)
-    operational_ok = len(blocking) == 0 and len(failed) == 0
-    validation_complete = unknown == 0 and bool(snap.get("source_health"))
-    status = (
-        "BLOCKED" if blocking or failed
-        else "HEALTHY" if validation_complete
-        else "DEGRADED"
-    )
-
-    return JSONResponse({
-        "ok": operational_ok,
-        "status": status,
-        "validation_complete": validation_complete,
-        "unknown_invariants": unknown,
-        "snapshot_age_sec": None,
-        "blocking_alerts": [a.get("code") for a in blocking],
-        "failed_invariants": [i.get("invariant_id") for i in failed],
-        "source_summary": snap.get("source_health", {}),
-    })
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -259,9 +334,13 @@ th{color:var(--text2);font-weight:400;font-size:10px;text-transform:uppercase}
     <div style="font-size:12px;color:var(--text2)" id="last-updated">—</div>
   </div>
   <div class="banner">
-    <strong>PAPER ONLY · NO ORDERS · NO REAL FILLS · NO REALIZED PNL</strong><br>
+    <strong>PAPER ONLY · NO ORDERS · LIVE CAPITAL LOCKED · NO REAL FILLS · NO REALIZED PNL</strong><br>
     VWAP history is not executable price. Two-leg CLOB execution is not atomic.
   </div>
+
+  <div id="visible-error" class="banner" style="display:none"></div>
+  <h2>Estado Operativo</h2>
+  <div class="grid" id="runtime-grid"></div>
 
   <h2>Estado Global</h2>
   <div class="grid" id="global-grid"></div>
@@ -282,44 +361,34 @@ th{color:var(--text2);font-weight:400;font-size:10px;text-transform:uppercase}
   <div class="footer">SENECIO H-011 V3 · PAPER_ONLY · LIVE_CAPITAL_LOCKED · <a href="/api/v3/integrity" style="color:var(--text2)">/api/v3/integrity</a></div>
 </div>
 <script>
-function displayMetric(value){
-  return value === null || value === undefined ? '—' : value;
-}
+function displayMetric(value){return value===null||value===undefined?'—':value;}
+function card(label,value){return `<div class="card"><div class="card-label">${label}</div><div class="card-value" style="font-size:16px">${displayMetric(value)}</div></div>`;}
 async function load(){
+  const errorBox=document.getElementById('visible-error');
   try{
-    const r=await fetch('/api/v3/state');
-    if(!r.ok)throw 0;
+    const r=await fetch('/api/v3/state',{cache:'no-store'});
     const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||d.error||`API ${r.status}`);
+    errorBox.style.display='none';
     document.getElementById('last-updated').textContent=d.generated_at||'?';
-
-    // Global
+    const runtime=d.runtime||{}; const chain=d.raw_chain||{};
+    document.getElementById('runtime-grid').innerHTML=[
+      ['Runtime',runtime.runtime_state],['Readiness',runtime.readiness],['Recovery',runtime.recovery_status],
+      ['Storage',runtime.storage_status],['Scanner',runtime.scanner_enabled],['Sequence',chain.current_sequence],
+      ['Manifest',chain.manifest_hash?chain.manifest_hash.slice(0,12)+'…':'—'],['Snapshot age',displayMetric(d.snapshot_age_sec)]
+    ].map(x=>card(x[0],x[1])).join('');
     const gg=document.getElementById('global-grid');
-    gg.innerHTML='';
-    const fields=[['Pipeline',d.pipeline_version],['Cohort',d.cohort_id],['Window',d.window_s+'s'],['Status',d.scan_status],['Paper Only',d.paper_only],['Capital Locked',d.live_capital_locked],['Orders',d.orders_enabled],['Snapshot SHA',d.snapshot_hash?d.snapshot_hash.slice(0,12)+'…':'—']];
-    fields.forEach(([l,v])=>{const c=document.createElement('div');c.className='card';c.innerHTML=`<div class="card-label">${l}</div><div class="card-value" style="font-size:16px">${v}</div>`;gg.appendChild(c)});
-
-    // Sources
+    gg.innerHTML=[['Pipeline',d.pipeline_version],['Cohort',d.cohort_id],['Window',d.window_s+'s'],['Status',d.scan_status],['Paper Only',d.paper_only],['Capital Locked',d.live_capital_locked],['Orders',d.orders_enabled],['Snapshot SHA',d.snapshot_hash?d.snapshot_hash.slice(0,12)+'…':'—']].map(x=>card(x[0],x[1])).join('');
     const st=document.querySelector('#sources-table tbody');st.innerHTML='';
-    Object.entries(d.source_health||{}).forEach(([k,v])=>{st.innerHTML+=`<tr><td>${k}</td><td><span class="tag ${v.level==='HEALTHY'?'pass':v.level==='UNKNOWN'?'unknown':'fail'}">${v.level}</span></td><td class="mono">${displayMetric(v.age_ms)}</td><td class="mono">${displayMetric(v.latency_ms)}</td><td>${displayMetric(v.consecutive_failures)}</td><td>${v.fallback_used?'SÍ':'no'}</td></tr>`});
-
-    // Funnel
-    const ft=document.querySelector('#funnel-table tbody');ft.innerHTML='';
-    Object.entries(d.funnel||{}).forEach(([k,v])=>{ft.innerHTML+=`<tr><td>${k}</td><td class="mono">${v}</td></tr>`});
-
-    // Invariants
-    const inv=d.invariants||{};
-    const ig=document.getElementById('invariants-grid');ig.innerHTML='';
-    const s=inv.summary||{};
-    [['PASS',s.pass||0,'green'],['FAIL',s.fail||0,'red'],['UNKNOWN',s.unknown||0,'orange']].forEach(([l,v,c])=>{const card=document.createElement('div');card.className='card';card.innerHTML=`<div class="card-label">${l}</div><div class="card-value ${c}">${v}</div>`;ig.appendChild(card)});
-
-    const it=document.querySelector('#invariants-table tbody');it.innerHTML='';
-    (inv.results||[]).forEach(i=>{it.innerHTML+=`<tr><td class="mono">${i.invariant_id}</td><td><span class="tag ${i.status==='PASS'?'pass':i.status==='UNKNOWN'?'unknown':'fail'}">${i.status}</span></td><td>${i.severity}</td><td style="font-size:11px;color:var(--text2)">${i.reason||''}</td></tr>`});
-
-    // Alerts
-    const at=document.querySelector('#alerts-table tbody');at.innerHTML='';
-    (d.alerts||[]).forEach(a=>{at.innerHTML+=`<tr><td><span class="tag ${a.severity==='BLOCKING'?'fail':a.severity==='CRITICAL'?'fail':'unknown'}">${a.severity}</span></td><td class="mono">${a.code}</td><td>${a.title}</td><td style="font-size:11px">${a.detail||''}</td></tr>`});
-    if(!d.alerts||d.alerts.length===0)at.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text2)">Sin alertas</td></tr>';
-  }catch(e){console.error(e)}
+    Object.entries(d.source_health||{}).forEach(([k,v])=>{st.innerHTML+=`<tr><td>${k}</td><td><span class="tag ${(v.level||v.status)==='HEALTHY'?'pass':(v.level||v.status)==='UNKNOWN'?'unknown':'fail'}">${v.level||v.status}</span></td><td class="mono">${displayMetric(v.age_ms)}</td><td class="mono">${displayMetric(v.latency_ms)}</td><td>${displayMetric(v.consecutive_failures)}</td><td>${v.fallback_used?'SÍ':'no'}</td></tr>`});
+    const ft=document.querySelector('#funnel-table tbody');ft.innerHTML='';Object.entries(d.funnel||{}).forEach(([k,v])=>{ft.innerHTML+=`<tr><td>${k}</td><td class="mono">${v}</td></tr>`});
+    const inv=d.invariants||{}, summary=inv.summary||{};document.getElementById('invariants-grid').innerHTML=[['PASS',summary.pass||0],['FAIL',summary.fail||0],['UNKNOWN',summary.unknown||0]].map(x=>card(x[0],x[1])).join('');
+    const it=document.querySelector('#invariants-table tbody');it.innerHTML='';(inv.results||[]).forEach(i=>{it.innerHTML+=`<tr><td class="mono">${i.invariant_id}</td><td><span class="tag ${i.status==='PASS'?'pass':i.status==='UNKNOWN'?'unknown':'fail'}">${i.status}</span></td><td>${i.severity}</td><td>${i.reason||''}</td></tr>`});
+    const at=document.querySelector('#alerts-table tbody');at.innerHTML='';(d.alerts||[]).forEach(a=>{at.innerHTML+=`<tr><td>${a.severity}</td><td class="mono">${a.code}</td><td>${a.title}</td><td>${a.detail||''}</td></tr>`});if(!(d.alerts||[]).length)at.innerHTML='<tr><td colspan="4">Sin alertas</td></tr>';
+  }catch(e){
+    errorBox.style.display='block';errorBox.innerHTML=`<strong>API_ERROR</strong><br>${e.message}. Reintento automático en 10 segundos.`;
+    try{const h=await fetch('/healthz',{cache:'no-store'});const d=await h.json();const runtime=d.runtime||{};document.getElementById('runtime-grid').innerHTML=[['Runtime',runtime.runtime_state||d.status],['Readiness',d.readiness],['Recovery',runtime.recovery_status],['Bloqueo',runtime.blocking_reason||d.detail]].map(x=>card(x[0],x[1])).join('');}catch(_){}
+  }
 }
 load();setInterval(load,10000);
 </script>

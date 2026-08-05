@@ -18,159 +18,160 @@ concurrency:
 
 jobs:
   docker-build-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
+      - name: Checkout exact PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: polymarket/requirements-h011-v3.txt
 
       - name: Run H011 tests
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r polymarket/requirements-h011-v3.txt
-          python -m pytest tests/h011_v3/ -q
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+          python -m pytest tests/h011_v3/ -q | tee /tmp/h011-pr3-tests.log
 
       - name: Build H011 Docker image
+        shell: bash
         run: |
+          set -euo pipefail
           docker build \
             -f polymarket/Dockerfile.h011-v3 \
-            -t senecio-h011-pr3:${{ github.sha }} \
-            .
+            -t senecio-h011-pr3:${{ github.event.pull_request.head.sha }} \
+            . | tee /tmp/h011-pr3-docker-build.log
 
-      - name: Start container
+      - name: Create committed synthetic scan
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/h011-results"
+          docker run --rm \
+            -v "${RUNNER_TEMP}/h011-results:/app/polymarket/results" \
+            -e SENECIO_CODE_SHA="${{ github.event.pull_request.head.sha }}" \
+            senecio-h011-pr3:${{ github.event.pull_request.head.sha }} \
+            python3 /app/polymarket/h011_v3_runtime.py \
+              --synthetic-publish \
+              --run-id pr3-smoke-run \
+              --scan-id pr3-smoke-scan \
+            | tee /tmp/h011-pr3-synthetic.log
 
+      - name: Start controlled container
+        shell: bash
+        run: |
+          set -euo pipefail
           docker run -d \
             --name senecio-h011-pr3 \
             -p 18080:8080 \
             -v "${RUNNER_TEMP}/h011-results:/app/polymarket/results" \
-            -e SENECIO_CODE_SHA="${{ github.sha }}" \
-            -e H011_PIPELINE_VERSION="integrity-v3" \
-            -e PYTHONUNBUFFERED="1" \
-            senecio-h011-pr3:${{ github.sha }}
+            -e SENECIO_CODE_SHA="${{ github.event.pull_request.head.sha }}" \
+            -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
+            -e PYTHONUNBUFFERED=1 \
+            senecio-h011-pr3:${{ github.event.pull_request.head.sha }}
 
-      - name: Wait for health
+      - name: Wait for readiness
+        shell: bash
         run: |
-          healthy=0
-
-          for i in $(seq 1 90); do
-            if curl --fail --silent --show-error \
-              http://127.0.0.1:18080/healthz; then
-              healthy=1
+          set -euo pipefail
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:18080/readyz \
+              -o /tmp/h011-pr3-ready.json; then
+              ready=1
               break
             fi
-
-            if ! docker inspect -f '{{.State.Running}}' senecio-h011-pr3 \
-              | grep -q true; then
-              echo "Container stopped unexpectedly"
-              docker logs senecio-h011-pr3
+            if ! test "$(docker inspect -f '{{.State.Running}}' senecio-h011-pr3)" = true; then
+              docker logs senecio-h011-pr3 | tee /tmp/h011-pr3-container.log
               exit 1
             fi
-
             sleep 2
           done
+          test "$ready" = 1
 
-          if [ "$healthy" -ne 1 ]; then
-            echo "Health endpoint did not become ready"
-            docker logs senecio-h011-pr3
-            exit 1
-          fi
-
-      - name: Validate runtime safety flags
+      - name: Validate runtime APIs and safety
+        shell: bash
         run: |
-          for i in $(seq 1 90); do
-            if curl --fail --silent \
-              http://127.0.0.1:18080/api/v3/state \
-              -o /tmp/h011-state.json; then
-              break
-            fi
-            sleep 2
-          done
-
-          cat /tmp/h011-state.json
-
+          set -euo pipefail
+          curl --fail --silent http://127.0.0.1:18080/livez -o /tmp/h011-pr3-live.json
+          curl --fail --silent http://127.0.0.1:18080/healthz -o /tmp/h011-pr3-health.json
+          curl --fail --silent http://127.0.0.1:18080/api/v3/state -o /tmp/h011-pr3-state.json
+          curl --fail --silent http://127.0.0.1:18080/api/v3/integrity -o /tmp/h011-pr3-integrity.json
+          curl --fail --silent http://127.0.0.1:18080/api/v3/replay -o /tmp/h011-pr3-replay.json
           python - <<'PY'
           import json
           from pathlib import Path
-
-          state_path = Path("/tmp/h011-state.json")
-          if not state_path.exists():
-              raise SystemExit("Missing /api/v3/state response")
-
-          state = json.loads(state_path.read_text())
-
-          assert state.get("paper_only") is True, state
-          assert state.get("live_capital_locked") is True, state
-          assert state.get("orders_enabled") is False, state
-
-          print("Runtime safety flags verified")
+          state = json.loads(Path('/tmp/h011-pr3-state.json').read_text())
+          integrity = json.loads(Path('/tmp/h011-pr3-integrity.json').read_text())
+          replay = json.loads(Path('/tmp/h011-pr3-replay.json').read_text())
+          assert state['paper_only'] is True
+          assert state['orders_enabled'] is False
+          assert state['live_capital_locked'] is True
+          assert state['raw_chain']['chain_verified'] is True
+          summary = state['invariants']['summary']
+          assert summary['total'] == 31
+          assert summary['fail'] == 0
+          assert summary['unknown'] == 0
+          assert integrity['chain_verified'] is True
+          assert integrity['replay_verified'] is True
+          assert integrity['legacy_mode'] is False
+          assert replay['chain_verified'] is True
+          assert replay['replay_verified'] is True
           PY
 
-      - name: Wait for one discovery artifact
+      - name: Validate committed artifact
+        shell: bash
         run: |
-          artifact=""
+          set -euo pipefail
+          root="${RUNNER_TEMP}/h011-results/h011_v3/raw_chain_v1"
+          artifact="$(find "$root" -maxdepth 1 -type f -name 'raw_scan_*.events.jsonl.gz' | head -n 1)"
+          manifest="$(find "$root" -maxdepth 1 -type f -name 'manifest_*.json' | head -n 1)"
+          test -n "$artifact"
+          test -f "${artifact}.sha256"
+          test -n "$manifest"
+          expected="$(awk '{print $1}' "${artifact}.sha256")"
+          actual="$(sha256sum "$artifact" | awk '{print $1}')"
+          test "$expected" = "$actual"
+          find "$root" -maxdepth 1 -type f -printf '%f\n' | sort | tee /tmp/h011-pr3-files.log
 
-          for i in $(seq 1 180); do
-            artifact="$(find "${RUNNER_TEMP}/h011-results" \
-              -type f \
-              \( -name 'discovery_*.json.gz' -o -name '*.events.jsonl.gz' \) \
-              | head -n 1)"
-
-            if [ -n "$artifact" ]; then
-              break
-            fi
-
-            if ! docker inspect -f '{{.State.Running}}' senecio-h011-pr3 \
-              | grep -q true; then
-              echo "Container stopped during discovery"
-              docker logs senecio-h011-pr3
-              exit 1
-            fi
-
-            sleep 2
-          done
-
-          if [ -z "$artifact" ]; then
-            echo "No discovery/raw artifact generated"
-            docker logs senecio-h011-pr3
-            exit 1
-          fi
-
-          echo "Artifact generated: $artifact"
-
-          sha_file="${artifact}.sha256"
-          if [ -f "$sha_file" ]; then
-            expected="$(tr -d '[:space:]' < "$sha_file")"
-            actual="$(sha256sum "$artifact" | awk '{print $1}')"
-            test "$expected" = "$actual"
-            echo "Artifact SHA verified"
-          fi
-
-      - name: Check logs and filesystem
+      - name: Check logs and security flags
+        shell: bash
         run: |
-          docker logs senecio-h011-pr3 | tee /tmp/h011-container.log
-
+          set -euo pipefail
+          docker logs senecio-h011-pr3 | tee /tmp/h011-pr3-container.log
           ! grep -Ei \
             'orders_enabled[=: ]+true|live_capital_locked[=: ]+false|paper_only[=: ]+false' \
-            /tmp/h011-container.log
-
-          test "$(docker inspect -f '{{.State.Running}}' senecio-h011-pr3)" = "true"
+            /tmp/h011-pr3-container.log
+          test "$(docker inspect -f '{{.State.Running}}' senecio-h011-pr3)" = true
 
       - name: Upload smoke evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: h011-pr3-smoke-${{ github.sha }}
+          name: h011-pr3-smoke-${{ github.event.pull_request.head.sha }}
           path: |
-            /tmp/h011-container.log
-            /tmp/h011-state.json
+            /tmp/h011-pr3-*.log
+            /tmp/h011-pr3-*.json
             ${{ runner.temp }}/h011-results
           if-no-files-found: warn
           retention-days: 7
 
       - name: Stop container
         if: always()
-        run: |
-          docker rm -f senecio-h011-pr3 2>/dev/null || true
+        run: docker rm -f senecio-h011-pr3 2>/dev/null || true

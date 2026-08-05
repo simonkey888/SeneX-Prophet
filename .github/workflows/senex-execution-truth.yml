@@ -1,0 +1,160 @@
+name: SENEX Execution Truth and Monitoring
+
+on:
+  pull_request:
+    branches:
+      - feat/h011-v3-discovery-refresh
+    paths:
+      - "polymarket/paper/**"
+      - "polymarket/monitoring/**"
+      - "tests/paper_trial/**"
+      - "tests/monitoring/**"
+      - "docs/PAPER_EXECUTION_TRUTH.md"
+      - "docs/MONITORING_TRUTH_CONTRACT.md"
+      - "docs/PAPER_RISK_AUTHORITY_MAP.md"
+      - "governance/**"
+      - "tools/**"
+      - ".github/workflows/senex-execution-truth.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-execution-truth-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TERM: xterm
+  BASE_SHA: 2f8503533543832147caf4c8e97a0cc6f5af3cbc
+  EXACT_SHA: ${{ github.event.pull_request.head.sha }}
+
+jobs:
+  execution-truth:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.EXACT_SHA }}
+
+      - name: Verify exact stacked base and head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
+          test "${{ github.event.pull_request.base.sha }}" = "${BASE_SHA}"
+          test "$(git merge-base "${BASE_SHA}" "${EXACT_SHA}")" = "${BASE_SHA}"
+          git diff --check "${BASE_SHA}...${EXACT_SHA}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+
+      - name: Compile and run focused contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall polymarket/paper polymarket/monitoring tools tests/paper_trial tests/monitoring
+          PYTHONPATH=.:polymarket python -m pytest -q tests/paper_trial tests/monitoring tests/governance
+
+      - name: Global regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q
+
+      - name: Deterministic repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard "${EXACT_SHA}"
+          git clean -fdx
+          cp governance/repository_manifest.json /tmp/manifest.committed
+          cp governance/component_registry.json /tmp/registry.committed
+          cp governance/migration_map.json /tmp/migration.committed
+          cp governance/target_architecture.yaml /tmp/architecture.committed
+          python tools/verify_repository_contract.py --generate > /tmp/generate-one.json
+          cmp /tmp/manifest.committed governance/repository_manifest.json
+          cmp /tmp/registry.committed governance/component_registry.json
+          cmp /tmp/migration.committed governance/migration_map.json
+          cmp /tmp/architecture.committed governance/target_architecture.yaml
+          sha256sum governance/repository_manifest.json > /tmp/hash-one
+          python tools/verify_repository_contract.py --generate > /tmp/generate-two.json
+          sha256sum governance/repository_manifest.json > /tmp/hash-two
+          cmp /tmp/hash-one /tmp/hash-two
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          python tools/verify_repository_contract.py --base "${BASE_SHA}" --head "${EXACT_SHA}" --report /tmp/repository-contract.json
+
+      - name: Paper-only static exclusion gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          roots=[Path('polymarket/paper'),Path('polymarket/monitoring'),Path('tools/build_execution_truth_artifacts.py')]
+          forbidden_modules=('web3','eth_account','py_clob_client.client')
+          forbidden_calls=('post_order','create_order','submit_order','cancel_order','delete_order','derive_api_key')
+          violations=[]
+          for root in roots:
+              paths=[root] if root.is_file() else list(root.rglob('*.py'))
+              for path in paths:
+                  tree=ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+                  for node in ast.walk(tree):
+                      if isinstance(node,(ast.Import,ast.ImportFrom)):
+                          names=[a.name for a in node.names] if isinstance(node,ast.Import) else [node.module or '']
+                          if any(name.startswith(forbidden_modules) for name in names): violations.append(f'{path}:import:{names}')
+                      if isinstance(node,ast.Call):
+                          name=node.func.attr if isinstance(node.func,ast.Attribute) else node.func.id if isinstance(node.func,ast.Name) else ''
+                          if name in forbidden_calls: violations.append(f'{path}:call:{name}')
+          assert not violations, violations
+          PY
+
+      - name: Build exact-head container and fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f polymarket/Dockerfile.h011-v3 -t senex-execution-truth:"${EXACT_SHA}" .
+          rm -rf "${RUNNER_TEMP}/paper-fixture"
+          mkdir -p "${RUNNER_TEMP}/paper-fixture"
+          docker run --rm -e SENECIO_CODE_SHA="${EXACT_SHA}" -v "${RUNNER_TEMP}/paper-fixture:/trial" senex-execution-truth:"${EXACT_SHA}" python3 /app/polymarket/paper/trial_runner.py --output-dir /trial --fixture --duration-minutes 1 --minimum-windows 1 --code-sha "${EXACT_SHA}"
+          (cd "${RUNNER_TEMP}/paper-fixture" && sha256sum -c SHA256SUMS)
+
+      - name: Build execution-truth evidence and monitoring preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          GENERATED_AT="$(git show -s --format=%cI HEAD)"
+          COLLECTED="$(PYTHONPATH=.:polymarket python -m pytest --collect-only -q | python -c 'import re,sys; text=sys.stdin.read(); matches=re.findall(r"(\d+) tests? collected",text); print(matches[-1] if matches else 0)')"
+          rm -rf "${RUNNER_TEMP}/execution-truth"
+          PYTHONPATH=.:polymarket python tools/build_execution_truth_artifacts.py --output-dir "${RUNNER_TEMP}/execution-truth" --code-sha "${EXACT_SHA}" --tree-sha "${TREE_SHA}" --generated-at "${GENERATED_AT}" --regression-count "${COLLECTED}"
+          (cd "${RUNNER_TEMP}/execution-truth" && sha256sum -c SHA256SUMS)
+          python - "${RUNNER_TEMP}/execution-truth/execution_truth_manifest.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1]))
+          assert m['code_sha'] == '${{ env.EXACT_SHA }}'
+          assert m['acceptance_result'] == 'PASS'
+          assert all(g['status'] == 'PASS' for g in m['gates'])
+          assert m['safety_invariants'] == {'paper_only': True, 'orders_enabled': False, 'live_capital_locked': True}
+          PY
+
+      - name: Upload exact-head execution truth artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-execution-truth-${{ env.EXACT_SHA }}
+          path: ${{ runner.temp }}/execution-truth
+          retention-days: 14
+          if-no-files-found: error

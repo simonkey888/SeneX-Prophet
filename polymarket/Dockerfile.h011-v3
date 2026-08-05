@@ -1,43 +1,35 @@
-# SENECKIO H-011 V3 — Integrity Pipeline (Staging)
-# Imagen separada del legacy. Ejecuta --pipeline integrity-v3 --window 300.
+# SENEX / SENECIO H-011 V3 — controlled paper-only runtime.
 FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    H011_PIPELINE_VERSION=integrity-v3 \
+    H011_RESULTS_DIR=/app/polymarket/results
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir httpx numpy fastapi uvicorn
+COPY polymarket/requirements-h011-v3.txt /tmp/requirements-h011-v3.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-h011-v3.txt
 
-# CACHE BUST
-ARG CACHE_BUST=20260710v3
+ARG CACHE_BUST=20260721-phase-iic
 RUN echo "cache bust ${CACHE_BUST}"
 
-RUN mkdir -p /app/polymarket/results/v3/raw /app/polymarket/results/v3/scans /app/polymarket/results/v3/replay
+# Copy the complete Python package rather than a fragile hand-maintained module.
+# Included explicitly by this package copy: polymarket/discovery_v3.py
+# list. Repository data and secrets are not baked into this image.
+COPY polymarket/ /app/polymarket/
 
-# Copiar TODOS los módulos V3 + control_plane + dashboard
-COPY polymarket/h011_v3_pipeline.py \
-     polymarket/discovery_v3.py \
-     polymarket/evidence_state.py \
-     polymarket/validation_semantics.py \
-     polymarket/market_structure.py \
-     polymarket/trade_binding.py \
-     polymarket/raw_event_store.py \
-     polymarket/clob_readonly.py \
-     polymarket/polymarket_connector.py \
-     polymarket/vwap_detector_v2.py \
-     polymarket/dashboard_v3.py \
-     polymarket/dashboard.py \
-     polymarket/__init__.py \
-     polymarket/start.sh \
-     polymarket/cron_h011.sh \
-     /app/polymarket/
-
-# Copiar control_plane como paquete
-COPY polymarket/control_plane/ /app/polymarket/control_plane/
+RUN mkdir -p \
+      /app/polymarket/results/v3/state \
+      /app/polymarket/results/h011_v3/raw_chain_v1 \
+    && find /app/polymarket -type d -name __pycache__ -prune -exec rm -rf '{}' +
 
 WORKDIR /app/polymarket
-
 EXPOSE 8080
 
-# V3 runtime: dashboard_v3 + single-scan-per-invocation (Docker controls periodicity)
-# --gamma-limit 3000 is REQUIRED: btc-updown-5m markets appear at offset ~2082+ in
-# production. Lower values silently fail to discover any valid directional markets.
-CMD ["sh", "-c", "python3 /app/polymarket/dashboard_v3.py 2>&1 & sleep 3 && while true; do python3 /app/polymarket/vwap_detector_v2.py --pipeline integrity-v3 --mode scan --window 300 --max-markets 10 --gamma-limit 3000 2>&1; sleep 300; done"]
+# Non-root execution is deferred until the real Northflank volume ownership and
+# mount permissions are verified. The runtime remains paper-only and sends no
+# orders regardless of UID.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3).read()"
+
+CMD ["python3", "/app/polymarket/h011_v3_runtime.py"]

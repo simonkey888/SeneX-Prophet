@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 
@@ -49,7 +49,6 @@ from trade_binding import (
     validate_trade_binding,
     compute_vwap_by_index,
 )
-from raw_event_store import save_raw_events, create_raw_event, append_raw_event
 from clob_readonly import fetch_orderbook, simulate_complete_set, is_executable, walk_asks, taker_fee
 from validation_semantics import (
     H011_COHORT_ID,
@@ -57,7 +56,28 @@ from validation_semantics import (
     new_scan_metadata,
     is_legacy_cohort,
 )
-from control_plane.replay import write_bundle
+
+try:
+    import h011_v3_raw_transaction as raw_tx
+    from h011_v3_raw_recovery import recover_raw_scan_transaction
+    from h011_v3_committed_snapshot import validate_committed_chain_under_lock
+except ModuleNotFoundError:  # package imports used by tests
+    from polymarket import h011_v3_raw_transaction as raw_tx  # type: ignore
+    from polymarket.h011_v3_raw_recovery import recover_raw_scan_transaction  # type: ignore
+    from polymarket.h011_v3_committed_snapshot import validate_committed_chain_under_lock  # type: ignore
+
+from control_plane.coverage import (
+    ScanContext,
+    SourceHealthTracker,
+    not_used_source_health,
+    compute_control_plane_state,
+    determine_scan_status,
+    compute_health_ok,
+    CATALOG_VERSION,
+    invariant_catalog_hash,
+    invariant_summary,
+    get_catalog,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -178,12 +198,15 @@ class HttpxClobClient:
 # V3 storage paths (separated from legacy)
 # ═══════════════════════════════════════════════════════════════════════
 
-V3_RESULTS_DIR = Path(__file__).parent / "results" / "v3"
-V3_RAW_DIR = V3_RESULTS_DIR / "raw"
-V3_SCANS_DIR = V3_RESULTS_DIR / "scans"
-V3_REPLAY_DIR = V3_RESULTS_DIR / "replay"
-V3_MASTER_LOG = V3_RESULTS_DIR / "_master_log_v3.jsonl"
+RESULTS_ROOT = Path(os.environ.get("H011_RESULTS_DIR", str(Path(__file__).parent / "results")))
+V3_RESULTS_DIR = RESULTS_ROOT / "v3"
+V3_RAW_DIR = V3_RESULTS_DIR / "raw"  # legacy read-only boundary
+V3_SCANS_DIR = V3_RESULTS_DIR / "scans"  # legacy read-only boundary
+V3_REPLAY_DIR = V3_RESULTS_DIR / "replay"  # legacy read-only boundary
+V3_MASTER_LOG = V3_RESULTS_DIR / "_master_log_v3.jsonl"  # legacy read-only boundary
+RAW_CHAIN_DIR = RESULTS_ROOT / "h011_v3" / "raw_chain_v1"
 UNEVALUATED_INVARIANT_COUNT = 31
+RawEventSink = Callable[[dict[str, Any]], None]
 
 
 def _unevaluated_control_plane_state() -> tuple[dict[str, dict[str, object]], dict[str, object], list[dict[str, object]]]:
@@ -238,9 +261,63 @@ def _unevaluated_control_plane_state() -> tuple[dict[str, dict[str, object]], di
     return source_health, invariants, alerts
 
 
-def _ensure_v3_dirs():
-    for d in [V3_RESULTS_DIR, V3_RAW_DIR, V3_SCANS_DIR, V3_REPLAY_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
+def _ensure_v3_dirs() -> None:
+    # Legacy directories remain readable; Phase II-C writes only state cache and
+    # the separate transactional raw chain.
+    for directory in [V3_RESULTS_DIR, V3_RESULTS_DIR / "state", RAW_CHAIN_DIR]:
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+def make_raw_envelope(
+    *,
+    source: str,
+    endpoint: str,
+    payload: Any,
+    request_params: dict[str, Any] | None = None,
+    condition_id: str = "",
+    event_type: str = "source_response",
+) -> dict[str, Any]:
+    return {
+        "received_at_utc": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "endpoint": endpoint,
+        "request_params": request_params or {},
+        "requested_condition_id": condition_id,
+        "event_type": event_type,
+        "payload": payload,
+        "payload_sha256": raw_tx.canonical_payload_sha256(payload),
+        "cohort_id": H011_COHORT_ID,
+        "schema_version": "h011-raw-envelope-v1",
+    }
+
+
+def _append_raw_event(sink: RawEventSink | None, event: dict[str, Any]) -> str:
+    if sink is not None:
+        sink(event)
+    return str(event["payload_sha256"])
+
+
+def _finalize_with_terminal_evidence(
+    record: dict[str, Any], sink: RawEventSink | None
+) -> dict[str, Any]:
+    status = str(record.get("record_status") or "UNKNOWN")
+    if sink is not None and (status.startswith("REJECTED_") or status == "HISTORICAL_SIGNAL_ONLY"):
+        reasons = (
+            record.get("rejection_reasons")
+            or record.get("shadow_execution", {}).get("rejection_reasons")
+            or [record.get("reason_code") or "not_recorded"]
+        )
+        event = make_raw_envelope(
+            source="senex_validation",
+            endpoint="internal://post-fetch-rejection",
+            payload={"status": status, "reasons": list(reasons)},
+            condition_id=str(record.get("condition_id") or ""),
+            event_type="post_fetch_rejection",
+        )
+        record.setdefault("evidence", {}).setdefault("raw_event_hashes", []).append(
+            _append_raw_event(sink, event)
+        )
+    return _finalize_record(record)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -677,6 +754,7 @@ def _empty_v3_record(
             "snapshot_delta_ms": None,
         },
         "shadow_execution": {
+            "attempted": False,
             "status": "NOT_EVALUATED",
             "target_quantity": None,
             "equal_fillable_quantity": None,
@@ -728,6 +806,7 @@ def process_market_v3(
     data_api_client: DataApiClient,
     clob_client: ClobClient,
     persist_raw: bool = True,
+    raw_event_sink: RawEventSink | None = None,
 ) -> dict[str, Any]:
     """
     Process a single market through the full V3 pipeline.
@@ -837,30 +916,31 @@ def process_market_v3(
         }
 
     record = _empty_v3_record(run_id, scan_id, structure.condition_id, structure, config)
-    record["_raw_bundle"] = {
-        "gamma": gamma_market,
-        "trades": raw_trades if False else [],
-        "books": {},
-        "fees": {"takerBaseFee": gamma_market.get("takerBaseFee"), "feesEnabled": structure.fees_enabled},
-    }
+    record["_raw_bundle"] = {"gamma": gamma_market, "trades": [], "books": {}, "fees": {}}
 
     # ── Step 3: Fetch Data API trades ──
-    raw_trades = data_api_client.fetch_trades(structure.condition_id, window_start_ts, now_ts)
+    record["data_api_called"] = True
+    try:
+        raw_trades = data_api_client.fetch_trades(structure.condition_id, window_start_ts, now_ts)
+    except Exception as exc:
+        error_event = make_raw_envelope(
+            source="polymarket_data_api", endpoint="/trades",
+            payload={"error_type": type(exc).__name__, "error": str(exc)[:500]},
+            request_params={"market": structure.condition_id},
+            condition_id=structure.condition_id, event_type="source_error",
+        )
+        record["evidence"]["raw_event_hashes"].append(_append_raw_event(raw_event_sink, error_event))
+        record["validation"]["trade_binding"] = "UNKNOWN"
+        record["shadow_execution"]["status"] = "REJECTED"
+        record["shadow_execution"]["rejection_reasons"] = ["data_api_error"]
+        record["record_status"] = "REJECTED_DATA_API_UNAVAILABLE"
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
     record["_raw_bundle"]["trades"] = raw_trades
-
-    # Save raw Data API response BEFORE transforming
-    raw_event = create_raw_event(
-        condition_id=structure.condition_id,
-        payload=raw_trades,
-        request_params={"market": structure.condition_id},
-        window_s=config.window_s,
+    trades_event = make_raw_envelope(
+        source="polymarket_data_api", endpoint="/trades", payload=raw_trades,
+        request_params={"market": structure.condition_id}, condition_id=structure.condition_id,
     )
-    if persist_raw:
-        _ensure_v3_dirs()
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        raw_path = V3_RAW_DIR / f"{date_str}.events.jsonl.gz"
-        append_raw_event(raw_path, raw_event)
-    record["evidence"]["raw_event_hashes"].append(raw_event["payload_sha256"])
+    record["evidence"]["raw_event_hashes"].append(_append_raw_event(raw_event_sink, trades_event))
 
     if not raw_trades:
         record["validation"]["trade_binding"] = "UNKNOWN"
@@ -868,7 +948,7 @@ def process_market_v3(
         record["shadow_execution"]["status"] = "REJECTED"
         record["shadow_execution"]["rejection_reasons"] = ["no_trades_in_window"]
         record["record_status"] = "REJECTED_NO_TRADES"
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     # ── Step 4: Validate trade-to-token binding ──
     verified_trades = []
@@ -885,7 +965,7 @@ def process_market_v3(
         record["shadow_execution"]["status"] = "REJECTED"
         record["shadow_execution"]["rejection_reasons"] = binding_rejections[:5]
         record["record_status"] = "REJECTED_TRADE_BINDING"
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     record["validation"]["trade_binding"] = "trade_token_binding_verified_v1"
 
@@ -901,7 +981,7 @@ def process_market_v3(
             record["shadow_execution"]["status"] = "REJECTED"
             record["shadow_execution"]["rejection_reasons"] = [f"staleness_{staleness_delta:.0f}s_exceeds_{config.staleness_threshold_sec}s"]
             record["record_status"] = "REJECTED_STALENESS"
-            return _finalize_record(record)
+            return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     # ── Step 6: Compute VWAP by index ──
     vwap_results = compute_vwap_by_index(verified_trades)
@@ -911,7 +991,7 @@ def process_market_v3(
     if leg_0.get("vwap") is None or leg_1.get("vwap") is None:
         record["record_status"] = "REJECTED_INSUFFICIENT_LEG_TRADES"
         record["shadow_execution"]["rejection_reasons"] = ["insufficient_trades_one_leg"]
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     sum_vwap = leg_0["vwap"] + leg_1["vwap"]
     dev_signed = sum_vwap - 1.0
@@ -939,14 +1019,26 @@ def process_market_v3(
     assert token_1 != structure.condition_id, "token_id must not equal condition_id"
     assert token_0 != token_1, "token IDs must be distinct"
 
+    record["shadow_execution"]["attempted"] = True
+    record["clob_called"] = True
     try:
         ts_before_0 = datetime.now(timezone.utc)
         book_0 = clob_client.fetch_book(token_0)
+        book_0_event = make_raw_envelope(
+            source="polymarket_clob", endpoint="/book", payload=book_0,
+            request_params={"token_id": token_0, "leg": 0}, condition_id=structure.condition_id,
+        )
+        book_0_event_hash = _append_raw_event(raw_event_sink, book_0_event)
         ts_after_0 = datetime.now(timezone.utc)
         leg_0_received_ts = ts_after_0.isoformat()
 
         ts_before_1 = datetime.now(timezone.utc)
         book_1 = clob_client.fetch_book(token_1)
+        book_1_event = make_raw_envelope(
+            source="polymarket_clob", endpoint="/book", payload=book_1,
+            request_params={"token_id": token_1, "leg": 1}, condition_id=structure.condition_id,
+        )
+        book_1_event_hash = _append_raw_event(raw_event_sink, book_1_event)
         record["_raw_bundle"]["books"] = {"leg_0": book_0, "leg_1": book_1}
         ts_after_1 = datetime.now(timezone.utc)
         leg_1_received_ts = ts_after_1.isoformat()
@@ -954,9 +1046,9 @@ def process_market_v3(
         snapshot_delta_ms = abs((ts_after_1 - ts_after_0).total_seconds() * 1000)
 
         # Save raw CLOB books
-        book_0_hash = hashlib.sha256(json.dumps(book_0, sort_keys=True).encode()).hexdigest()
-        book_1_hash = hashlib.sha256(json.dumps(book_1, sort_keys=True).encode()).hexdigest()
-        record["evidence"]["raw_event_hashes"].extend([book_0_hash, book_1_hash])
+        book_0_hash = raw_tx.canonical_payload_sha256(book_0)
+        book_1_hash = raw_tx.canonical_payload_sha256(book_1)
+        record["evidence"]["raw_event_hashes"].extend([book_0_event_hash, book_1_event_hash])
 
         record["quoted_liquidity"] = {
             "status": "AVAILABLE",
@@ -971,14 +1063,20 @@ def process_market_v3(
             record["shadow_execution"]["status"] = "REJECTED"
             record["shadow_execution"]["rejection_reasons"] = [f"snapshot_delta_{snapshot_delta_ms:.0f}ms_exceeds_{config.max_snapshot_delta_ms}ms"]
             record["record_status"] = "REJECTED_SNAPSHOT_DESYNC"
-            return _finalize_record(record)
+            return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     except Exception as e:
+        error_event = make_raw_envelope(
+            source="polymarket_clob", endpoint="/book",
+            payload={"error_type": type(e).__name__, "error": str(e)[:500]},
+            condition_id=structure.condition_id, event_type="source_error",
+        )
+        record["evidence"]["raw_event_hashes"].append(_append_raw_event(raw_event_sink, error_event))
         record["quoted_liquidity"]["status"] = "UNAVAILABLE"
         record["shadow_execution"]["status"] = "REJECTED"
         record["shadow_execution"]["rejection_reasons"] = [f"clob_error: {str(e)[:100]}"]
         record["record_status"] = "REJECTED_BOOK_UNAVAILABLE"
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     # ── Step 8: Walk both ask books ──
     target_q = config.min_equal_quantity * 10
@@ -993,7 +1091,7 @@ def process_market_v3(
             f"insufficient_equal_depth: fillable_0={walk_0.filled_shares:.2f} fillable_1={walk_1.filled_shares:.2f} min={config.min_equal_quantity}"
         ]
         record["record_status"] = "REJECTED_INSUFFICIENT_EQUAL_DEPTH"
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     # ── Step 9: Resolve fee rate ──
     fee_rate = None
@@ -1004,11 +1102,19 @@ def process_market_v3(
         except (ValueError, TypeError):
             fee_rate = None
 
+    fee_event = make_raw_envelope(
+        source="polymarket_gamma", endpoint="fee_metadata",
+        payload={"feesEnabled": structure.fees_enabled, "takerBaseFee": gamma_market.get("takerBaseFee")},
+        condition_id=structure.condition_id, event_type="fee_metadata",
+    )
+    record["evidence"]["raw_event_hashes"].append(_append_raw_event(raw_event_sink, fee_event))
+    record["_raw_bundle"]["fees"] = fee_event["payload"]
+
     if structure.fees_enabled and fee_rate is None:
         record["shadow_execution"]["status"] = "REJECTED"
         record["shadow_execution"]["rejection_reasons"] = ["fee_rate_unknown"]
         record["record_status"] = "REJECTED_FEE_UNKNOWN"
-        return _finalize_record(record)
+        return _finalize_with_terminal_evidence(record, raw_event_sink)
 
     fee_rate = fee_rate or 0.0
 
@@ -1023,6 +1129,7 @@ def process_market_v3(
     net_edge = snapshot.payout - net_cost
 
     record["shadow_execution"] = {
+        "attempted": True,
         "status": "SHADOW_EXECUTABLE" if (snapshot.fully_fillable and net_edge > 0) else "REJECTED",
         "target_quantity": target_q,
         "equal_fillable_quantity": equal_fillable,
@@ -1030,6 +1137,7 @@ def process_market_v3(
         "leg_1_walk_vwap": snapshot.leg_1_cost / snapshot.shares if snapshot.shares > 0 else None,
         "gross_cost": round(gross_cost, 6),
         "fee_rate": fee_rate,
+        "fee_known": True,
         "fees": round(fees, 6),
         "latency_buffer": round(latency_buffer, 6),
         "safety_buffer": round(safety_buffer, 6),
@@ -1049,12 +1157,53 @@ def process_market_v3(
         if record["record_status"] not in ("SHADOW_EXECUTABLE",):
             record["record_status"] = "HISTORICAL_SIGNAL_ONLY"
 
-    return _finalize_record(record)
+    return _finalize_with_terminal_evidence(record, raw_event_sink)
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Scan orchestrator
 # ═══════════════════════════════════════════════════════════════════════
+
+def _abort_unconsumed_transfer(transfer: raw_tx.RawArtifactTransfer) -> None:
+    """Clean a pre-STAGED transfer only while caller ownership is proven."""
+    if transfer._closed:
+        return
+    sealed = transfer.sealed
+    name_stat = os.stat(
+        sealed.staging_filename,
+        dir_fd=transfer.pending_directory.fd,
+        follow_symlinks=False,
+    )
+    fd_stat = os.fstat(transfer.staging_fd)
+    expected = (sealed.device_id, sealed.inode, sealed.size_bytes)
+    if (name_stat.st_dev, name_stat.st_ino, name_stat.st_size) != expected:
+        raise raw_tx.RawArtifactTransactionError("pre-STAGED staging name identity changed")
+    if (fd_stat.st_dev, fd_stat.st_ino, fd_stat.st_size) != expected:
+        raise raw_tx.RawArtifactTransactionError("pre-STAGED staging fd identity changed")
+    os.unlink(sealed.staging_filename, dir_fd=transfer.pending_directory.fd)
+    os.fsync(transfer.pending_directory.fd)
+    transfer.close()
+
+
+def _health_from_records(source: str, records: list[dict[str, Any]], field: str):
+    attempted = any(bool(record.get(field)) for record in records)
+    if not attempted:
+        return not_used_source_health(source, f"{source} was not used by this scan")
+    tracker = SourceHealthTracker(source)
+    tracker.mark_used()
+    tracker.record_request()
+    if source == "data_api_trades":
+        failed = any(record.get("record_status") == "REJECTED_DATA_API_UNAVAILABLE" for record in records)
+    elif source == "clob_orderbook":
+        failed = any(record.get("record_status") == "REJECTED_BOOK_UNAVAILABLE" for record in records)
+    else:
+        failed = False
+    if failed:
+        tracker.record_error(f"{source} request failed")
+    else:
+        tracker.record_response(200, 0)
+    return tracker.build()
+
 
 def run_scan_v3(
     *,
@@ -1065,24 +1214,30 @@ def run_scan_v3(
     clob_client: ClobClient,
     persist_raw: bool = True,
     discovery: dict[str, Any] | None = None,
+    gamma_tracker=None,
+    canonical_tracker=None,
+    data_api_tracker=None,
 ) -> dict[str, Any]:
-    """
-    Run a complete V3 scan over a list of markets.
+    """Run one scan and commit its raw evidence before publishing a snapshot.
 
-    Returns a dict with scan metadata and list of records.
+    Phase II-C intentionally has no legacy authoritative writer. Disabling raw
+    persistence disables the complete scan orchestrator; callers that only need
+    record transformation should call :func:`process_market_v3` directly.
     """
-    config.validate()  # Assert V3 invariants at startup
+    config.validate()
+    if not persist_raw:
+        raise ValueError("Phase II-C run_scan_v3 requires transactional raw persistence")
 
+    _ensure_v3_dirs()
     run_id = datetime.now(timezone.utc).isoformat()
     scan_id = run_id
-
     scan_meta = {
         "pipeline_version": "h011-integrity-v3",
         "cohort_id": H011_COHORT_ID,
         "window_s": config.window_s,
         "estimator": config.estimator,
-        "paper_only": config.paper_only,
-        "live_capital_locked": config.live_capital_locked,
+        "paper_only": True,
+        "live_capital_locked": True,
         "orders_enabled": False,
         "run_id": run_id,
         "scan_id": scan_id,
@@ -1092,158 +1247,258 @@ def run_scan_v3(
         "discovery_complete": bool((discovery or {}).get("discovery_complete", False)),
         "discovery_replay_verified": bool((discovery or {}).get("discovery_replay_verified", False)),
     }
-
     print(f"\n[V3 SCAN] {json.dumps(scan_meta, indent=2)}")
 
-    records = []
-    for i, market in enumerate(markets, 1):
-        q = (market.get("question") or "")[:50]
-        print(f"  [{i:3d}/{len(markets)}] {q:<50}", end="")
-        record = process_market_v3(
-            gamma_market=market,
-            now_ts=now_ts,
-            config=config,
-            run_id=run_id,
-            scan_id=scan_id,
-            data_api_client=data_api_client,
-            clob_client=clob_client,
-            persist_raw=persist_raw,
+    records: list[dict[str, Any]] = []
+    transfer: raw_tx.RawArtifactTransfer | None = None
+    with raw_tx.RawScanStager(run_id=run_id, scan_id=scan_id, raw_dir=RAW_CHAIN_DIR) as stager:
+        if discovery is not None:
+            discovery_payload = discovery.get("evidence") or {
+                "status": discovery.get("status"),
+                "markets": discovery.get("markets", []),
+            }
+            stager.append_event(make_raw_envelope(
+                source="polymarket_gamma",
+                endpoint="/events/keyset",
+                payload=discovery_payload,
+                request_params={"window_s": config.window_s},
+                event_type="gamma_keyset_page",
+            ))
+
+        for index, market in enumerate(markets, 1):
+            question = (market.get("question") or "")[:50]
+            print(f"  [{index:3d}/{len(markets)}] {question:<50}", end="")
+            stager.append_event(make_raw_envelope(
+                source="polymarket_gamma",
+                endpoint=f"/markets/slug/{market.get('slug') or ''}",
+                payload=market,
+                condition_id=str(market.get("conditionId") or ""),
+                event_type="gamma_canonical_market",
+            ))
+            record = process_market_v3(
+                gamma_market=market,
+                now_ts=now_ts,
+                config=config,
+                run_id=run_id,
+                scan_id=scan_id,
+                data_api_client=data_api_client,
+                clob_client=clob_client,
+                persist_raw=False,
+                raw_event_sink=stager.append_event,
+            )
+            records.append(record)
+            status = record.get("record_status", "UNKNOWN")
+            if status == "SHADOW_EXECUTABLE":
+                print(f" → shadow {status}")
+            elif status == "HISTORICAL_SIGNAL_ONLY":
+                print(f" → historical {status}")
+            else:
+                print(f" → {status}")
+            time.sleep(0.15)
+
+        stager.seal()
+        transfer = stager.transfer()
+
+    assert transfer is not None
+    try:
+        with raw_tx.RawChainLock(
+            RAW_CHAIN_DIR, raw_tx.DEFAULT_MARKER_POLICY.manifest_prefix
+        ).acquire() as guard:
+            recovery = recover_raw_scan_transaction(
+                guard=guard,
+                raw_directory=RAW_CHAIN_DIR,
+                policy=raw_tx.DEFAULT_MARKER_POLICY,
+            )
+            publication = raw_tx.publish_raw_scan(
+                transfer=transfer,
+                guard=guard,
+                raw_directory=RAW_CHAIN_DIR,
+                policy=raw_tx.DEFAULT_MARKER_POLICY,
+                manifest_created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            committed_chain = validate_committed_chain_under_lock(
+                guard=guard,
+                raw_directory=RAW_CHAIN_DIR,
+                policy=raw_tx.DEFAULT_MARKER_POLICY,
+            )
+    except raw_tx.PublishTransactionFailure as exc:
+        if not exc.transfer_consumed and transfer is not None:
+            _abort_unconsumed_transfer(transfer)
+        raise
+    except Exception:
+        if transfer is not None and not transfer._closed:
+            # Recovery/publish may have failed before a marker existed. Clean only
+            # when no transaction evidence took ownership.
+            marker_names = list(RAW_CHAIN_DIR.glob("*.marker"))
+            if not marker_names:
+                _abort_unconsumed_transfer(transfer)
+        raise
+
+    if publication.status != "PUBLISHED" or committed_chain.latest is None:
+        raise raw_tx.RawArtifactTransactionError(
+            f"transaction did not reach committed steady state: {publication.status}"
         )
-        records.append(record)
+    chain_binding = committed_chain.to_dict()
+    latest_entry = committed_chain.latest
 
-        status = record.get("record_status", "UNKNOWN")
-        if status == "SHADOW_EXECUTABLE":
-            print(f" → ✅ {status}")
-        elif status == "HISTORICAL_SIGNAL_ONLY":
-            print(f" → 📡 {status} (dev={record['historical_signal'].get('dev_signed', '?')})")
-        else:
-            print(f" → ❌ {status}")
-
-        time.sleep(0.15)
-
-    # Save V3 records (separate from legacy)
-    _ensure_v3_dirs()
-    v3_path = V3_SCANS_DIR / f"v3_scan_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.jsonl"
-    with open(v3_path, "w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
-
-    # Update V3 master log
     summary = {
         **scan_meta,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "markets_processed": len(records),
-        "shadow_executable": sum(1 for r in records if r.get("record_status") == "SHADOW_EXECUTABLE"),
-        "historical_signal_only": sum(1 for r in records if r.get("record_status") == "HISTORICAL_SIGNAL_ONLY"),
-        "rejected": sum(1 for r in records if "REJECTED" in r.get("record_status", "")),
-        "v3_scan_file": str(v3_path.name),
+        "shadow_executable": sum(1 for record in records if record.get("record_status") == "SHADOW_EXECUTABLE"),
+        "historical_signal_only": sum(1 for record in records if record.get("record_status") == "HISTORICAL_SIGNAL_ONLY"),
+        "rejected": sum(1 for record in records if str(record.get("record_status", "")).startswith("REJECTED_")),
+        "transaction_status": publication.status,
+        "startup_recovery_before_publish": recovery.status,
+        "current_sequence": latest_entry["sequence"],
+        "manifest_hash": latest_entry["manifest_hash"],
+        "raw_artifact": latest_entry["filename"],
+        "file_sha256": latest_entry["file_sha256"],
+        "canonical_events_sha256": latest_entry["canonical_events_sha256"],
     }
-    with open(V3_MASTER_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps(summary, ensure_ascii=False, default=str) + "\n")
 
-    print(f"\n[V3] Saved {len(records)} records to {v3_path}")
-    print(f"[V3] Master log: {V3_MASTER_LOG}")
-    print(f"[V3] Shadow executable: {summary['shadow_executable']}")
-    print(f"[V3] Historical only: {summary['historical_signal_only']}")
-    print(f"[V3] Rejected: {summary['rejected']}")
-
-    # Persist one complete, replayable bundle before publishing the snapshot.
     code_sha = (
         os.environ.get("NF_DEPLOYMENT_SHA")
         or os.environ.get("GIT_SHA")
         or os.environ.get("SENECIO_CODE_SHA")
         or "unknown"
     )
-    bundle_path = V3_RAW_DIR / f"bundle_{scan_id.replace(':', '').replace('+', '_')}.json"
-    raw_gamma = [r.get("_raw_bundle", {}).get("gamma") for r in records if r.get("_raw_bundle", {}).get("gamma")]
-    raw_trades = {str(r.get("condition_id")): r.get("_raw_bundle", {}).get("trades", []) for r in records}
-    raw_books = {str(r.get("condition_id")): r.get("_raw_bundle", {}).get("books", {}) for r in records}
-    raw_fees = {str(r.get("condition_id")): r.get("_raw_bundle", {}).get("fees", {}) for r in records}
-    public_records = [{k: v for k, v in r.items() if k != "_raw_bundle"} for r in records]
-    bundle = write_bundle(
-        bundle_path, scan_id=scan_id, code_sha=code_sha,
-        config=config.normalized(), gamma=raw_gamma, trades=raw_trades,
-        books=raw_books, fees=raw_fees, records=public_records,
-        run_id=run_id, cohort_identity=H011_COHORT_ID, window_end_ts=now_ts,
-    )
-    summary["semantic_hash"] = bundle["semantic_hash"]
-    summary["canonical_content_hash"] = bundle["canonical_content_hash"]
-    summary["file_sha256"] = bundle["file_sha256"]
-    summary["raw_bundle"] = bundle_path.name
+    public_records = [{key: value for key, value in record.items() if key != "_raw_bundle"} for record in records]
+    funnel = {
+        "discovered": len(markets),
+        "identity_valid": sum(1 for record in records if record.get("record_status") not in ("REJECTED_IDENTITY", "REJECTED_METADATA")),
+        "structure_verified": sum(1 for record in records if record.get("validation", {}).get("structure") == "market_structure_verified_v2"),
+        "trade_binding_verified": sum(1 for record in records if record.get("validation", {}).get("trade_binding") == "trade_token_binding_verified_v1"),
+        "historical_signal_available": sum(1 for record in records if record.get("historical_signal", {}).get("status") == "AVAILABLE"),
+        "shadow_executable": summary["shadow_executable"],
+        "rejected": summary["rejected"],
+    }
 
-    # ── Generate snapshot ──
-    try:
-        from control_plane.state_snapshot import build_snapshot, save_snapshot
-        funnel = {
-            "discovered": len(markets),
-            "identity_valid": sum(1 for r in records if r.get("record_status") != "REJECTED_METADATA"),
-            "structure_verified": sum(1 for r in records if r.get("validation", {}).get("structure") == "market_structure_verified_v2"),
-            "trade_binding_verified": sum(1 for r in records if r.get("validation", {}).get("trade_binding") == "trade_token_binding_verified_v1"),
-            "historical_signal_available": sum(1 for r in records if r.get("historical_signal", {}).get("status") == "AVAILABLE"),
-            "shadow_executable": summary["shadow_executable"],
-            "rejected": summary["rejected"],
+    def compact_reason(record: dict[str, Any]) -> str:
+        direct = record.get("reason_code")
+        if direct:
+            return str(direct)
+        reasons = record.get("shadow_execution", {}).get("rejection_reasons") or []
+        return ", ".join(str(reason) for reason in reasons) or "not_recorded"
+
+    market_records_compact = [
+        {
+            "condition_id": record.get("condition_id", ""),
+            "question": record.get("metadata", {}).get("question", "")[:80],
+            "record_status": record.get("record_status", "UNKNOWN"),
+            "reason_code": compact_reason(record),
+            "dev_signed": record.get("historical_signal", {}).get("dev_signed"),
+            "sum_vwap": record.get("historical_signal", {}).get("sum_vwap"),
+            "net_edge": record.get("shadow_execution", {}).get("net_edge"),
+            "equal_fillable_quantity": record.get("shadow_execution", {}).get("equal_fillable_quantity"),
+            "record_hash": record.get("evidence", {}).get("record_hash", ""),
+            "real_order_sent": False,
+            "real_fill": False,
+            "realized_pnl": None,
         }
-        def compact_reason(record: dict[str, Any]) -> str:
-            """Keep the terminal rejection reason visible without changing the record."""
-            direct = record.get("reason_code")
-            if direct:
-                return str(direct)
-            historical = record.get("historical_signal", {}).get("reason_code")
-            if historical:
-                return str(historical)
-            reasons = record.get("shadow_execution", {}).get("rejection_reasons") or []
-            return ", ".join(str(reason) for reason in reasons) or "not_recorded"
+        for record in public_records
+    ]
 
-        market_records_compact = [
-            {
-                "condition_id": r.get("condition_id", r.get("metadata", {}).get("condition_id", "")),
-                "question": r.get("metadata", {}).get("question", r.get("question", ""))[:80],
-                "record_status": r.get("record_status", "UNKNOWN"),
-                "reason_code": compact_reason(r),
-                "dev_signed": r.get("historical_signal", {}).get("dev_signed"),
-                "sum_vwap": r.get("historical_signal", {}).get("sum_vwap"),
-                "net_edge": r.get("shadow_execution", {}).get("net_edge"),
-                "equal_fillable_quantity": r.get("shadow_execution", {}).get("equal_fillable_quantity"),
-                "record_hash": r.get("evidence", {}).get("record_hash", ""),
-                "real_order_sent": False,
-                "real_fill": False,
-                "realized_pnl": None,
-            }
-            for r in records
-        ]
-        source_health, invariants, alerts = _unevaluated_control_plane_state()
-        snapshot = build_snapshot(
-            scan_id=scan_id,
-            run_id=run_id,
-            pipeline_version="h011-integrity-v3",
-            cohort_id=H011_COHORT_ID,
-            window_s=config.window_s,
-            estimator=config.estimator,
-            code_sha=code_sha,
-            config_sha=config.config_sha,
-            scan_status="COMPLETE_WITH_UNKNOWN_VALIDATION",
-            source_health=source_health,
-            funnel=funnel,
-            market_records=market_records_compact,
-            invariants=invariants,
-            alerts=alerts,
-            aggregate_metrics={
-                "discovery": {
-                    "status": scan_meta["discovery_status"],
-                    "discovery_complete": scan_meta["discovery_complete"],
-                    "discovery_replay_verified": scan_meta["discovery_replay_verified"],
-                    "markets_selected": len(markets),
-                    "evidence_file": (discovery or {}).get("artifact_path"),
-                    "file_sha256_matches": bool((discovery or {}).get("file_sha256_matches", False)),
-                    "rejection_histogram": ((discovery or {}).get("evidence") or {}).get("rejection_histogram", {}),
-                }
-            },
-        )
-        save_snapshot(snapshot)
-        print(f"[V3] Snapshot saved: {snapshot.snapshot_hash[:16]}...")
-        summary["snapshot_hash"] = snapshot.snapshot_hash
-    except Exception as e:
-        print(f"[V3] WARNING: Snapshot generation failed: {e}")
-        summary["snapshot_hash"] = None
+    gamma_health = gamma_tracker.build() if gamma_tracker is not None else (
+        _health_from_records("gamma_metadata", public_records, "gamma_called")
+        if discovery is None else SourceHealthTracker("gamma_metadata").build()
+    )
+    if discovery is not None and gamma_tracker is None:
+        tracker = SourceHealthTracker("gamma_metadata")
+        tracker.mark_used(); tracker.record_request(); tracker.record_response(200, 0)
+        gamma_health = tracker.build()
+    canonical_health = canonical_tracker.build() if canonical_tracker is not None else gamma_health
+    data_api_health = data_api_tracker.build() if data_api_tracker is not None else _health_from_records(
+        "data_api_trades", public_records, "data_api_called"
+    )
+    clob_health = _health_from_records("clob_orderbook", public_records, "clob_called")
+    source_health_telemetry = {
+        "gamma_metadata": gamma_health,
+        "gamma_canonical": canonical_health,
+        "data_api_trades": data_api_health,
+        "clob_orderbook": clob_health,
+    }
 
-    return {"scan": summary, "records": records}
+    from control_plane import state_snapshot as snapshot_module
+    snapshot_module.SNAPSHOT_DIR = V3_RESULTS_DIR / "state"
+    previous_run_ids = [entry["run_id"] for entry in committed_chain.entries[:-1]]
+    previous_scan_ids = [entry["scan_id"] for entry in committed_chain.entries[:-1]]
+    ctx = ScanContext(
+        run_id=run_id,
+        scan_id=scan_id,
+        pipeline_version="h011-integrity-v3",
+        window_s=config.window_s,
+        paper_only=True,
+        live_capital_locked=True,
+        orders_enabled=False,
+        funnel=funnel,
+        market_records=market_records_compact,
+        records=records,
+        source_health=source_health_telemetry,
+        discovery_meta={
+            "status": scan_meta["discovery_status"],
+            "discovery_complete": scan_meta["discovery_complete"],
+            "markets_selected": len(markets),
+        },
+        snapshot_hash=None,
+        snapshot_path=str(V3_RESULTS_DIR / "state" / "latest.json"),
+        results_dir=str(V3_RESULTS_DIR),
+        raw_dir=str(RAW_CHAIN_DIR),
+        previous_run_ids=previous_run_ids,
+        previous_scan_ids=previous_scan_ids,
+    )
+    aggregate_metrics = {
+        "raw_chain": chain_binding,
+        "discovery": {
+            "status": scan_meta["discovery_status"],
+            "discovery_complete": scan_meta["discovery_complete"],
+            "discovery_replay_verified": scan_meta["discovery_replay_verified"],
+            "markets_selected": len(markets),
+            "evidence_file": (discovery or {}).get("artifact_path"),
+            "file_sha256_matches": bool((discovery or {}).get("file_sha256_matches", False)),
+            "rejection_histogram": ((discovery or {}).get("evidence") or {}).get("rejection_histogram", {}),
+        },
+    }
+
+    # First pass publishes a derived cache only after the raw transaction is
+    # committed. The second pass verifies that cache and stores final invariant
+    # results without any circular dependency on exact-file SHA-256.
+    source_health, invariants, alerts, scan_status = compute_control_plane_state(
+        ctx,
+        discovery_replay_verified=scan_meta["discovery_replay_verified"],
+        file_sha256_matches=True,
+        snapshot_hash_verified=True,
+        control_plane_replay_verified=True,
+    )
+    provisional = snapshot_module.build_snapshot(
+        scan_id=scan_id, run_id=run_id, pipeline_version="h011-integrity-v3",
+        cohort_id=H011_COHORT_ID, window_s=config.window_s, estimator=config.estimator,
+        code_sha=code_sha, config_sha=config.config_sha, scan_status=scan_status,
+        source_health=source_health, funnel=funnel, market_records=market_records_compact,
+        invariants=invariants, alerts=alerts, aggregate_metrics=aggregate_metrics,
+    )
+    snapshot_module.save_snapshot(provisional)
+    ctx.snapshot_hash = provisional.snapshot_hash
+    source_health, invariants, alerts, scan_status = compute_control_plane_state(
+        ctx,
+        discovery_replay_verified=scan_meta["discovery_replay_verified"],
+        file_sha256_matches=True,
+        snapshot_hash_verified=True,
+        control_plane_replay_verified=True,
+    )
+    snapshot = snapshot_module.build_snapshot(
+        scan_id=scan_id, run_id=run_id, pipeline_version="h011-integrity-v3",
+        cohort_id=H011_COHORT_ID, window_s=config.window_s, estimator=config.estimator,
+        code_sha=code_sha, config_sha=config.config_sha, scan_status=scan_status,
+        source_health=source_health, funnel=funnel, market_records=market_records_compact,
+        invariants=invariants, alerts=alerts, aggregate_metrics=aggregate_metrics,
+    )
+    snapshot_path = snapshot_module.save_snapshot(snapshot)
+    latest_payload = json.loads((snapshot_module.SNAPSHOT_DIR / "latest.json").read_text(encoding="utf-8"))
+    summary["semantic_hash"] = latest_payload["semantic_hash"]
+    summary["snapshot_hash"] = latest_payload["snapshot_hash"]
+    summary["canonical_content_hash"] = latest_payload["canonical_content_hash"]
+    summary["snapshot_file"] = snapshot_path.name
+    print(f"[V3] committed sequence={latest_entry['sequence']} manifest={latest_entry['manifest_hash'][:16]}...")
+    print(f"[V3] snapshot cache saved after committed-chain verification")
+    return {"scan": summary, "records": public_records}

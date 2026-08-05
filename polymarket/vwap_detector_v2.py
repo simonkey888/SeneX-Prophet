@@ -1052,7 +1052,17 @@ def main():
         print(f"Cohort: h011-v3-w300-vwap-structure-v2")
         print()
 
-        gamma_client = HttpxGammaDiscoveryClient()
+        # Fix #1: Create source health trackers BEFORE HTTP calls
+        from control_plane.coverage import SourceHealthTracker, not_used_source_health
+
+        gamma_tracker = SourceHealthTracker("gamma_metadata")
+        canonical_tracker = SourceHealthTracker("gamma_canonical")
+        data_api_tracker = SourceHealthTracker("data_api_trades")
+
+        gamma_client = HttpxGammaDiscoveryClient(
+            gamma_tracker=gamma_tracker,
+            canonical_tracker=canonical_tracker,
+        )
 
         def discover_cycle():
             discovery = discover_markets_v3(
@@ -1081,6 +1091,9 @@ def main():
                     data_api_client=HttpxDataApiClient(),
                     clob_client=HttpxClobClient(),
                     discovery=discovery,
+                    gamma_tracker=gamma_tracker,
+                    canonical_tracker=canonical_tracker,
+                    data_api_tracker=data_api_tracker,
                 )
                 print("\n[V3] Scan complete.")
                 return result
@@ -1101,8 +1114,14 @@ def main():
                 data_api_client=HttpxDataApiClient(),
                 clob_client=HttpxClobClient(),
                 discovery=discovery,
+                gamma_tracker=gamma_tracker,
+                canonical_tracker=canonical_tracker,
+                data_api_tracker=data_api_tracker,
             )
-            sys.exit(0 if result["scan"]["markets_processed"] > 0 else 1)
+            # A completed scan with zero eligible markets is an operational success,
+            # not a process failure. The snapshot and discovery status carry the
+            # semantic result.
+            sys.exit(0)
 
     else:
         # Legacy V2 pipeline

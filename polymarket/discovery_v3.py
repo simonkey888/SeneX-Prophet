@@ -199,7 +199,9 @@ class HttpxGammaDiscoveryClient:
                  max_pages_per_endpoint: int = 100,
                  canonical_market_fetcher: "CanonicalMarketFetcher | None" = None,
                  canonical_max_retries: int = 3,
-                 canonical_timeout: float = 10.0):
+                 canonical_timeout: float = 10.0,
+                 gamma_tracker=None,
+                 canonical_tracker=None):
         self.page_size = page_size
         self.transport = transport
         self.fetch_markets = fetch_markets
@@ -208,6 +210,9 @@ class HttpxGammaDiscoveryClient:
         self.canonical_fetcher = canonical_market_fetcher or HttpxCanonicalMarketFetcher(transport=transport)
         self.canonical_max_retries = canonical_max_retries
         self.canonical_timeout = canonical_timeout
+        # Fix #1: External trackers for real HTTP telemetry
+        self.gamma_tracker = gamma_tracker  # SourceHealthTracker for /events/keyset
+        self.canonical_tracker = canonical_tracker  # SourceHealthTracker for /markets/slug
 
     def _fetch_events_keyset(self, client: httpx.Client,
                              pages: list[dict]) -> dict[str, Any]:
@@ -236,6 +241,10 @@ class HttpxGammaDiscoveryClient:
             if next_cursor:
                 params["after_cursor"] = next_cursor
 
+            # Fix #1: Instrument real HTTP call with tracker
+            if self.gamma_tracker:
+                self.gamma_tracker.record_request()
+
             response = None
             received_at = None
             try:
@@ -243,8 +252,15 @@ class HttpxGammaDiscoveryClient:
                 received_at = datetime.now(timezone.utc).isoformat()
                 response.raise_for_status()
                 payload = response.json()
+                # Fix #1: Record successful response with real status and object count
+                if self.gamma_tracker:
+                    events_count = len(payload.get("events", [])) if isinstance(payload, dict) else 0
+                    self.gamma_tracker.record_response(response.status_code, events_count)
             except Exception as e:
                 error_msg = f"{type(e).__name__}: {str(e)[:300]}"
+                # Fix #1: Record error in tracker
+                if self.gamma_tracker:
+                    self.gamma_tracker.record_error(error_msg)
                 pages.append({
                     "endpoint": "/events/keyset", "cursor": next_cursor,
                     "limit": self.page_size,
@@ -334,17 +350,29 @@ class HttpxGammaDiscoveryClient:
 
         Returns (canonical_market_dict, error_message).
         If all retries fail, returns (None, error_message).
+
+        Fix #1: Instruments the canonical_tracker for real HTTP telemetry.
         """
         import time
         last_error: str | None = None
         for attempt in range(1, self.canonical_max_retries + 1):
+            # Fix #1: Instrument real HTTP call with tracker
+            if self.canonical_tracker:
+                self.canonical_tracker.record_request()
             try:
                 canonical = self.canonical_fetcher.fetch_by_slug(slug)
                 if canonical is not None and isinstance(canonical, dict):
+                    # Fix #1: Record successful response
+                    if self.canonical_tracker:
+                        self.canonical_tracker.record_response(200, 1)
                     return canonical, None
                 last_error = f"attempt {attempt}: fetch_by_slug returned non-dict"
+                if self.canonical_tracker:
+                    self.canonical_tracker.record_error(last_error)
             except Exception as e:
                 last_error = f"attempt {attempt}: {type(e).__name__}: {str(e)[:200]}"
+                if self.canonical_tracker:
+                    self.canonical_tracker.record_error(last_error)
             if attempt < self.canonical_max_retries:
                 time.sleep(0.5 * (2 ** (attempt - 1)))
         return None, last_error

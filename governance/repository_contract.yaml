@@ -1,0 +1,204 @@
+{
+  "schema_version": "senex-repository-contract-v2",
+  "repository": "simonkey888/SeneX-Prophet",
+  "mission_id": "SENEX-END-TO-END-COMPLETION-001",
+  "owner_authorization_comment_id": 5184689072,
+  "aud_order_comment_id": 5188597690,
+  "contract_base_sha": "2f8503533543832147caf4c8e97a0cc6f5af3cbc",
+  "contract_base_tree_sha": "b5b7807801f35d90f6901bdd7f1001fdb7a04292",
+  "target_branch": "feat/h011-v3-discovery-refresh",
+  "observed_production": {
+    "branch": "feat/h011-v3-discovery-refresh",
+    "sha": "2f8503533543832147caf4c8e97a0cc6f5af3cbc",
+    "mutation_authorized": true,
+    "authorization_comment_id": 5188597690
+  },
+  "allowed_change_paths": [
+    "governance/**",
+    "tools/**",
+    "tests/**",
+    "docs/**",
+    "polymarket/**",
+    ".github/workflows/senex-*.yml"
+  ],
+  "protected_production_paths": [
+    "senecio_polymarket/oracle/institutional_core.py",
+    "senecio_polymarket/oracle/predict_only.py",
+    "senecio_polymarket/oracle/market_ev.py"
+  ],
+  "production_paths": [
+    "polymarket/**",
+    "senecio_polymarket/**"
+  ],
+  "legacy_paths": [
+    "senecio_polymarket/**",
+    "Dockerfile",
+    "predict_only.py",
+    "oracle_lab.py",
+    ".github/workflows/oracle.yml"
+  ],
+  "research_paths": [
+    "research/**"
+  ],
+  "generated_runtime_paths": [
+    "senecio_output/**",
+    "polymarket/results/**",
+    "results/**",
+    "raw_chain_v1/**",
+    "paper_trial_output/**"
+  ],
+  "do_not_touch_hashes": {
+    "senecio_polymarket/oracle/institutional_core.py": "8d93224ea40118665f5e654b20fb9b6be30cef44842830abfe4befc800db968d",
+    "senecio_polymarket/oracle/predict_only.py": "eb7aee5e725ea48e3f64d87484c3632d25c63ca351a30e599dbd72d3cd26793e",
+    "senecio_polymarket/oracle/market_ev.py": "587caa35cc22e397df2c64b1b3c46aaf0a681e937295fbce2050962bac85f754"
+  },
+  "allowed_entrypoints": {
+    "candidate_runtime": [
+      "polymarket/h011_v3_runtime.py"
+    ],
+    "read_only_api": [
+      "polymarket/dashboard_v3.py"
+    ],
+    "scanner": [
+      "polymarket/vwap_detector_v2.py"
+    ],
+    "paper_trial": [
+      "polymarket/paper/trial_runner.py"
+    ],
+    "container": [
+      "polymarket/Dockerfile.h011-v3"
+    ]
+  },
+  "authoritative_raw_root": "/app/polymarket/results/h011_v3/raw_chain_v1",
+  "authoritative_raw_writers": [
+    {
+      "path": "polymarket/h011_v3_raw_transaction.py",
+      "symbol": "publish_raw_scan",
+      "counted_as": "PRIMARY"
+    }
+  ],
+  "paper_trial": {
+    "public_get_only": true,
+    "simulated_execution_only": true,
+    "real_order_network_calls": 0,
+    "real_order_methods_reachable": 0,
+    "wallet_private_key_dependencies": 0,
+    "duration_target_minutes": 60,
+    "minimum_complete_market_windows": 12,
+    "artifact_retention_days": 7
+  },
+  "workflow_policy": {
+    "default_permissions": {
+      "contents": "read"
+    },
+    "actions_must_be_full_sha_pinned": true,
+    "workflow_dispatch_authorized_only_for": [
+      ".github/workflows/senex-paper-trial.yml"
+    ],
+    "repository_write_steps": false,
+    "production_deploy_steps": true,
+    "secrets_required": true
+  },
+  "safety_invariants": {
+    "paper_only": {
+      "value": true,
+      "override": false
+    },
+    "orders_enabled": {
+      "value": false,
+      "override": false
+    },
+    "live_capital_locked": {
+      "value": true,
+      "override": false
+    },
+    "private_key_access": {
+      "value": false,
+      "override": false
+    },
+    "wallet_access": {
+      "value": false,
+      "override": false
+    },
+    "real_order_submission": {
+      "value": false,
+      "override": false
+    },
+    "production_mutation": {
+      "value": true,
+      "override": false,
+      "scope": "PAPER_ONLY_SENEX_DEPLOYMENT_AUTHORIZED_BY_COMMENT_5188597690"
+    }
+  },
+  "override_schema": {
+    "required": [
+      "mission_id",
+      "base_sha",
+      "head_sha",
+      "allowed_paths",
+      "issued_by",
+      "issued_at",
+      "expires_at",
+      "reason",
+      "old_hashes",
+      "new_hashes"
+    ],
+    "exact_path_match": true,
+    "expired_rejected": true,
+    "extra_path_rejected": true,
+    "safety_invariant_override_forbidden": true
+  },
+  "gates": [
+    "DO_NOT_TOUCH_HASH_CHANGED",
+    "FORBIDDEN_RUNTIME_OUTPUT_TRACKED",
+    "PRODUCTION_PATH_CHANGED",
+    "PRODUCTION_PATH_CHANGE_AUTHORIZED",
+    "UNCLASSIFIED_DUPLICATE",
+    "IMPORT_GRAPH_REGRESSION",
+    "AUTHORITATIVE_RAW_WRITER_COUNT",
+    "SAFETY_FLAGS_PRESENT",
+    "WALLET_OR_ORDER_CODE_INTRODUCED",
+    "RESEARCH_AUTHORITY_VIOLATION",
+    "TEMPORARY_WORKFLOW_REINTRODUCED",
+    "UNMAPPED_TRACKED_FILE",
+    "UNKNOWN_DOMAIN",
+    "ACTIVE_ENTRYPOINT_UNREGISTERED",
+    "DOMAIN_DEPENDENCY_VIOLATION",
+    "MULTIPLE_AUTHORITATIVE_RAW_WRITERS",
+    "LIVE_EXECUTION_AUTHORITY_PRESENT",
+    "WALLET_AUTHORITY_PRESENT",
+    "AI_COMPONENT_WITH_EXECUTION_AUTHORITY",
+    "READ_ONLY_COMPONENT_WRITES_STATE",
+    "GENERATED_PATH_MISCLASSIFIED",
+    "MIGRATION_WITHOUT_SOURCE",
+    "MIGRATION_WITHOUT_TARGET_DOMAIN",
+    "MIGRATION_WITHOUT_ROLLBACK",
+    "UNRESOLVED_WITHOUT_EVIDENCE",
+    "MANIFEST_NONDETERMINISTIC",
+    "R0_CONTRACT_REGRESSION",
+    "PAPER_RUNTIME_DANGEROUS_CAPABILITY"
+  ],
+  "northflank": {
+    "existing_service_mutation_authorized": true,
+    "isolated_service": "senex-h011-paper-trial",
+    "fallback": "GITHUB_ACTIONS_CONTAINERIZED_PAPER_TRIAL",
+    "authorization_comment_id": 5188597690
+  },
+  "classified_duplicate_basenames": {
+    "__init__.py": {
+      "paths": [
+        "polymarket/monitoring/__init__.py",
+        "polymarket/paper/__init__.py"
+      ],
+      "classification": "DISTINCT_PACKAGE_MARKERS",
+      "reason": "These empty package markers establish separate monitoring and paper domains; they do not duplicate a subsystem or authority."
+    }
+  },
+  "research_authoritative_root_reference_allowlist": {
+    "research/H-011_v3_raw_artifact_transaction_design.md": {
+      "classification": "NON_AUTHORITATIVE_HISTORICAL_DESIGN",
+      "reason": "Historical design evidence retained for audit; it has no runtime imports, writer capability, or production authority.",
+      "current_authority": "polymarket/h011_v3_raw_transaction.py::publish_raw_scan and committed governance artifacts"
+    }
+  }
+}

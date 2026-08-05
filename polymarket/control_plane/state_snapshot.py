@@ -7,6 +7,8 @@ Historical snapshots are append-only. latest.json can be replaced atomically.
 from __future__ import annotations
 
 import hashlib
+import os
+import time
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -160,8 +162,31 @@ def build_snapshot(
 SNAPSHOT_DIR = Path(__file__).parent.parent / "results" / "v3" / "state"
 
 
+def _atomic_write(path: Path, payload: bytes, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.parent / f".{path.name}.tmp.{os.getpid()}.{time.time_ns()}"
+    fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, mode)
+    try:
+        view = memoryview(payload)
+        offset = 0
+        while offset < len(view):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                raise OSError("short write while publishing snapshot cache")
+            offset += written
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def save_snapshot(snapshot: ScanStateSnapshot) -> Path:
-    """Save snapshot as append-only historical + atomic latest.json."""
+    """Publish append-only history and an atomically replaced derived cache."""
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
     payload = snapshot.to_dict()
@@ -172,21 +197,19 @@ def save_snapshot(snapshot: ScanStateSnapshot) -> Path:
     ).hexdigest()
     payload["canonical_content_hash"] = canonical_content_hash
     payload["snapshot_hash"] = snapshot.semantic_hash
-    output = json.dumps(payload, indent=2, ensure_ascii=False)
-    # Historical: append-only
+    output = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+
     hist_path = SNAPSHOT_DIR / f"state_{snapshot.generated_at.replace(':', '')}_{snapshot.scan_id[:8]}.json"
-    hist_path.write_text(output, encoding="utf-8")
-    file_sha = hashlib.sha256(hist_path.read_bytes()).hexdigest()
-    hist_path.with_suffix(hist_path.suffix + ".sha256").write_text(file_sha + "\n", encoding="ascii")
+    if hist_path.exists():
+        raise FileExistsError(f"historical snapshot already exists: {hist_path}")
+    _atomic_write(hist_path, output)
+    file_sha = hashlib.sha256(output).hexdigest()
+    _atomic_write(hist_path.with_suffix(hist_path.suffix + ".sha256"), (file_sha + "\n").encode("ascii"))
 
-    # Latest: atomic replace
     latest_path = SNAPSHOT_DIR / "latest.json"
-    tmp_path = SNAPSHOT_DIR / "latest.json.tmp"
-    tmp_path.write_text(output, encoding="utf-8")
-    tmp_path.rename(latest_path)
-    latest_sha = hashlib.sha256(latest_path.read_bytes()).hexdigest()
-    (SNAPSHOT_DIR / "latest.json.sha256").write_text(latest_sha + "\n", encoding="ascii")
-
+    _atomic_write(latest_path, output)
+    latest_sha = hashlib.sha256(output).hexdigest()
+    _atomic_write(SNAPSHOT_DIR / "latest.json.sha256", (latest_sha + "\n").encode("ascii"))
     return hist_path
 
 
