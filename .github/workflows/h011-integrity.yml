@@ -32,18 +32,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install exact runtime requirements
+      - name: Install exact hashed runtime and test requirements
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -r polymarket/requirements-h011-v3.txt
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: --no-deps \
+            -r polymarket/requirements-h011-v3.txt \
+            -r polymarket/requirements-h011-v3-test.txt
 
-      - name: Verify repository-wide paper-only boundary
+      - name: Verify dependency lock and repository-wide paper-only boundary
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/senex-paper-only
+          python tools/verify_h011_dependency_lock.py \
+            --runtime polymarket/requirements-h011-v3.txt \
+            --test polymarket/requirements-h011-v3-test.txt \
+            --output /tmp/senex-paper-only/dependency-lock.json
           python tools/verify_paper_only_repository.py \
             --repo-root . \
             --output /tmp/senex-paper-only/current.json
