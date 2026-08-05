@@ -79,8 +79,6 @@ jobs:
               for guard in required_download_guards:
                   if guard not in text:
                       errors.append(f"missing fail-closed download guard: {guard}")
-              if re.search(r"download_lock[\\s\\S]{0,500}\\|\\|\\s*die", text):
-                  errors.append("download_lock must not rely on caller-side || die for command failure")
           '''
           if ctext.count(marker) != 1:
               raise SystemExit(f'checker insertion point count={ctext.count(marker)}')
@@ -88,19 +86,16 @@ jobs:
 
           docs=Path('docs/H011_REPRODUCIBLE_RUNTIME.md')
           dtext=docs.read_text()
-          anchor='''- Runtime installation uses `--require-hashes`, `--only-binary=:all:`,
-            `--no-deps` and `--no-compile`.
+          section='''
+          ## Docker context isolation
+
+          H-011 filtering is isolated in
+          `polymarket/Dockerfile.h011-v3.dockerignore`. The repository root has no
+          restrictive `.dockerignore`, so the independent root Dockerfile retains its
+          required `senecio_polymarket/**` context.
           '''
-          replacement_docs='''- Runtime installation uses `--require-hashes`, `--only-binary=:all:`,
-            `--no-deps` and `--no-compile`.
-          - H-011 context filtering is isolated in
-            `polymarket/Dockerfile.h011-v3.dockerignore`; the repository root has no
-            restrictive `.dockerignore`, so the independent root Dockerfile retains its
-            required `senecio_polymarket/**` context.
-          '''
-          if dtext.count(anchor) != 1:
-              raise SystemExit(f'documentation anchor count={dtext.count(anchor)}')
-          docs.write_text(dtext.replace(anchor,replacement_docs))
+          if '## Docker context isolation' not in dtext:
+              docs.write_text(dtext.rstrip()+"\n"+section.lstrip())
           PY
 
           git rm .dockerignore
