@@ -45,3 +45,9 @@ persistent restart/replay continuity.
 - `TEMPORARY_VALIDATION_HARNESS=NONE_IN_FINAL_TREE`.
 - Repository-owned verification scripts remain because they are deterministic,
   self-tested and runnable outside GitHub Actions.
+## Docker context isolation
+
+H-011 filtering is isolated in
+`polymarket/Dockerfile.h011-v3.dockerignore`. The repository root has no
+restrictive `.dockerignore`, so the independent root Dockerfile retains its
+required `senecio_polymarket/**` context.

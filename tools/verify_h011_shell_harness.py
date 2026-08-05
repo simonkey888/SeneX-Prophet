@@ -64,6 +64,14 @@ def audit(script: Path) -> dict[str, object]:
         if marker not in text:
             errors.append(f"missing required marker: {marker}")
     errors.extend(_multi_local_assignment_errors(text))
+    required_download_guards = (
+        "if ! python3 -m pip download",
+        "xargs -0 -r sha256sum",
+        '[[ -s "$dest/SHA256SUMS" ]]',
+    )
+    for guard in required_download_guards:
+        if guard not in text:
+            errors.append(f"missing fail-closed download guard: {guard}")
     for name in OPTIONAL_CI_VARIABLES:
         unsafe = re.compile(rf"\${name}(?![A-Za-z0-9_])|\${{{name}}}")
         for number, line in enumerate(text.splitlines(), 1):

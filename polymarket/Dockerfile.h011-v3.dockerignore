@@ -1,5 +1,4 @@
 **
-!.dockerignore
 !polymarket/
 !polymarket/**
 polymarket/requirements-h011-v3.txt

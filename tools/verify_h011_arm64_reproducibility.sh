@@ -241,7 +241,7 @@ download_lock() {
   local log="${4:?log required}"
   rm -rf "$dest"
   mkdir -p "$dest"
-  python3 -m pip download --disable-pip-version-check \
+  if ! python3 -m pip download --disable-pip-version-check \
     --require-hashes \
     --only-binary=:all: \
     --no-deps \
@@ -250,12 +250,15 @@ download_lock() {
     --python-version 311 \
     --abi cp311 \
     -r "$lock" \
-    -d "$dest" > "$log" 2>&1
-  find "$dest" -type f -name '*.whl' -print0 \
-    | sort -z | xargs -0 sha256sum > "$dest/SHA256SUMS"
-  if find "$dest" -type f ! -name '*.whl' ! -name SHA256SUMS | grep -q .; then
+    -d "$dest" > "$log" 2>&1; then
     return 1
   fi
+  if find "$dest" -type f ! -name '*.whl' | grep -q .; then
+    return 1
+  fi
+  find "$dest" -type f -name '*.whl' -print0 \
+    | sort -z | xargs -0 -r sha256sum > "$dest/SHA256SUMS"
+  [[ -s "$dest/SHA256SUMS" ]]
 }
 
 platform=""
