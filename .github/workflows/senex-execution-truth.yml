@@ -127,7 +127,7 @@ jobs:
           docker build -f polymarket/Dockerfile.h011-v3 -t senex-execution-truth:"${EXACT_SHA}" .
           rm -rf "${RUNNER_TEMP}/paper-fixture"
           mkdir -p "${RUNNER_TEMP}/paper-fixture"
-          docker run --rm -e SENECIO_CODE_SHA="${EXACT_SHA}" -v "${RUNNER_TEMP}/paper-fixture:/trial" senex-execution-truth:"${EXACT_SHA}" python3 /app/polymarket/paper/trial_runner.py --output-dir /trial --fixture --duration-minutes 1 --minimum-windows 1
+          docker run --rm -e SENECIO_CODE_SHA="${EXACT_SHA}" -v "${RUNNER_TEMP}/paper-fixture:/trial" senex-execution-truth:"${EXACT_SHA}" python3 /app/polymarket/paper/trial_runner.py --output-dir /trial --fixture --duration-minutes 1 --minimum-windows 1 --code-sha "${EXACT_SHA}"
           (cd "${RUNNER_TEMP}/paper-fixture" && sha256sum -c SHA256SUMS)
 
       - name: Build execution-truth evidence and monitoring preview
