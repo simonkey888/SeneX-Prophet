@@ -1,34 +1,44 @@
-# SENEX / SENECIO H-011 V3 — controlled paper-only runtime.
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.7
+# SENEX / SENECIO H-011 V3 — reproducible controlled paper-only runtime.
+FROM python:3.11-slim@sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51c34de3f08cbb7
+
+ARG SOURCE_DATE_EPOCH=0
+ARG SENEX_CODE_SHA=unknown
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
     H011_PIPELINE_VERSION=integrity-v3 \
     H011_RESULTS_DIR=/app/polymarket/results
 
+LABEL org.opencontainers.image.revision="${SENEX_CODE_SHA}"
+
 WORKDIR /app
 
-COPY polymarket/requirements-h011-v3.txt /tmp/requirements-h011-v3.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-h011-v3.txt
+COPY --link polymarket/requirements-h011-v3.txt /tmp/requirements-h011-v3.txt
+RUN python -m pip install \
+      --no-cache-dir \
+      --no-compile \
+      --no-deps \
+      --only-binary=:all: \
+      --require-hashes \
+      -r /tmp/requirements-h011-v3.txt \
+    && rm -f /tmp/requirements-h011-v3.txt
 
-ARG CACHE_BUST=20260721-phase-iic
-RUN echo "cache bust ${CACHE_BUST}"
-
-# Copy the complete Python package rather than a fragile hand-maintained module.
-# Included explicitly by this package copy: polymarket/discovery_v3.py
-# list. Repository data and secrets are not baked into this image.
-COPY polymarket/ /app/polymarket/
-
-RUN mkdir -p \
+# Copy only the complete runtime package. Repository data and secrets are never
+# baked into the image. File modes are normalized for reproducible layers.
+COPY --link polymarket/ /app/polymarket/
+RUN find /app/polymarket -type d -exec chmod 0755 '{}' + \
+    && find /app/polymarket -type f -exec chmod 0644 '{}' + \
+    && find /app/polymarket -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+    && mkdir -p \
       /app/polymarket/results/v3/state \
-      /app/polymarket/results/h011_v3/raw_chain_v1 \
-    && find /app/polymarket -type d -name __pycache__ -prune -exec rm -rf '{}' +
+      /app/polymarket/results/h011_v3/raw_chain_v1
 
 WORKDIR /app/polymarket
 EXPOSE 8080
 
-# Non-root execution is deferred until the real Northflank volume ownership and
-# mount permissions are verified. The runtime remains paper-only and sends no
-# orders regardless of UID.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3).read()"
 
