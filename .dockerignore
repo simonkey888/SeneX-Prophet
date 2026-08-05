@@ -2,5 +2,6 @@
 !.dockerignore
 !polymarket/
 !polymarket/**
+polymarket/requirements-h011-v3.txt
 polymarket/requirements-h011-v3-test.txt
 polymarket/results/**
