@@ -57,3 +57,5 @@ jobs:
           git push origin HEAD:feat/senex-paper-execution-truth-v1
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
+
+# retry-anchor: 3
