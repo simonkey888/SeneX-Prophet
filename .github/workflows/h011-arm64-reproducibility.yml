@@ -32,6 +32,34 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Fail-fast harness preflight before emulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/senex-arm64-evidence"
+          mkdir -p "$evidence"
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python tools/verify_h011_shell_harness.py \
+            --script tools/verify_h011_arm64_reproducibility.sh \
+            --output "$evidence/harness-static-audit.json"
+          bash tools/verify_h011_arm64_reproducibility.sh \
+            --self-test "$evidence/harness-self-test"
+          grep -qx 'ARM64_PREFLIGHT=PASS' \
+            "$evidence/harness-self-test/result.env"
+          python - "$evidence/harness-self-test/harness-self-test.json" <<'PY'
+          import json,sys
+          report=json.load(open(sys.argv[1]))
+          assert report == {
+              'schema_version':'senex-h011-harness-self-test-v1',
+              'status':'PASS',
+              'bash_syntax_check':'PASS',
+              'unbound_variable_static_or_unit_check':'PASS',
+              'argument_and_output_directory_initialization':'PASS',
+              'result_env_written_on_every_controlled_failure':'PASS',
+              'harness_self_test':'PASS',
+          }
+          PY
+
       - name: Register ARM64 emulation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
         with:
@@ -44,7 +72,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash tools/verify_h011_arm64_reproducibility.sh "$RUNNER_TEMP/senex-arm64-evidence"
+          bash tools/verify_h011_arm64_reproducibility.sh \
+            "$RUNNER_TEMP/senex-arm64-evidence"
 
       - name: Upload checksummed evidence
         if: always()
@@ -61,4 +90,5 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$RUNNER_TEMP/senex-arm64-evidence/result.env"
-          grep -qx 'ARM64_PREFLIGHT=PASS' "$RUNNER_TEMP/senex-arm64-evidence/result.env"
+          grep -qx 'ARM64_PREFLIGHT=PASS' \
+            "$RUNNER_TEMP/senex-arm64-evidence/result.env"
