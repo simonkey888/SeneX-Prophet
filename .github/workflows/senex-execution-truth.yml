@@ -3,7 +3,7 @@ name: SENEX Execution Truth and Monitoring
 on:
   pull_request:
     branches:
-      - release/senex-paper-trial-v1
+      - feat/h011-v3-discovery-refresh
     paths:
       - "polymarket/paper/**"
       - "polymarket/monitoring/**"
@@ -25,7 +25,7 @@ concurrency:
 
 env:
   TERM: xterm
-  BASE_SHA: 00f018484f6e39f4cc7c518df02e1f1b0ab97df8
+  BASE_SHA: 2f8503533543832147caf4c8e97a0cc6f5af3cbc
   EXACT_SHA: ${{ github.event.pull_request.head.sha }}
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
-          test "${{ github.event.pull_request.base.ref }}" = "release/senex-paper-trial-v1"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
           test "${{ github.event.pull_request.base.sha }}" = "${BASE_SHA}"
           test "$(git merge-base "${BASE_SHA}" "${EXACT_SHA}")" = "${BASE_SHA}"
           git diff --check "${BASE_SHA}...${EXACT_SHA}"
