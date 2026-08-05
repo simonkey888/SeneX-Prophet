@@ -9,13 +9,14 @@ endpoints, or real capital.
 from __future__ import annotations
 
 import argparse
-import ast
 import hashlib
 import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+from verify_paper_only_repository import scan_repository
 
 CORPUS_SUFFIXES = (".json", ".jsonl", ".json.gz", ".jsonl.gz", ".csv", ".parquet")
 FORBIDDEN_MODULES = ("web3", "eth_account", "py_clob_client.client")
@@ -81,45 +82,8 @@ def iter_corpus_files(roots: Iterable[tuple[Path, bool]]) -> list[dict[str, Any]
 
 
 def static_security_scan(repo_root: Path) -> dict[str, Any]:
-    violations: list[str] = []
-    scanned: list[str] = []
-    for relative in SCAN_ROOTS:
-        root = repo_root / relative
-        paths = [root] if root.is_file() else sorted(root.rglob("*.py")) if root.exists() else []
-        for path in paths:
-            scanned.append(str(path.relative_to(repo_root)))
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                    if any(name.startswith(FORBIDDEN_MODULES) for name in names):
-                        violations.append(f"{path.relative_to(repo_root)}:import:{names}")
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    if module.startswith(FORBIDDEN_MODULES):
-                        violations.append(f"{path.relative_to(repo_root)}:import:{module}")
-                elif isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Attribute):
-                        name = node.func.attr
-                    elif isinstance(node.func, ast.Name):
-                        name = node.func.id
-                    else:
-                        name = ""
-                    if name in FORBIDDEN_CALLS:
-                        violations.append(f"{path.relative_to(repo_root)}:call:{name}")
-    return {
-        "status": "PASS" if not violations else "FAIL",
-        "scanned_files": scanned,
-        "violations": violations,
-        "invariants": {
-            "paper_only": True,
-            "orders_enabled": False,
-            "live_capital_locked": True,
-            "wallet_or_private_key_access": False,
-            "real_order_network_calls": 0,
-            "real_capital_actions": 0,
-        },
-    }
+    """Run the canonical repository-wide paper-only safety gate."""
+    return scan_repository(repo_root)
 
 
 def runbook_manifest(repo_root: Path) -> dict[str, Any]:

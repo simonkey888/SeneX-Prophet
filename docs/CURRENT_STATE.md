@@ -5,16 +5,12 @@
 - Product: **SENEX**
 - Technical system: **SENECIO H-011 V3**
 - Repository: `simonkey888/SeneX-Prophet`
-- Delivery branch before integration: `feat/h011-v3-discovery-refresh`
-- Pre-integration production and rollback SHA: `2f8503533543832147caf4c8e97a0cc6f5af3cbc`
-- Integration candidate branch: `feat/senex-paper-execution-truth-v1`
-- Candidate validated SHA: `72df6b78c27dcc20bec2405a4d4177c677468d9f`
-- Candidate validated tree: `98f43935037f4fc1f38a67279725469ed330823b`
-- Exact-head CI run: `30987358828`
-- Exact-head CI job: `92245123499`
-- Exact-head artifact: `8922658841`
-- Artifact ZIP SHA-256: `0ad6412d20df3f689a2729056ebade1ea49b11da8fbbf6c330a793a76333bb0b`
-- Final integration PR: `#26`, retargeted to `feat/h011-v3-discovery-refresh` and marked ready for review.
+- Canonical delivery branch: `feat/h011-v3-discovery-refresh`
+- Accepted product merge before correction: `d5047b2055d30d199954dd4e68ae2e676aa8a4ba`
+- Accepted product tree before correction: `781ee4166d37c041c609d151bd308661c6569191`
+- Corrective authority: Issue #23 comments `5190770249` and `5191330569`
+- Production rollback SHA before promotion: `2f8503533543832147caf4c8e97a0cc6f5af3cbc`
+- Production remains on the rollback SHA until repository-wide paper-only correction, backup, isolated restore and rollback gates pass.
 
 ## Permanent product boundary
 
@@ -23,27 +19,11 @@ paper_only=true
 orders_enabled=false
 live_capital_locked=true
 REAL_ORDER_NETWORK_CALLS=0
-WALLET_OR_PRIVATE_KEY=ABSENT
-REAL_CAPITAL=ABSENT
+WALLET_OR_PRIVATE_KEY_ACCESS=0
+REAL_CAPITAL_ACTIONS=0
 ```
 
-The current mission completes paper execution, durable evidence, replay, evaluation, deployment and read-only monitoring. Real-money execution is not a pending SENEX capability.
-
-## Reconciled causal stack
-
-The product stack is a strict linear ancestry chain:
-
-```text
-2f8503533543832147caf4c8e97a0cc6f5af3cbc  product/rollback baseline
-  -> aeb50867738b7ae7199f621a730080e09465458e  PR #5 control plane and transactional runtime
-  -> 39e1cf1bdad31a2b6f2178949a2977c837ebdf18  PR #24 executable repository constitution
-  -> 00f018484f6e39f4cc7c518df02e1f1b0ab97df8  PR #25 paper-trial and architecture completion
-  -> 72df6b78c27dcc20bec2405a4d4177c677468d9f  PR #26 execution truth and crash recovery
-```
-
-Each child is strictly ahead of its parent with the parent as merge base. No subsystem was reimplemented during reconciliation and no commit from PRs #5, #24, #25 or #26 is omitted by the final candidate.
-
-PR #21 was closed unmerged as a superseded optional research reference. Its TradingView bridge remains non-authoritative, local-only, outside the deployable product, and its branch and historical artifacts are retained for final audit.
+The deployable product contains public-data observation and deterministic paper simulation only. Authenticated exchange credentials, private positions or balances, order creation or cancellation, wallets, signing and real-capital routes are prohibited. The Binance testnet credential/order route is removed from both connector copies. The Oracle workflow is read-only and cannot commit, push or deploy Pages. `tools/verify_paper_only_repository.py` scans tracked root code, packages, scripts, workflows, Dockerfiles and configuration and fails closed on these capabilities.
 
 ## Candidate contracts
 
