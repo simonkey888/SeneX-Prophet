@@ -34,16 +34,12 @@ jobs:
           git add -A
           python tools/verify_repository_contract.py --generate
           git add -A
-          python - <<'PY'
-          import importlib.util
-          import json
-          from pathlib import Path
-          root=Path('.')
-          spec=importlib.util.spec_from_file_location('verify', root/'tools/verify_repository_contract.py')
-          mod=importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(mod)
-          manifest=json.loads((root/'governance/repository_manifest.json').read_text())
-          assert manifest['files_tracked_total'] == len(mod.tracked_files(root)), (manifest['files_tracked_total'], len(mod.tracked_files(root)))
+          TRACKED="$(git ls-files | wc -l | tr -d ' ')"
+          python - "${TRACKED}" <<'PY'
+          import json,sys
+          manifest=json.load(open('governance/repository_manifest.json'))
+          tracked=int(sys.argv[1])
+          assert manifest['files_tracked_total'] == tracked, (manifest['files_tracked_total'], tracked)
           PY
           git diff --cached --check
       - name: Install dependencies
