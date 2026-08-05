@@ -57,6 +57,7 @@ class GammaOnlyClient:
         self.requests = []
         self.evidence = []
         self.failures = 0
+        self.book_calls: dict[str, int] = {}
 
     def close(self) -> None:
         return None
@@ -99,13 +100,16 @@ class ValidBookClient(GammaOnlyClient):
         return payload, hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def book(self, token_id: str):
+        count = self.book_calls.get(token_id, 0) + 1
+        self.book_calls[token_id] = count
+        timestamp_ms = int(self._now_epoch * 1000) + (500 if token_id == "no" and count > 1 else 0)
         payload = {
             "asset_id": token_id,
-            "timestamp": str(int(self._now_epoch * 1000)) if hasattr(self, "_now_epoch") else "1785885000000",
+            "timestamp": str(timestamp_ms),
             "bids": [{"price": "0.45", "size": "20"}],
-            "asks": [{"price": "0.46", "size": "20"}],
+            "asks": [{"price": "0.56" if token_id == "no" and count > 1 else "0.46", "size": "20"}],
         }
-        return payload, hashlib.sha256(token_id.encode()).hexdigest()
+        return payload, hashlib.sha256(f"{token_id}:{count}:{timestamp_ms}".encode()).hexdigest()
 
 
 def fixture_engine():
@@ -289,6 +293,17 @@ def test_valid_books_are_counted_but_real_duration_still_controls_exit(tmp_path:
     assert summary["valid_order_books"] == 2
     assert summary["windows_observed"] == 1
     assert summary["source_failures"] == 0
+    assert summary["sequential_executions"] == 1
+    assert summary["fills"] == 2
+    integration = json.loads((tmp_path / "observed_runner_integration.json").read_text())
+    assert integration["result"] == "PASS"
+    record = integration["records"][0]
+    assert record["first_and_second_snapshot_hashes_distinct"] is True
+    assert record["second_source_or_receive_time_later"] is True
+    assert record["delay_elapsed_ms"] >= 500
+    assert record["first_leg_applied_count"] == 1
+    assert record["second_leg_applied_count"] == 1
+    assert record["second_leg_snapshot_required_terminal"] is False
 
 
 def test_zero_mutation_of_authoritative_raw_evidence(tmp_path: Path):
@@ -343,3 +358,95 @@ def test_artifact_tampering_is_detected(tmp_path: Path):
         assert "digest mismatch" in str(exc)
     else:
         raise AssertionError("tampering was not detected")
+
+
+class EmptySecondBookClient(ValidBookClient):
+    def book(self, token_id: str):
+        payload, digest = super().book(token_id)
+        if token_id == "no" and self.book_calls[token_id] > 1:
+            payload = {**payload, "bids": [], "asks": []}
+            digest = hashlib.sha256(b"empty-second").hexdigest()
+        return payload, digest
+
+
+class StaleSecondBookClient(ValidBookClient):
+    def book(self, token_id: str):
+        payload, digest = super().book(token_id)
+        if token_id == "no" and self.book_calls[token_id] > 1:
+            payload = {**payload, "timestamp": str(int((self._now_epoch - 60) * 1000))}
+            digest = hashlib.sha256(b"stale-second").hexdigest()
+        return payload, digest
+
+
+class ClosingDuringDelayClient(ValidBookClient):
+    def discover_active_btc_windows(self, *, now_epoch: int) -> BtcWindowDiscovery:
+        discovery = super().discover_active_btc_windows(now_epoch=now_epoch)
+        market = dict(discovery.eligible_markets[0])
+        market["_window_end_epoch"] = now_epoch + 0.25
+        return BtcWindowDiscovery(discovery.discovered_windows, (market,), (), ())
+
+
+def _run_observed_client(tmp_path: Path, client):
+    fake_clock = FakeClock(1_785_885_000)
+    result = run_trial(
+        output_dir=tmp_path,
+        config=TrialConfig(
+            duration_minutes=1,
+            minimum_windows=1,
+            poll_seconds=15,
+            slippage_bps_floor=0,
+            sequential_transport_delay_ms=500,
+        ),
+        fixture=False,
+        clock=fake_clock.as_trial_clock(),
+        client_factory=lambda: client,
+    )
+    report = json.loads((tmp_path / "observed_runner_integration.json").read_text())
+    return result, report
+
+
+def test_observed_runner_empty_second_book_keeps_first_fill_and_replays(tmp_path: Path):
+    client = EmptySecondBookClient()
+    result, report = _run_observed_client(tmp_path, client)
+    record = report["records"][0]
+    assert result["summary"]["sequential_executions"] == 1
+    assert result["summary"]["fills"] == 1
+    assert record["completion_status"] == "SECOND_LEG_FAILED_AFTER_FIRST_FILL"
+    assert record["second_leg_reason"] == "EMPTY_LIQUIDITY"
+    assert record["first_leg_applied_count"] == 1
+    assert record["second_leg_applied_count"] == 0
+    assert record["leg_imbalance_shares"] > 0
+    assert record["replay_result"] == "PASS"
+
+
+def test_observed_runner_stale_second_book_keeps_first_fill(tmp_path: Path):
+    client = StaleSecondBookClient()
+    result, report = _run_observed_client(tmp_path, client)
+    record = report["records"][0]
+    assert result["summary"]["fills"] == 1
+    assert record["second_leg_reason"] == "STALE_DATA"
+    assert record["first_leg_applied_count"] == 1
+    assert record["replay_result"] == "PASS"
+
+
+def test_observed_runner_window_close_during_delay_is_terminal_without_duplicate(tmp_path: Path):
+    client = ClosingDuringDelayClient()
+    result, report = _run_observed_client(tmp_path, client)
+    record = report["records"][0]
+    assert result["summary"]["fills"] == 1
+    assert record["second_leg_reason"] == "WINDOW_CLOSES_BETWEEN_LEGS"
+    assert client.book_calls == {"yes": 1, "no": 1}
+    assert record["first_leg_applied_count"] == 1
+    assert record["replay_result"] == "PASS"
+
+
+def test_repeated_poll_does_not_duplicate_first_or_second_leg(tmp_path: Path):
+    client = ValidBookClient()
+    result, report = _run_observed_client(tmp_path, client)
+    record = report["records"][0]
+    assert result["summary"]["sequential_executions"] == 1
+    assert client.book_calls == {"yes": 1, "no": 2}
+    assert record["first_leg_applied_count"] == 1
+    assert record["second_leg_applied_count"] == 1
+    assert record["no_duplicate_first_fill"] is True
+    assert record["replay_result"] == "PASS"

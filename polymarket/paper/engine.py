@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .broker import BrokerRejection, PublicOrderBook, SimulatedBroker
-from .execution import SequentialExecutionResult, SequentialPaperExecutor
+from .execution import PendingSequentialExecution, SequentialExecutionResult, SequentialPaperExecutor
 from .fees import FeeSchedule
 from .models import PaperDecision, PaperFill, PaperOrderIntent, PaperRiskDecision, sha256_json
 from .portfolio import PaperPortfolio
@@ -20,6 +20,15 @@ class PaperEngineResult:
     fills: list[PaperFill] = field(default_factory=list)
     abstention_reasons: list[str] = field(default_factory=list)
     sequential_execution: SequentialExecutionResult | None = None
+
+
+@dataclass
+class PendingPaperExecution:
+    decision: PaperDecision
+    intents: tuple[PaperOrderIntent, PaperOrderIntent]
+    risk_decision: PaperRiskDecision
+    executor: SequentialPaperExecutor
+    pending_execution: PendingSequentialExecution
 
 
 class PaperEngine:
@@ -93,7 +102,7 @@ class PaperEngine:
             signal_payload=dict(record),
         )
 
-    def process_h011_record(
+    def _prepare_h011_record(
         self,
         *,
         record: Mapping[str, Any],
@@ -104,14 +113,8 @@ class PaperEngine:
         config_sha: str,
         requested_shares: float,
         max_notional_per_leg_usd: float,
-        fee_schedules: Mapping[str, FeeSchedule] | None = None,
-        second_leg_books: Mapping[str, PublicOrderBook] | None = None,
-        second_timestamp_utc: str | None = None,
-        configured_transport_delay_ms: int = 500,
-        maximum_pair_skew_ms: float = 1_000.0,
-        window_end_epoch: float | None = None,
-        second_epoch: float | None = None,
-    ) -> PaperEngineResult:
+        fee_schedules: Mapping[str, FeeSchedule] | None,
+    ) -> PaperEngineResult | tuple[PaperDecision, tuple[PaperOrderIntent, PaperOrderIntent], PaperRiskDecision, Mapping[str, FeeSchedule]]:
         evidence_hash = sha256_json({
             "record": dict(record),
             "books": {
@@ -138,28 +141,22 @@ class PaperEngine:
             source_evidence_hash=evidence_hash,
             requested_shares=requested_shares,
         )
-        result = PaperEngineResult(decision=decision)
+        terminal = PaperEngineResult(decision=decision)
         if decision.action != "LONG":
-            result.abstention_reasons.extend(decision.reason_codes)
-            return result
+            terminal.abstention_reasons.extend(decision.reason_codes)
+            return terminal
         missing = [token for token in decision.token_ids if token not in books]
         if missing:
-            result.abstention_reasons.append("INVALID_BOOK")
-            return result
+            terminal.abstention_reasons.append("INVALID_BOOK")
+            return terminal
         fixture_books = all(book.source_timestamp_provenance == "FIXTURE_EXPLICIT" for book in books.values())
         if not fee_schedules and fixture_books:
             schedule = FeeSchedule.deterministic_fixture(condition_id=decision.condition_id, fee_rate="0.07", enabled=True)
             fee_schedules = {token: schedule for token in decision.token_ids}
         if not fee_schedules or any(token not in fee_schedules for token in decision.token_ids):
-            result.abstention_reasons.append("FEE_MODEL_UNVERIFIED")
-            return result
-        if second_leg_books is None and fixture_books:
-            second_leg_books = books
-            second_timestamp_utc = timestamp_utc
-        if second_leg_books is None or second_timestamp_utc is None:
-            result.abstention_reasons.append("SECOND_LEG_SNAPSHOT_REQUIRED")
-            return result
-        intents = [
+            terminal.abstention_reasons.append("FEE_MODEL_UNVERIFIED")
+            return terminal
+        intents = tuple(
             PaperOrderIntent.build(
                 decision=decision,
                 token_id=token,
@@ -169,8 +166,7 @@ class PaperEngine:
                 max_notional_usd=max_notional_per_leg_usd,
             )
             for token in decision.token_ids
-        ]
-        result.intents = intents
+        )
         initial = self.portfolio.snapshot(
             timestamp_utc=timestamp_utc,
             code_sha=code_sha,
@@ -196,29 +192,174 @@ class PaperEngine:
             book_valid=book_valid,
             consecutive_losses=self.portfolio.consecutive_losses,
         )
-        result.risk_decision = risk_decision
+        terminal.intents = list(intents)
+        terminal.risk_decision = risk_decision
         if not risk_decision.allowed:
-            result.abstention_reasons.extend(risk_decision.reason_codes)
-            return result
+            terminal.abstention_reasons.extend(risk_decision.reason_codes)
+            return terminal
+        return decision, intents, risk_decision, fee_schedules
+
+    def begin_h011_record(
+        self,
+        *,
+        record: Mapping[str, Any],
+        books: Mapping[str, PublicOrderBook],
+        outcomes: Mapping[str, str],
+        timestamp_utc: str,
+        code_sha: str,
+        config_sha: str,
+        requested_shares: float,
+        max_notional_per_leg_usd: float,
+        fee_schedules: Mapping[str, FeeSchedule] | None = None,
+        configured_transport_delay_ms: int = 500,
+        maximum_pair_skew_ms: float = 1_000.0,
+    ) -> PaperEngineResult | PendingPaperExecution:
+        prepared = self._prepare_h011_record(
+            record=record,
+            books=books,
+            outcomes=outcomes,
+            timestamp_utc=timestamp_utc,
+            code_sha=code_sha,
+            config_sha=config_sha,
+            requested_shares=requested_shares,
+            max_notional_per_leg_usd=max_notional_per_leg_usd,
+            fee_schedules=fee_schedules,
+        )
+        if isinstance(prepared, PaperEngineResult):
+            return prepared
+        decision, intents, risk_decision, verified_schedules = prepared
         executor = SequentialPaperExecutor(
             broker=self.broker,
             configured_transport_delay_ms=configured_transport_delay_ms,
             maximum_pair_skew_ms=maximum_pair_skew_ms,
         )
-        execution = executor.execute(
-            intents=(intents[0], intents[1]),
+        pending_execution = executor.begin(
+            intents=intents,
             first_books=books,
-            second_books=second_leg_books,
-            fee_schedules=fee_schedules,
+            fee_schedules=verified_schedules,
             first_now_utc=timestamp_utc,
+            portfolio=self.portfolio,
+        )
+        if pending_execution.first_fill is None:
+            execution = executor.complete(
+                pending=pending_execution,
+                second_books={},
+                second_now_utc=timestamp_utc,
+                portfolio=self.portfolio,
+            )
+            result = PaperEngineResult(
+                decision=decision,
+                intents=list(intents),
+                risk_decision=risk_decision,
+                fills=list(execution.fills),
+                sequential_execution=execution,
+            )
+            result.abstention_reasons.append(execution.first_leg.reason or "FIRST_LEG_NOT_EXECUTED")
+            return result
+        return PendingPaperExecution(
+            decision=decision,
+            intents=intents,
+            risk_decision=risk_decision,
+            executor=executor,
+            pending_execution=pending_execution,
+        )
+
+    def complete_h011_record(
+        self,
+        *,
+        pending: PendingPaperExecution,
+        second_leg_books: Mapping[str, PublicOrderBook],
+        second_timestamp_utc: str,
+        window_end_epoch: float | None = None,
+        second_epoch: float | None = None,
+        require_distinct_snapshot: bool = False,
+        second_failure_reason: str | None = None,
+    ) -> PaperEngineResult:
+        execution = pending.executor.complete(
+            pending=pending.pending_execution,
+            second_books=second_leg_books,
             second_now_utc=second_timestamp_utc,
             portfolio=self.portfolio,
             window_end_epoch=window_end_epoch,
             second_epoch=second_epoch,
+            require_distinct_snapshot=require_distinct_snapshot,
+            second_failure_reason=second_failure_reason,
         )
-        result.sequential_execution = execution
-        result.fills = list(execution.fills)
+        result = PaperEngineResult(
+            decision=pending.decision,
+            intents=list(pending.intents),
+            risk_decision=pending.risk_decision,
+            fills=list(execution.fills),
+            sequential_execution=execution,
+        )
         if execution.completion_status != "BOTH_LEGS_FILL":
             reason = execution.second_leg.reason or execution.first_leg.reason or execution.completion_status
             result.abstention_reasons.append(reason)
         return result
+
+    def process_h011_record(
+        self,
+        *,
+        record: Mapping[str, Any],
+        books: Mapping[str, PublicOrderBook],
+        outcomes: Mapping[str, str],
+        timestamp_utc: str,
+        code_sha: str,
+        config_sha: str,
+        requested_shares: float,
+        max_notional_per_leg_usd: float,
+        fee_schedules: Mapping[str, FeeSchedule] | None = None,
+        second_leg_books: Mapping[str, PublicOrderBook] | None = None,
+        second_timestamp_utc: str | None = None,
+        configured_transport_delay_ms: int = 500,
+        maximum_pair_skew_ms: float = 1_000.0,
+        window_end_epoch: float | None = None,
+        second_epoch: float | None = None,
+    ) -> PaperEngineResult:
+        fixture_books = bool(books) and all(book.source_timestamp_provenance == "FIXTURE_EXPLICIT" for book in books.values())
+        if second_leg_books is None and fixture_books:
+            second_leg_books = books
+            second_timestamp_utc = timestamp_utc
+        if second_leg_books is None or second_timestamp_utc is None:
+            prepared = self._prepare_h011_record(
+                record=record,
+                books=books,
+                outcomes=outcomes,
+                timestamp_utc=timestamp_utc,
+                code_sha=code_sha,
+                config_sha=config_sha,
+                requested_shares=requested_shares,
+                max_notional_per_leg_usd=max_notional_per_leg_usd,
+                fee_schedules=fee_schedules,
+            )
+            if isinstance(prepared, PaperEngineResult):
+                return prepared
+            decision, intents, risk_decision, _ = prepared
+            return PaperEngineResult(
+                decision=decision,
+                intents=list(intents),
+                risk_decision=risk_decision,
+                abstention_reasons=["SECOND_LEG_SNAPSHOT_REQUIRED"],
+            )
+        begun = self.begin_h011_record(
+            record=record,
+            books=books,
+            outcomes=outcomes,
+            timestamp_utc=timestamp_utc,
+            code_sha=code_sha,
+            config_sha=config_sha,
+            requested_shares=requested_shares,
+            max_notional_per_leg_usd=max_notional_per_leg_usd,
+            fee_schedules=fee_schedules,
+            configured_transport_delay_ms=configured_transport_delay_ms,
+            maximum_pair_skew_ms=maximum_pair_skew_ms,
+        )
+        if isinstance(begun, PaperEngineResult):
+            return begun
+        return self.complete_h011_record(
+            pending=begun,
+            second_leg_books=second_leg_books,
+            second_timestamp_utc=second_timestamp_utc,
+            window_end_epoch=window_end_epoch,
+            second_epoch=second_epoch,
+        )

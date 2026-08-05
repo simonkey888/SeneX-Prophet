@@ -62,6 +62,7 @@ class PaperPortfolio:
         self.journal = journal
         self.consecutive_losses = 0
         self.applied_settlement_ids: set[str] = set()
+        self.applied_fill_ids: set[str] = set()
 
     def _append(self, record: Mapping[str, Any]) -> None:
         item = dict(record)
@@ -69,7 +70,9 @@ class PaperPortfolio:
         if self.journal is not None:
             self.journal.append(item)
 
-    def apply_fill(self, fill: PaperFill, *, record: bool = True) -> None:
+    def apply_fill(self, fill: PaperFill, *, record: bool = True) -> bool:
+        if fill.deterministic_id in self.applied_fill_ids:
+            return False
         position = self.positions.setdefault(fill.token_id, _MutablePosition(fill.market_id, fill.condition_id, fill.token_id, fill.outcome))
         quantity = fill.filled_shares
         if fill.side == "BUY":
@@ -105,8 +108,10 @@ class PaperPortfolio:
                 position.settlement_state = SettlementState.SETTLED
         else:
             raise ValueError(f"unsupported side {fill.side}")
+        self.applied_fill_ids.add(fill.deterministic_id)
         if record:
             self._append({"type": "PAPER_FILL", "fill": fill.to_dict()})
+        return True
 
     def mark_position(self, *, token_id: str, price: float, record: bool = False, timestamp_utc: str | None = None, source_evidence_hash: str | None = None) -> None:
         if token_id not in self.positions:

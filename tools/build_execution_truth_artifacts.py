@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from polymarket.paper.models import PaperDecision, PaperOrderIntent, canonical_j
 from polymarket.paper.portfolio import PaperPortfolio
 from polymarket.paper.settlement import SETTLEMENT_CONTRACT_VERSION, ResolutionEvidence
 from polymarket.paper.broker import SOURCE_TIME_CONTRACT_VERSION
+from polymarket.paper.trial_runner import BtcWindowDiscovery, TrialClock, TrialConfig, run_trial
 
 FIXTURE_TIME = "2026-08-04T12:00:00Z"
 SECOND_TIME = "2026-08-04T12:00:00.500000Z"
@@ -142,12 +145,117 @@ def sequential_report() -> dict[str, Any]:
         check = item["completion_status"] == wanted if item["scenario"] == "BOTH_LEGS_FILL" else (wanted is None or item["second_leg"]["reason"] == wanted)
         checks.append({"scenario": item["scenario"], "pass": check})
     return {
+        "evidence_class": "FIXTURE_CONTRACT_EVIDENCE",
         "execution_model_version": EXECUTION_MODEL_VERSION,
         "scenarios": scenarios,
         "all_hostile_scenarios_pass": all(item["pass"] for item in checks),
         "checks": checks,
         "result": "PASS" if all(item["pass"] for item in checks) else "FAIL",
     }
+
+
+
+class _HarnessClock:
+    def __init__(self, epoch: float):
+        self.value = float(epoch)
+        self.mono = 0.0
+
+    def monotonic(self) -> float:
+        return self.mono
+
+    def epoch(self) -> float:
+        return self.value
+
+    def sleep(self, seconds: float) -> None:
+        self.mono += float(seconds)
+        self.value += float(seconds)
+
+    def now_utc(self) -> str:
+        return datetime.fromtimestamp(self.value, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    def trial_clock(self) -> TrialClock:
+        return TrialClock(monotonic=self.monotonic, epoch=self.epoch, sleep=self.sleep, now_utc=self.now_utc)
+
+
+class _ChangingSnapshotClient:
+    def __init__(self, clock: _HarnessClock):
+        self.clock = clock
+        self.requests: list[dict[str, Any]] = []
+        self.evidence: list[dict[str, Any]] = []
+        self.failures = 0
+        self.book_calls: dict[str, int] = {}
+
+    def close(self) -> None:
+        return None
+
+    def discover_active_btc_windows(self, *, now_epoch: int) -> BtcWindowDiscovery:
+        slug = "btc-updown-5m-runner-integration"
+        market = {
+            "id": slug,
+            "conditionId": slug,
+            "closed": False,
+            "acceptingOrders": True,
+            "active": True,
+            "clobTokenIds": ["yes", "no"],
+            "outcomes": ["UP", "DOWN"],
+            "_window_slug": slug,
+            "_window_epoch": now_epoch,
+            "_window_end_epoch": now_epoch + 300,
+        }
+        return BtcWindowDiscovery((slug,), (market,), (), ())
+
+    def market_info(self, condition_id: str):
+        payload = {"condition_id": condition_id, "fd": {"r": 0, "e": 2, "to": True}, "itode": False}
+        return payload, sha256_json(payload)
+
+    def book(self, token_id: str):
+        count = self.book_calls.get(token_id, 0) + 1
+        self.book_calls[token_id] = count
+        payload = {
+            "asset_id": token_id,
+            "timestamp": str(int(self.clock.epoch() * 1000)),
+            "bids": [{"price": "0.44", "size": "20"}],
+            "asks": [{"price": "0.56" if token_id == "no" and count > 1 else "0.46", "size": "20"}],
+        }
+        return payload, sha256_json({"token_id": token_id, "call": count, "payload": payload})
+
+
+def observed_runner_integration_report() -> dict[str, Any]:
+    clock = _HarnessClock(1_785_844_800.0)
+    client = _ChangingSnapshotClient(clock)
+    with tempfile.TemporaryDirectory(prefix="senex-runner-integration-") as temp:
+        root = Path(temp)
+        result = run_trial(
+            output_dir=root,
+            config=TrialConfig(
+                duration_minutes=1,
+                minimum_windows=1,
+                poll_seconds=15,
+                slippage_bps_floor=0.0,
+                sequential_transport_delay_ms=500,
+            ),
+            fixture=False,
+            clock=clock.trial_clock(),
+            client_factory=lambda: client,
+        )
+        report = json.loads((root / "observed_runner_integration.json").read_text(encoding="utf-8"))
+        report["summary"] = result["summary"]
+        report["client_book_calls"] = dict(client.book_calls)
+        records = list(report.get("records") or [])
+        checks = {
+            "observed_path_sequential_executions": result["summary"]["sequential_executions"] == 1,
+            "first_and_second_snapshot_hashes_distinct": bool(records) and records[0]["first_and_second_snapshot_hashes_distinct"],
+            "second_source_or_receive_time_later": bool(records) and records[0]["second_source_or_receive_time_later"],
+            "configured_delay_advances_monotonic_clock": bool(records) and records[0]["delay_elapsed_ms"] >= 500,
+            "first_leg_applied_exactly_once": bool(records) and records[0]["first_leg_applied_count"] == 1,
+            "second_leg_applied_or_failed_exactly_once": bool(records) and records[0]["second_leg_applied_count"] == 1,
+            "no_duplicate_first_fill_on_next_poll": client.book_calls == {"yes": 1, "no": 2},
+            "second_leg_snapshot_required_not_terminal": bool(records) and records[0]["second_leg_snapshot_required_terminal"] is False,
+            "replay_equality": report.get("replay_result") == "PASS",
+        }
+        report["checks"] = checks
+        report["result"] = "PASS" if all(checks.values()) else "FAIL"
+        return report
 
 
 def settlement_report() -> dict[str, Any]:
@@ -248,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     fees["fee_enabled"] = True
     fees["raw_schedule_hash"] = FeeSchedule.deterministic_fixture(exponent=2).raw_schedule_hash
     seq=sequential_report()
+    runner=observed_runner_integration_report()
     settlement=settlement_report()
     risk=risk_authority_report()
     regression={"test_count":args.regression_count,"zero_failures":True,"repository_gates":"PENDING_CI","static_real_execution_exclusion":"PASS","result":"PASS"}
@@ -255,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_time_audit.json":source,
         "fee_model_conformance.json":fees,
         "sequential_leg_scenarios.json":seq,
+        "observed_runner_integration_report.json":runner,
         "settlement_replay_report.json":settlement,
         "paper_risk_authority_map.json":risk,
         "regression_summary.json":regression,
@@ -271,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         {"gate_id":"GATE_1_EXACT_BASE","status":"PASS"},
         {"gate_id":"GATE_2_SOURCE_TIME_TRUTH","status":source["result"]},
         {"gate_id":"GATE_3_FEE_MODEL_OFFICIAL_CONFORMANCE","status":fees["result"]},
-        {"gate_id":"GATE_4_SEQUENTIAL_LEG_RISK","status":seq["result"]},
+        {"gate_id":"GATE_4_SEQUENTIAL_LEG_RISK","status":"PASS" if seq["result"]=="PASS" and runner["result"]=="PASS" else "FAIL"},
         {"gate_id":"GATE_5_SETTLEMENT_AND_VALUATION","status":settlement["result"]},
         {"gate_id":"GATE_6_RISK_AUTHORITY_NO_DUPLICATION","status":risk["result"]},
         {"gate_id":"GATE_7_MONITORING_TRUTH","status":"PENDING_RENDER"},
@@ -285,17 +395,17 @@ def main(argv: list[str] | None = None) -> int:
         "strategy_semantics_id":STRATEGY_SEMANTICS_ID,"execution_model_version":EXECUTION_MODEL_VERSION,
         "fee_model_version":FEE_MODEL_VERSION,"source_time_contract_version":SOURCE_TIME_CONTRACT_VERSION,
         "settlement_contract_version":SETTLEMENT_CONTRACT_VERSION,"input_artifact_hashes":input_hashes,
-        "source_coverage":"DETERMINISTIC_HOSTILE_FIXTURES_AND_PINNED_PUBLIC_CONTRACT_REFERENCES",
+        "source_coverage":{"fixture_contract_evidence":"PASS","observed_runner_integration_harness":runner["result"],"current_runtime_state_claimed":False},
         "safety_invariants":{"paper_only":True,"orders_enabled":False,"live_capital_locked":True},
         "known_unknowns":["PROFITABILITY_NOT_ESTABLISHED","NO_LONGER_TRIAL_AUTHORIZED","NO_OBSERVED_LATENCY_CLAIM","OFFICIAL_DOCS_SDK_FEE_CONFLICT_FOR_EXPONENT_NOT_EQUAL_TO_ONE"],
         "gates":gates,"acceptance_result":"PENDING_MONITORING_RENDER","generated_at_utc":args.generated_at,
     }
     manifest_hash=write_json(out/"execution_truth_manifest.json",manifest)
-    trial_summary={"trial_id":experiment_id,"run_state":"DETERMINISTIC_EXECUTION_TRUTH_VALIDATION","gamma_discovered_windows":0,"valid_order_book_windows":0,"malformed_source_windows":0,"expected_closed_no_book_windows":0,"unexpected_source_failures":0,"decisions_total":8,"abstention_counts":{"FEE_MODEL_UNVERIFIED":1,"STALE_DATA":1,"PAIR_TIMESTAMP_SKEW_EXCEEDED":1},"order_intents":16,"fills":sum(len(item["fills"]) for item in seq["scenarios"]),"fees_applied_usd":sum(float(fill["fee_usd"]) for item in seq["scenarios"] for fill in item["fills"]),"raw_chain_verified":True,"replay_verified":settlement["replay_result"]=="PASS"}
-    artifact_binding=hashlib.sha256(canonical_json_bytes({"manifest":manifest_hash,"inputs":input_hashes})).hexdigest()
-    model=build_monitoring_model(execution_manifest=manifest,trial_summary=trial_summary,source_time_audit=source,fee_report=fees,sequential_report=seq,settlement_report=settlement,risk_authority_map=risk,artifact_digest=artifact_binding,generated_at_utc=args.generated_at)
+    trial_summary={"trial_id":experiment_id,"run_state":"FIXTURE_CONTRACT_VALIDATION_NOT_CURRENT_RUNTIME_STATE","gamma_discovered_windows":0,"valid_order_book_windows":0,"malformed_source_windows":0,"expected_closed_no_book_windows":0,"unexpected_source_failures":0,"decisions_total":8,"abstention_counts":{"FEE_MODEL_UNVERIFIED":1,"STALE_DATA":1,"PAIR_TIMESTAMP_SKEW_EXCEEDED":1},"order_intents":16,"fills":sum(len(item["fills"]) for item in seq["scenarios"]),"fees_applied_usd":sum(float(fill["fee_usd"]) for item in seq["scenarios"] for fill in item["fills"]),"raw_chain_verified":True,"replay_verified":settlement["replay_result"]=="PASS"}
+    bundle_content_digest=hashlib.sha256(canonical_json_bytes({"manifest":manifest_hash,"inputs":input_hashes})).hexdigest()
+    model=build_monitoring_model(execution_manifest=manifest,trial_summary=trial_summary,source_time_audit=source,fee_report=fees,sequential_report=seq,runner_integration_report=runner,settlement_report=settlement,risk_authority_map=risk,bundle_content_digest=bundle_content_digest,github_artifact_zip_digest="UNAVAILABLE_AT_BUILD_TIME",generated_at_utc=args.generated_at)
     monitoring_result=render_monitoring_site(model=model,output_dir=out/"monitoring_site")
-    monitoring_report={"binding":dict(binding),"contract_version":monitoring_result["contract_version"],"source_artifact_hash":model["source_artifact_hash"],"site_files":monitoring_result["files"],"displayed_values_equal_source_artifacts":True,"unknowns_preserved":True,"safety_flags_visible":True,"simulated_labels_visible":True,"mutating_controls":0,"real_order_controls":0,"profitability_statement":"PROFITABILITY_NOT_ESTABLISHED","result":"PASS"}
+    monitoring_report={"binding":dict(binding),"evidence_scope":"FIXTURE_CONTRACT_EVIDENCE_AND_OBSERVED_RUNNER_INTEGRATION_HARNESS","bundle_content_digest":bundle_content_digest,"github_artifact_zip_digest":"UNAVAILABLE_AT_BUILD_TIME","contract_version":monitoring_result["contract_version"],"source_artifact_hash":model["source_artifact_hash"],"site_files":monitoring_result["files"],"displayed_values_equal_source_artifacts":True,"unknowns_preserved":True,"safety_flags_visible":True,"simulated_labels_visible":True,"mutating_controls":0,"real_order_controls":0,"profitability_statement":"PROFITABILITY_NOT_ESTABLISHED","result":"PASS"}
     write_json(out/"monitoring_truth_report.json",monitoring_report)
     manifest["gates"][6]["status"]="PASS"
     manifest["acceptance_result"]="PASS" if all(g["status"]=="PASS" for g in manifest["gates"]) else "REJECT_OR_PARTIAL_ACCEPT"

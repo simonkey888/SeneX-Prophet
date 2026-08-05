@@ -17,6 +17,8 @@ REQUIRED_ARTIFACTS = (
     "paper_decisions.jsonl",
     "paper_orders.jsonl",
     "paper_fills.jsonl",
+    "sequential_executions.jsonl",
+    "observed_runner_integration.json",
     "portfolio_ledger.jsonl",
     "portfolio_snapshots.jsonl",
     "risk_decisions.jsonl",

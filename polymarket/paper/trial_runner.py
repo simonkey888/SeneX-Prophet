@@ -21,7 +21,7 @@ if __package__ in {None, ""}:
 
 from polymarket.clob_readonly import simulate_complete_set
 from polymarket.paper.broker import PublicOrderBook, SimulatedBroker
-from polymarket.paper.engine import PaperEngine
+from polymarket.paper.engine import PaperEngine, PaperEngineResult, PendingPaperExecution
 from polymarket.paper.fees import FeeModelError, FeeSchedule, calculate_fee
 from polymarket.paper.models import PaperTrialSummary, deterministic_id, sha256_json
 from polymarket.paper.portfolio import AppendOnlyJournal, PaperPortfolio
@@ -119,6 +119,8 @@ class TrialConfig:
     max_consecutive_losses: int = 5
     book_staleness_seconds: float = 15.0
     slippage_bps_floor: float = 5.0
+    sequential_transport_delay_ms: int = 500
+    maximum_pair_skew_ms: float = 1_000.0
     public_get_only: bool = True
     paper_only: bool = True
     orders_enabled: bool = False
@@ -241,7 +243,7 @@ class PublicDataClient:
 
     def book(self, token_id: str) -> tuple[dict[str, Any], str]:
         payload = self.get_json(f"{CLOB_BASE}/book", {"token_id": token_id})
-        evidence_hash = self.evidence[-1]["sha256"]
+        evidence_hash = self.evidence[-1]["record_hash"]
         return payload, evidence_hash
 
     def market_info(self, condition_id: str) -> tuple[dict[str, Any], str]:
@@ -367,24 +369,108 @@ def run_trial(
     risk_decisions: list[dict[str, Any]] = []
     abstentions: list[dict[str, Any]] = []
     sequential_executions: list[dict[str, Any]] = []
-    observed_windows: set[str] = set()
+    runner_integration_records: list[dict[str, Any]] = []
+    terminal_windows: set[str] = set()
+    pending_windows: dict[str, PendingPaperExecution] = {}
+    valid_observed_windows: set[str] = set()
     gamma_discovered_windows: set[str] = set()
     expected_closed_no_book_windows: set[str] = set()
     malformed_source_windows: set[str] = set()
     valid_order_book_keys: set[str] = set()
     observed_markets: set[str] = set()
+    recorded_fill_ids: set[str] = set()
     unexpected_source_failures = 0
     stale_events = 0
     integrity_failures = 0
     client = client_factory()
+
+    def append_result(
+        result: PaperEngineResult,
+        *,
+        timestamp_utc: str,
+        books_for_marks: dict[str, PublicOrderBook],
+        append_decision: bool = True,
+        append_intents: bool = True,
+        append_risk: bool = True,
+    ) -> None:
+        nonlocal stale_events, integrity_failures
+        if append_decision:
+            decisions.append(result.decision.to_dict())
+        if append_intents:
+            orders.extend(intent.to_dict() for intent in result.intents)
+        if append_risk and result.risk_decision is not None:
+            risk_decisions.append(result.risk_decision.to_dict())
+        for fill in result.fills:
+            if fill.deterministic_id not in recorded_fill_ids:
+                fills.append(fill.to_dict())
+                recorded_fill_ids.add(fill.deterministic_id)
+        if result.sequential_execution is not None:
+            sequential_executions.append(result.sequential_execution.to_dict())
+        for reason in result.abstention_reasons:
+            abstentions.append({
+                "timestamp_utc": timestamp_utc,
+                "market_id": result.decision.market_id,
+                "decision_id": result.decision.deterministic_id,
+                "reason": reason,
+            })
+            if reason == "STALE_DATA":
+                stale_events += 1
+            if reason in {"INTEGRITY_FAILURE", "RAW_CHAIN_INVALID", "REPLAY_UNVERIFIED"}:
+                integrity_failures += 1
+        prices: dict[str, float] = {}
+        for token, book in books_for_marks.items():
+            if book.bids and book.asks:
+                prices[token] = (book.bids[0][0] + book.asks[0][0]) / 2.0
+        for token_id, mark_price in prices.items():
+            if token_id in portfolio.positions and portfolio.positions[token_id].quantity > 0:
+                portfolio.mark_position(
+                    token_id=token_id,
+                    price=mark_price,
+                    record=True,
+                    timestamp_utc=timestamp_utc,
+                    source_evidence_hash=result.decision.source_evidence_hash,
+                )
+        snapshots.append(portfolio.snapshot(
+            timestamp_utc=timestamp_utc,
+            code_sha=sha,
+            config_sha=config_sha,
+            source_evidence_hash=result.decision.source_evidence_hash,
+            prices={},
+        ).to_dict())
+
     try:
         while True:
             now_utc = runtime_clock.now_utc()
-            observations: list[tuple[dict[str, Any], dict[str, PublicOrderBook], dict[str, PublicOrderBook] | None, dict[str, str], dict[str, FeeSchedule]]] = []
+            markets: tuple[dict[str, Any], ...] = ()
             if fixture:
-                observations = _fixture_observations(now_utc)
+                for record, books, second_books, outcomes, fee_schedules in _fixture_observations(now_utc):
+                    window = str(record.get("window_slug") or record.get("market_id"))
+                    if window in terminal_windows:
+                        continue
+                    valid_observed_windows.add(window)
+                    valid_order_book_keys.update(f"{window}:{token}" for token in books)
+                    observed_markets.add(str(record.get("market_id")))
+                    per_leg_limit = config.virtual_starting_equity_usd * config.max_order_notional_pct / 100.0 / 2.0
+                    result = engine.process_h011_record(
+                        record=record,
+                        books=books,
+                        outcomes=outcomes,
+                        timestamp_utc=now_utc,
+                        code_sha=sha,
+                        config_sha=config_sha,
+                        requested_shares=config.requested_shares,
+                        max_notional_per_leg_usd=per_leg_limit,
+                        fee_schedules=fee_schedules,
+                        second_leg_books=second_books,
+                        second_timestamp_utc=now_utc,
+                        configured_transport_delay_ms=config.sequential_transport_delay_ms,
+                        maximum_pair_skew_ms=config.maximum_pair_skew_ms,
+                        window_end_epoch=record.get("window_end_epoch"),
+                        second_epoch=runtime_clock.epoch(),
+                    )
+                    append_result(result, timestamp_utc=now_utc, books_for_marks=books)
+                    terminal_windows.add(window)
             else:
-                markets: tuple[dict[str, Any], ...] = ()
                 now_epoch = int(runtime_clock.epoch())
                 try:
                     discovery = client.discover_active_btc_windows(now_epoch=now_epoch)
@@ -405,13 +491,15 @@ def run_trial(
                     markets = discovery.eligible_markets
                 for market in markets:
                     window_slug = str(market.get("_window_slug") or market.get("id") or "UNKNOWN_WINDOW")
-                    if window_slug in observed_windows:
+                    if window_slug in terminal_windows or window_slug in pending_windows:
                         continue
+                    state_history = ["DISCOVERED"]
                     tokens = _parse_list(market.get("clobTokenIds"))
                     outcomes = _parse_list(market.get("outcomes"))
                     if len(tokens) != 2:
                         unexpected_source_failures += 1
                         malformed_source_windows.add(window_slug)
+                        terminal_windows.add(window_slug)
                         abstentions.append({
                             "timestamp_utc": now_utc,
                             "market_id": str(market.get("id") or window_slug),
@@ -430,6 +518,7 @@ def run_trial(
                         )
                     except (AttributeError, PublicSourceError, FeeModelError) as exc:
                         unexpected_source_failures += 1
+                        terminal_windows.add(window_slug)
                         abstentions.append({
                             "timestamp_utc": now_utc,
                             "market_id": market_id,
@@ -439,6 +528,7 @@ def run_trial(
                         })
                         continue
                     if fee_schedule.fee_enabled and not fee_schedule.verified:
+                        terminal_windows.add(window_slug)
                         abstentions.append({
                             "timestamp_utc": now_utc,
                             "market_id": market_id,
@@ -463,10 +553,7 @@ def run_trial(
                                 payload=payload,
                                 source_evidence_hash=evidence_hash,
                             )
-                            book.validate(
-                                now_utc=now_utc,
-                                staleness_seconds=config.book_staleness_seconds,
-                            )
+                            book.validate(now_utc=now_utc, staleness_seconds=config.book_staleness_seconds)
                             books[token] = book
                         except Exception as exc:
                             failed = True
@@ -479,11 +566,12 @@ def run_trial(
                                 expected_closed_no_book_windows.add(window_slug)
                             else:
                                 unexpected_source_failures += 1
+                            terminal_windows.add(window_slug)
                             abstentions.append({
                                 "timestamp_utc": now_utc,
                                 "market_id": market_id,
                                 "reason": reason,
-                                "detail": type(exc).__name__,
+                                "detail": getattr(exc, "reason", type(exc).__name__),
                                 "status_code": getattr(exc, "status_code", None),
                                 "window_slug": window_slug,
                             })
@@ -492,6 +580,7 @@ def run_trial(
                         continue
                     if len(books) != 2 or len(payloads) != 2:
                         unexpected_source_failures += 1
+                        terminal_windows.add(window_slug)
                         abstentions.append({
                             "timestamp_utc": now_utc,
                             "market_id": market_id,
@@ -500,6 +589,10 @@ def run_trial(
                             "window_slug": window_slug,
                         })
                         continue
+                    state_history.append("FIRST_SNAPSHOT_CAPTURED")
+                    valid_observed_windows.add(window_slug)
+                    valid_order_book_keys.update(f"{window_slug}:{token}" for token in books)
+                    observed_markets.add(market_id)
                     snapshot = simulate_complete_set(payloads[tokens[0]], payloads[tokens[1]], config.requested_shares, 0.0)
                     fee_total = sum(
                         float(calculate_fee(
@@ -531,73 +624,125 @@ def run_trial(
                         "window_end_epoch": market.get("_window_end_epoch"),
                     }
                     outcome_map = {token: (outcomes[index] if index < len(outcomes) else f"OUTCOME_{index}") for index, token in enumerate(tokens)}
-                    # Observed sequential execution requires a later snapshot. The
-                    # first observation remains valid evidence but cannot fabricate
-                    # second-leg execution from the same book.
-                    observations.append((record, books, None, outcome_map, fee_schedules))
-            if not fixture and not observations and not markets:
-                abstentions.append({"timestamp_utc": now_utc, "market_id": None, "reason": "NO_PUBLIC_BTC_WINDOW_AVAILABLE"})
-            for record, books, second_books, outcomes, fee_schedules in observations:
-                window = str(record.get("window_slug") or record.get("market_id"))
-                observed_windows.add(window)
-                valid_order_book_keys.update(f"{window}:{token}" for token in books)
-                observed_markets.add(str(record.get("market_id")))
-                per_leg_limit = config.virtual_starting_equity_usd * config.max_order_notional_pct / 100.0 / 2.0
-                result = engine.process_h011_record(
-                    record=record,
-                    books=books,
-                    outcomes=outcomes,
-                    timestamp_utc=now_utc,
-                    code_sha=sha,
-                    config_sha=config_sha,
-                    requested_shares=config.requested_shares,
-                    max_notional_per_leg_usd=per_leg_limit,
-                    fee_schedules=fee_schedules,
-                    second_leg_books=second_books,
-                    second_timestamp_utc=now_utc if second_books is not None else None,
-                    configured_transport_delay_ms=500,
-                    maximum_pair_skew_ms=1000.0,
-                    window_end_epoch=record.get("window_end_epoch"),
-                    second_epoch=runtime_clock.epoch() if second_books is not None else None,
-                )
-                decisions.append(result.decision.to_dict())
-                orders.extend(intent.to_dict() for intent in result.intents)
-                if result.risk_decision is not None:
-                    risk_decisions.append(result.risk_decision.to_dict())
-                fills.extend(fill.to_dict() for fill in result.fills)
-                if result.sequential_execution is not None:
-                    sequential_executions.append(result.sequential_execution.to_dict())
-                for reason in result.abstention_reasons:
-                    abstentions.append({
-                        "timestamp_utc": now_utc,
-                        "market_id": result.decision.market_id,
-                        "decision_id": result.decision.deterministic_id,
-                        "reason": reason,
+                    per_leg_limit = config.virtual_starting_equity_usd * config.max_order_notional_pct / 100.0 / 2.0
+                    begun = engine.begin_h011_record(
+                        record=record,
+                        books=books,
+                        outcomes=outcome_map,
+                        timestamp_utc=now_utc,
+                        code_sha=sha,
+                        config_sha=config_sha,
+                        requested_shares=config.requested_shares,
+                        max_notional_per_leg_usd=per_leg_limit,
+                        fee_schedules=fee_schedules,
+                        configured_transport_delay_ms=config.sequential_transport_delay_ms,
+                        maximum_pair_skew_ms=config.maximum_pair_skew_ms,
+                    )
+                    if isinstance(begun, PaperEngineResult):
+                        append_result(begun, timestamp_utc=now_utc, books_for_marks=books)
+                        state_history.append("DECISION_REJECTED_TERMINAL")
+                        terminal_windows.add(window_slug)
+                        continue
+                    pending_windows[window_slug] = begun
+                    decisions.append(begun.decision.to_dict())
+                    orders.extend(intent.to_dict() for intent in begun.intents)
+                    risk_decisions.append(begun.risk_decision.to_dict())
+                    first_fill = begun.pending_execution.first_fill
+                    if first_fill is None:
+                        raise RuntimeError("pending sequential execution missing first fill")
+                    if first_fill.deterministic_id not in recorded_fill_ids:
+                        fills.append(first_fill.to_dict())
+                        recorded_fill_ids.add(first_fill.deterministic_id)
+                    state_history.append("FIRST_LEG_FILLED_PENDING_SECOND_SNAPSHOT")
+                    delay_start = runtime_clock.monotonic()
+                    runtime_clock.sleep(config.sequential_transport_delay_ms / 1000.0)
+                    delay_end = runtime_clock.monotonic()
+                    second_now_utc = runtime_clock.now_utc()
+                    second_epoch = runtime_clock.epoch()
+                    second_token = begun.intents[1].token_id
+                    first_second_book = books[second_token]
+                    second_books: dict[str, PublicOrderBook] = {}
+                    second_failure_reason: str | None = None
+                    second_book: PublicOrderBook | None = None
+                    if record.get("window_end_epoch") is None or second_epoch < float(record["window_end_epoch"]):
+                        try:
+                            second_payload, second_evidence_hash = client.book(second_token)
+                            second_book = PublicOrderBook.from_payload(
+                                market_id=market_id,
+                                token_id=second_token,
+                                timestamp_utc=second_now_utc,
+                                payload=second_payload,
+                                source_evidence_hash=second_evidence_hash,
+                            )
+                            second_books[second_token] = second_book
+                            state_history.append("SECOND_SNAPSHOT_CAPTURED")
+                        except Exception as exc:
+                            second_failure_reason = getattr(exc, "reason", type(exc).__name__)
+                            if second_failure_reason not in {
+                                "EMPTY_LIQUIDITY",
+                                "STALE_DATA",
+                                "MISSING_SOURCE_TIMESTAMP",
+                                "MALFORMED_SOURCE_TIMESTAMP",
+                                "FUTURE_SOURCE_TIMESTAMP",
+                            }:
+                                unexpected_source_failures += 1
+                                second_failure_reason = "SOURCE_FAILURE"
+                    completed = engine.complete_h011_record(
+                        pending=begun,
+                        second_leg_books=second_books,
+                        second_timestamp_utc=second_now_utc,
+                        window_end_epoch=record.get("window_end_epoch"),
+                        second_epoch=second_epoch,
+                        require_distinct_snapshot=True,
+                        second_failure_reason=second_failure_reason,
+                    )
+                    append_result(
+                        completed,
+                        timestamp_utc=second_now_utc,
+                        books_for_marks={**books, **second_books},
+                        append_decision=False,
+                        append_intents=False,
+                        append_risk=False,
+                    )
+                    state_history.append("SEQUENTIAL_EXECUTION_TERMINAL")
+                    pending_windows.pop(window_slug, None)
+                    terminal_windows.add(window_slug)
+                    second_fill = completed.sequential_execution.fills[1] if completed.sequential_execution and len(completed.sequential_execution.fills) > 1 else None
+                    runner_integration_records.append({
+                        "evidence_class": "OBSERVED_RUNNER_INTEGRATION_EVIDENCE",
+                        "runner_mode": "PUBLIC_GET_RUNNER_WITH_INJECTED_OR_PUBLIC_CLIENT",
+                        "window_slug": window_slug,
+                        "market_id": market_id,
+                        "state_history": state_history,
+                        "configured_delay_ms": config.sequential_transport_delay_ms,
+                        "monotonic_before_delay": delay_start,
+                        "monotonic_after_delay": delay_end,
+                        "delay_elapsed_ms": round((delay_end - delay_start) * 1000.0, 6),
+                        "first_leg_token_id": begun.intents[0].token_id,
+                        "second_leg_token_id": second_token,
+                        "first_snapshot_source_timestamp_utc": first_second_book.source_timestamp_utc,
+                        "first_snapshot_received_timestamp_utc": first_second_book.received_timestamp_utc,
+                        "first_snapshot_evidence_hash": first_second_book.source_evidence_hash,
+                        "second_snapshot_source_timestamp_utc": None if second_book is None else second_book.source_timestamp_utc,
+                        "second_snapshot_received_timestamp_utc": None if second_book is None else second_book.received_timestamp_utc,
+                        "second_snapshot_evidence_hash": None if second_book is None else second_book.source_evidence_hash,
+                        "first_and_second_snapshot_hashes_distinct": bool(second_book and second_book.source_evidence_hash != first_second_book.source_evidence_hash),
+                        "second_source_or_receive_time_later": bool(second_book and (
+                            datetime.fromisoformat(second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp()
+                            or datetime.fromisoformat(second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp()
+                        )),
+                        "first_fill_id": first_fill.deterministic_id,
+                        "second_fill_id": None if second_fill is None else second_fill.deterministic_id,
+                        "first_leg_applied_count": sum(1 for item in portfolio.ledger if item.get("type") == "PAPER_FILL" and item.get("fill", {}).get("deterministic_id") == first_fill.deterministic_id),
+                        "second_leg_applied_count": 0 if second_fill is None else sum(1 for item in portfolio.ledger if item.get("type") == "PAPER_FILL" and item.get("fill", {}).get("deterministic_id") == second_fill.deterministic_id),
+                        "completion_status": None if completed.sequential_execution is None else completed.sequential_execution.completion_status,
+                        "second_leg_reason": None if completed.sequential_execution is None else completed.sequential_execution.second_leg.reason,
+                        "leg_imbalance_shares": None if completed.sequential_execution is None else completed.sequential_execution.leg_imbalance_shares,
+                        "second_leg_repricing": None if completed.sequential_execution is None else completed.sequential_execution.second_leg_repricing,
+                        "second_leg_snapshot_required_terminal": "SECOND_LEG_SNAPSHOT_REQUIRED" in completed.abstention_reasons,
                     })
-                    if reason == "STALE_DATA":
-                        stale_events += 1
-                    if reason in {"INTEGRITY_FAILURE", "RAW_CHAIN_INVALID", "REPLAY_UNVERIFIED"}:
-                        integrity_failures += 1
-                prices = {}
-                for token, book in books.items():
-                    if book.bids and book.asks:
-                        prices[token] = (book.bids[0][0] + book.asks[0][0]) / 2.0
-                for token_id, mark_price in prices.items():
-                    if token_id in portfolio.positions and portfolio.positions[token_id].quantity > 0:
-                        portfolio.mark_position(
-                            token_id=token_id,
-                            price=mark_price,
-                            record=True,
-                            timestamp_utc=now_utc,
-                            source_evidence_hash=result.decision.source_evidence_hash,
-                        )
-                snapshots.append(portfolio.snapshot(
-                    timestamp_utc=now_utc,
-                    code_sha=sha,
-                    config_sha=config_sha,
-                    source_evidence_hash=result.decision.source_evidence_hash,
-                    prices={},
-                ).to_dict())
+                if not markets:
+                    abstentions.append({"timestamp_utc": now_utc, "market_id": None, "reason": "NO_PUBLIC_BTC_WINDOW_AVAILABLE"})
             elapsed_seconds = runtime_clock.monotonic() - started_monotonic
             if fixture or elapsed_seconds >= config.duration_minutes * 60:
                 break
@@ -630,6 +775,11 @@ def run_trial(
         and abs(final_snapshot.realized_pnl - replay_snapshot.realized_pnl) < 1e-9
         and [p.to_dict() for p in final_snapshot.positions] == [p.to_dict() for p in replay_snapshot.positions]
     ) else "FAIL"
+    for item in runner_integration_records:
+        item["replay_result"] = replay_result
+        item["replay_equality"] = replay_result == "PASS"
+        item["no_duplicate_first_fill"] = item["first_leg_applied_count"] == 1
+        item["second_leg_applied_or_failed_exactly_once"] = item["second_leg_applied_count"] in {0, 1}
     counts = {key: sum(1 for item in decisions if item["action"] == key) for key in ("LONG", "SHORT", "FLAT", "NO_TRADE")}
     abstention_counts: dict[str, int] = {}
     for item in abstentions:
@@ -642,11 +792,11 @@ def run_trial(
         "end_utc": ended_utc,
         "duration_seconds": duration_seconds,
         "gamma_discovered_windows": len(gamma_discovered_windows),
-        "valid_order_book_windows": len(observed_windows),
+        "valid_order_book_windows": len(valid_observed_windows),
         "valid_order_books": len(valid_order_book_keys),
         "expected_closed_no_book_windows": len(expected_closed_no_book_windows),
         "unexpected_source_failures": unexpected_source_failures,
-        "windows_observed": len(observed_windows),
+        "windows_observed": len(valid_observed_windows),
         "markets_observed": len(observed_markets),
         "decisions_total": len(decisions),
         "fills": len(fills),
@@ -659,17 +809,17 @@ def run_trial(
         config_sha=config_sha,
         source_evidence_hash=sha256_json(client.evidence),
         deterministic_id=deterministic_id("trial_summary", summary_payload),
-        provenance="PUBLIC_GET_OR_DETERMINISTIC_FIXTURE_PAPER_ONLY",
+        provenance="DETERMINISTIC_FIXTURE" if fixture else "PUBLIC_GET_PAPER_ONLY",
         trial_id=trial_id,
         start_utc=started_utc,
         end_utc=ended_utc,
         duration_seconds=duration_seconds,
         gamma_discovered_windows=len(gamma_discovered_windows),
-        valid_order_book_windows=len(observed_windows),
+        valid_order_book_windows=len(valid_observed_windows),
         valid_order_books=len(valid_order_book_keys),
         expected_closed_no_book_windows=len(expected_closed_no_book_windows),
         unexpected_source_failures=unexpected_source_failures,
-        windows_observed=len(observed_windows),
+        windows_observed=len(valid_observed_windows),
         markets_observed=len(observed_markets),
         decisions_total=len(decisions),
         long_short_flat_counts=counts,
@@ -705,6 +855,17 @@ def run_trial(
         sequential_executions=len(sequential_executions),
         leg_risk_incidents=sum(1 for item in sequential_executions if item.get("completion_status") != "BOTH_LEGS_FILL"),
     )
+    successful_runner_paths = [item for item in runner_integration_records if item.get("completion_status") == "BOTH_LEGS_FILL"]
+    runner_result = "PASS" if fixture or (
+        successful_runner_paths
+        and all(item.get("first_and_second_snapshot_hashes_distinct") for item in successful_runner_paths)
+        and all(item.get("second_source_or_receive_time_later") for item in successful_runner_paths)
+        and all(item.get("delay_elapsed_ms", 0) >= config.sequential_transport_delay_ms for item in successful_runner_paths)
+        and all(item.get("first_leg_applied_count") == 1 for item in runner_integration_records)
+        and all(item.get("second_leg_applied_count") in {0, 1} for item in runner_integration_records)
+        and all(item.get("second_leg_snapshot_required_terminal") is False for item in runner_integration_records)
+        and replay_result == "PASS"
+    ) else "FAIL"
     writer = TrialArtifactWriter(output_dir)
     writer.write_json("trial_manifest.json", {
         "schema_version": "senex-paper-trial-manifest-v1",
@@ -723,7 +884,14 @@ def run_trial(
     writer.write_jsonl("paper_orders.jsonl", orders)
     writer.write_jsonl("paper_fills.jsonl", fills)
     writer.write_jsonl("sequential_executions.jsonl", sequential_executions)
-    # Journal already wrote portfolio_ledger.jsonl. Ensure an empty file exists.
+    writer.write_json("observed_runner_integration.json", {
+        "schema_version": "senex-observed-runner-integration-v1",
+        "evidence_class": "FIXTURE_CONTRACT_EVIDENCE" if fixture else "OBSERVED_RUNNER_INTEGRATION_EVIDENCE",
+        "runner_mode": "DETERMINISTIC_FIXTURE" if fixture else "PUBLIC_GET_RUNNER_WITH_INJECTED_OR_PUBLIC_CLIENT",
+        "records": runner_integration_records,
+        "replay_result": replay_result,
+        "result": "NOT_APPLICABLE_FIXTURE" if fixture else runner_result,
+    })
     (output_dir / "portfolio_ledger.jsonl").touch(exist_ok=True)
     writer.write_jsonl("portfolio_snapshots.jsonl", snapshots + [final_snapshot.to_dict()])
     writer.write_jsonl("risk_decisions.jsonl", risk_decisions)
@@ -731,7 +899,7 @@ def run_trial(
     writer.write_json("trial_summary.json", summary.to_dict())
     hashes = writer.finalize()
     verify_artifact_bundle(output_dir)
-    return {"summary": summary.to_dict(), "hashes": hashes, "output_dir": str(output_dir)}
+    return {"summary": summary.to_dict(), "runner_integration_result": runner_result, "hashes": hashes, "output_dir": str(output_dir)}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -29,25 +29,28 @@ def build_monitoring_model(
     source_time_audit: Mapping[str, Any],
     fee_report: Mapping[str, Any],
     sequential_report: Mapping[str, Any],
+    runner_integration_report: Mapping[str, Any],
     settlement_report: Mapping[str, Any],
     risk_authority_map: Mapping[str, Any],
-    artifact_digest: str,
+    bundle_content_digest: str,
     generated_at_utc: str,
+    github_artifact_zip_digest: str = "UNAVAILABLE_AT_BUILD_TIME",
 ) -> dict[str, Any]:
-    """Project source artifacts without creating an alternative truth model."""
     safety = dict(execution_manifest.get("safety_invariants") or {})
     positions = list(settlement_report.get("positions") or [])
     scenarios = list(sequential_report.get("scenarios") or [])
     leg_incidents = [item for item in scenarios if item.get("completion_status") != "BOTH_LEGS_FILL"]
     model = {
         "contract_version": MONITORING_CONTRACT_VERSION,
+        "evidence_scope": "FIXTURE_CONTRACT_EVIDENCE_AND_OBSERVED_RUNNER_INTEGRATION_HARNESS",
         "provenance": {
             "code_sha": _value(execution_manifest, "code_sha"),
             "tree_sha": _value(execution_manifest, "tree_sha"),
             "config_sha": _value(execution_manifest, "config_sha"),
             "experiment_id": _value(execution_manifest, "experiment_id"),
             "trial_id": _value(trial_summary, "trial_id"),
-            "artifact_digest": artifact_digest,
+            "bundle_content_digest": bundle_content_digest,
+            "github_artifact_zip_digest": github_artifact_zip_digest,
             "generation_time_utc": generated_at_utc,
         },
         "safety": {
@@ -59,7 +62,8 @@ def build_monitoring_model(
             "mutating_controls": 0,
         },
         "overview": {
-            "run_state": _value(trial_summary, "run_state", missing="COMPLETED_FIXTURE_VALIDATION"),
+            "run_state": _value(trial_summary, "run_state", missing="FIXTURE_CONTRACT_VALIDATION"),
+            "evidence_label": "NOT_CURRENT_RUNTIME_STATE",
             "last_verified_observation": _value(source_time_audit, "last_verified_observation_utc"),
             "acceptance_result": _value(execution_manifest, "acceptance_result", missing=UNVERIFIED),
         },
@@ -76,6 +80,7 @@ def build_monitoring_model(
             "source_time_result": _value(source_time_audit, "result", missing=UNVERIFIED),
         },
         "execution": {
+            "evidence_class": _value(sequential_report, "evidence_class", missing="FIXTURE_CONTRACT_EVIDENCE"),
             "execution_model_version": _value(execution_manifest, "execution_model_version"),
             "fee_enabled": _value(fee_report, "fee_enabled", missing=UNVERIFIED),
             "raw_fee_schedule_reference": _value(fee_report, "raw_schedule_hash", missing=UNVERIFIED),
@@ -85,10 +90,11 @@ def build_monitoring_model(
             "abstentions": dict(trial_summary.get("abstention_counts") or {}),
             "simulated_intents": _value(trial_summary, "order_intents"),
             "simulated_fills": _value(trial_summary, "fills"),
-            "fill_label": "SIMULATED",
+            "fill_label": "SIMULATED_FIXTURE",
             "leg_risk_incidents": len(leg_incidents),
             "scenarios": scenarios,
         },
+        "runner_integration": dict(runner_integration_report),
         "portfolio_and_settlement": {
             "open_positions": sum(1 for item in positions if item.get("state") == "OPEN_UNMARKED"),
             "marked_positions": sum(1 for item in positions if item.get("state") == "OPEN_MARKED"),
@@ -109,7 +115,8 @@ def build_monitoring_model(
             "raw_chain_verified": _value(trial_summary, "raw_chain_verified", missing=UNVERIFIED),
             "replay_verified": _value(trial_summary, "replay_verified", missing=UNVERIFIED),
             "settlement_replay": _value(settlement_report, "replay_result", missing=UNVERIFIED),
-            "artifact_digest": artifact_digest,
+            "bundle_content_digest": bundle_content_digest,
+            "github_artifact_zip_digest": github_artifact_zip_digest,
         },
         "readiness_gates": list(execution_manifest.get("gates") or []),
         "known_unknowns": list(execution_manifest.get("known_unknowns") or []),
@@ -120,6 +127,7 @@ def build_monitoring_model(
         "source_time_audit": source_time_audit,
         "fee_report": fee_report,
         "sequential_report": sequential_report,
+        "runner_integration_report": runner_integration_report,
         "settlement_report": settlement_report,
         "risk_authority_map": risk_authority_map,
     })).hexdigest()
@@ -151,7 +159,8 @@ def render_monitoring_site(*, model: Mapping[str, Any], output_dir: Path) -> dic
     sections = [
         ("OVERVIEW", model["overview"]),
         ("DATA_QUALITY", model["data_quality"]),
-        ("EXECUTION", model["execution"]),
+        ("EXECUTION_FIXTURE_CONTRACT", model["execution"]),
+        ("RUNNER_INTEGRATION_HARNESS", model["runner_integration"]),
         ("PORTFOLIO_AND_SETTLEMENT", model["portfolio_and_settlement"]),
         ("RISK_AND_SAFETY", model["risk_and_safety"]),
         ("EVIDENCE_AND_REPLAY", model["evidence_and_replay"]),
@@ -161,9 +170,9 @@ def render_monitoring_site(*, model: Mapping[str, Any], output_dir: Path) -> dic
     (root / "styles.css").write_text(css + "\n", encoding="utf-8")
     provenance = model["provenance"]
     safety = model["safety"]
-    document = f"""<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>SENEX Paper Monitoring</title><link rel=\"stylesheet\" href=\"styles.css\"></head><body><header class=\"banner\"><strong>PAPER ONLY</strong> · paper_only={html.escape(_display(safety['paper_only']))} · orders_enabled={html.escape(_display(safety['orders_enabled']))} · live_capital_locked={html.escape(_display(safety['live_capital_locked']))}<div class=\"warning\">PROFITABILITY_NOT_ESTABLISHED</div><div class=\"mono\">SHA {html.escape(_display(provenance['code_sha']))} · artifact {html.escape(_display(provenance['artifact_digest']))}</div></header><main class=\"grid\">{''.join(_section(title, values) for title, values in sections)}</main><script type=\"application/json\" id=\"senex-artifact-projection\">{html.escape(json.dumps(model, sort_keys=True, separators=(',', ':'), ensure_ascii=False))}</script></body></html>"""
+    document = f"""<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>SENEX Paper Monitoring</title><link rel=\"stylesheet\" href=\"styles.css\"></head><body><header class=\"banner\"><strong>PAPER ONLY · FIXTURE + RUNNER INTEGRATION HARNESS</strong> · paper_only={html.escape(_display(safety['paper_only']))} · orders_enabled={html.escape(_display(safety['orders_enabled']))} · live_capital_locked={html.escape(_display(safety['live_capital_locked']))}<div class=\"warning\">NOT CURRENT RUNTIME STATE · PROFITABILITY_NOT_ESTABLISHED</div><div class=\"mono\">SHA {html.escape(_display(provenance['code_sha']))} · bundle_content {html.escape(_display(provenance['bundle_content_digest']))} · github_zip {html.escape(_display(provenance['github_artifact_zip_digest']))}</div></header><main class=\"grid\">{''.join(_section(title, values) for title, values in sections)}</main><script type=\"application/json\" id=\"senex-artifact-projection\">{html.escape(json.dumps(model, sort_keys=True, separators=(',', ':'), ensure_ascii=False))}</script></body></html>"""
     (root / "index.html").write_text(document, encoding="utf-8")
-    preview = f'''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720"><rect width="1280" height="720" fill="#f4f4f4"/><rect width="1280" height="120" fill="#111"/><text x="40" y="48" font-family="sans-serif" font-size="30" fill="white">SENEX — PAPER ONLY</text><text x="40" y="86" font-family="monospace" font-size="18" fill="white">PROFITABILITY_NOT_ESTABLISHED</text><text x="40" y="155" font-family="monospace" font-size="17">code_sha={html.escape(_display(provenance['code_sha']))}</text><text x="40" y="188" font-family="monospace" font-size="17">experiment_id={html.escape(_display(provenance['experiment_id']))}</text><text x="40" y="235" font-family="sans-serif" font-size="24">DATA QUALITY</text><text x="40" y="270" font-family="monospace" font-size="17">source_age_ms={html.escape(_display(model['data_quality']['source_age_ms']))} pair_skew_ms={html.escape(_display(model['data_quality']['pair_skew_ms']))}</text><text x="40" y="320" font-family="sans-serif" font-size="24">EXECUTION</text><text x="40" y="355" font-family="monospace" font-size="17">fills=SIMULATED:{html.escape(_display(model['execution']['simulated_fills']))} leg_incidents={html.escape(_display(model['execution']['leg_risk_incidents']))}</text><text x="40" y="405" font-family="sans-serif" font-size="24">PORTFOLIO + SETTLEMENT</text><text x="40" y="440" font-family="monospace" font-size="17">equity_known={html.escape(_display(model['portfolio_and_settlement']['equity_known']))} pending={html.escape(_display(model['portfolio_and_settlement']['pending_resolution']))}</text><text x="40" y="490" font-family="sans-serif" font-size="24">EVIDENCE + REPLAY</text><text x="40" y="525" font-family="monospace" font-size="17">raw_chain={html.escape(_display(model['evidence_and_replay']['raw_chain_verified']))} replay={html.escape(_display(model['evidence_and_replay']['replay_verified']))}</text><text x="40" y="590" font-family="sans-serif" font-size="22">UNKNOWN stays UNKNOWN · PENDING stays PENDING · no controls</text></svg>'''
+    preview = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720"><rect width="1280" height="720" fill="#f4f4f4"/><rect width="1280" height="145" fill="#111"/><text x="40" y="45" font-family="sans-serif" font-size="28" fill="white">SENEX — PAPER ONLY</text><text x="40" y="82" font-family="monospace" font-size="18" fill="white">FIXTURE + RUNNER INTEGRATION HARNESS</text><text x="40" y="115" font-family="monospace" font-size="16" fill="white">NOT CURRENT RUNTIME STATE · PROFITABILITY_NOT_ESTABLISHED</text><text x="40" y="185" font-family="monospace" font-size="17">code_sha={html.escape(_display(provenance['code_sha']))}</text><text x="40" y="220" font-family="monospace" font-size="17">github_zip={html.escape(_display(provenance['github_artifact_zip_digest']))}</text><text x="40" y="270" font-family="sans-serif" font-size="24">FIXTURE CONTRACT</text><text x="40" y="305" font-family="monospace" font-size="17">fills=SIMULATED_FIXTURE:{html.escape(_display(model['execution']['simulated_fills']))}</text><text x="40" y="355" font-family="sans-serif" font-size="24">RUNNER INTEGRATION HARNESS</text><text x="40" y="390" font-family="monospace" font-size="17">result={html.escape(_display(model['runner_integration'].get('result')))}</text><text x="40" y="440" font-family="sans-serif" font-size="24">EVIDENCE + REPLAY</text><text x="40" y="475" font-family="monospace" font-size="17">raw_chain={html.escape(_display(model['evidence_and_replay']['raw_chain_verified']))} replay={html.escape(_display(model['evidence_and_replay']['replay_verified']))}</text><text x="40" y="540" font-family="sans-serif" font-size="22">UNKNOWN stays UNKNOWN · PENDING stays PENDING · no controls</text></svg>"""
     (root / "rendered_monitoring_preview.svg").write_text(preview, encoding="utf-8")
     hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(root.iterdir()) if path.is_file()}
     return {"contract_version": MONITORING_CONTRACT_VERSION, "files": hashes, "result": "PASS"}

@@ -259,11 +259,11 @@ def calculate_fee(
 
 def official_conformance_vectors() -> list[dict[str, str]]:
     return [
-        {"category": "CRYPTO", "rate": "0.07", "shares": "100", "price": "0.50", "docs_expected": "1.75000"},
-        {"category": "CRYPTO", "rate": "0.07", "shares": "100", "price": "0.30", "docs_expected": "1.47000"},
-        {"category": "SPORTS", "rate": "0.05", "shares": "100", "price": "0.50", "docs_expected": "1.25000"},
-        {"category": "FINANCE", "rate": "0.04", "shares": "100", "price": "0.90", "docs_expected": "0.36000"},
-        {"category": "MINIMUM", "rate": "0.04", "shares": "0.0001", "price": "0.50", "docs_expected": "0.00000"},
+        {"vector_label": "FORMULA_SYNTHETIC_RATE_0_07_PRICE_0_50", "evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR", "rate": "0.07", "shares": "100", "price": "0.50", "docs_expected": "1.75000"},
+        {"vector_label": "FORMULA_SYNTHETIC_RATE_0_07_PRICE_0_30", "evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR", "rate": "0.07", "shares": "100", "price": "0.30", "docs_expected": "1.47000"},
+        {"vector_label": "FORMULA_SYNTHETIC_RATE_0_05_PRICE_0_50", "evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR", "rate": "0.05", "shares": "100", "price": "0.50", "docs_expected": "1.25000"},
+        {"vector_label": "FORMULA_SYNTHETIC_RATE_0_04_PRICE_0_90", "evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR", "rate": "0.04", "shares": "100", "price": "0.90", "docs_expected": "0.36000"},
+        {"vector_label": "FORMULA_SYNTHETIC_MINIMUM_ROUNDING", "evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR", "rate": "0.04", "shares": "0.0001", "price": "0.50", "docs_expected": "0.00000"},
     ]
 
 
@@ -306,6 +306,9 @@ def run_official_conformance() -> dict[str, Any]:
         "sdk_formula_version": SDK_FORMULA_VERSION,
         "official_reference": dict(OFFICIAL_REFERENCE),
         "vectors": results,
+        "vector_evidence_class": "FORMULA_ONLY_SYNTHETIC_VECTOR",
+        "category_rate_claimed": False,
+        "execution_authority": "OBSERVED_PUBLIC_MARKET_FD_SCHEDULE",
         "official_source_conflict_detected": True,
         "conflict_behavior": "ABSTAIN_FEE_MODEL_UNVERIFIED",
         "fail_closed_verified": fail_closed,
