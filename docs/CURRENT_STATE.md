@@ -14,6 +14,7 @@
 - Exact-head CI job: `92245123499`
 - Exact-head artifact: `8922658841`
 - Artifact ZIP SHA-256: `0ad6412d20df3f689a2729056ebade1ea49b11da8fbbf6c330a793a76333bb0b`
+- Final integration PR: `#26`, retargeted to `feat/h011-v3-discovery-refresh` and marked ready for review.
 
 ## Permanent product boundary
 
@@ -42,7 +43,7 @@ The product stack is a strict linear ancestry chain:
 
 Each child is strictly ahead of its parent with the parent as merge base. No subsystem was reimplemented during reconciliation and no commit from PRs #5, #24, #25 or #26 is omitted by the final candidate.
 
-PR #21 is optional, local-only TradingView research. It is non-authoritative, not a production dependency, not a raw-chain input and not part of the deployable candidate. It is to be closed as superseded research reference, with its branch and historical artifacts retained for final audit.
+PR #21 was closed unmerged as a superseded optional research reference. Its TradingView bridge remains non-authoritative, local-only, outside the deployable product, and its branch and historical artifacts are retained for final audit.
 
 ## Candidate contracts
 
@@ -118,4 +119,4 @@ CANDIDATE_DEPLOYED=NO
 
 ## Next operational phase
 
-After the final integration candidate is merged into the delivery branch, capture an authenticated reversible Northflank baseline, verify backup and rollback, probe the real volume in isolation, and deploy only if all storage and paper-only gates pass.
+The exact retargeted integration head must pass `SENEX Stack Integration`. It may then be merged into the delivery branch. After merge, capture an authenticated reversible Northflank baseline, verify backup and rollback, probe the real volume in isolation, and deploy only if all storage and paper-only gates pass.
