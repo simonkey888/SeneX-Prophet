@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 10
     environment: northflank-readonly-audit
     steps:
-      - name: Read sanitized deployment and containers
+      - name: Read complete sanitized deployment
         shell: bash
         env:
           NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
@@ -28,7 +28,7 @@ jobs:
           python - <<'PY'
           import hashlib,json,os,urllib.error,urllib.request
           base='https://api.northflank.com/v1'; token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
-          headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-current-deployment-read/3'}
+          headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-current-deployment-read/4'}
           def get(route):
               req=urllib.request.Request(base+route,headers=headers,method='GET'); raw=b''; status=0
               try:
@@ -39,9 +39,11 @@ jobs:
               return obj,hashlib.sha256(raw).hexdigest()
           dep,dep_hash=get('/projects/seneciobot/services/senecio-h011/deployment')
           service,service_hash=get('/projects/seneciobot/services/senecio-h011')
-          containers,containers_hash=get('/projects/seneciobot/services/senecio-h011/containers?per_page=20')
-          internal=dep.get('internal') or {}
+          containers,containers_hash=get('/projects/seneciobot/services/senecio-h011/containers?per_page=10')
           clist=containers.get('containers',[]) if isinstance(containers,dict) else containers if isinstance(containers,list) else []
-          result={'instances':dep.get('instances'),'build_id':internal.get('buildId'),'deployed_sha':internal.get('deployedSHA'),'branch':internal.get('branch'),'deployment_body_sha256':dep_hash,'service_status':service.get('status'),'service_body_sha256':service_hash,'containers':[{'status':c.get('status'),'startedAt':c.get('startedAt'),'restartCount':c.get('restartCount')} for c in clist[:20]],'containers_body_sha256':containers_hash,'secret_values_exported':False}
+          allowed_dep={k:dep.get(k) for k in ('buildpack','docker','instances','internal','region','storage')}
+          if isinstance(allowed_dep.get('internal'),dict):
+              allowed_dep['internal']={k:allowed_dep['internal'].get(k) for k in ('appId','branch','buildId','buildSHA','deployedSHA','nfObjectId','nfObjectType','repository')}
+          result={'deployment':allowed_dep,'deployment_body_sha256':dep_hash,'service_status':service.get('status'),'service_body_sha256':service_hash,'containers':[{'status':c.get('status'),'startedAt':c.get('startedAt'),'restartCount':c.get('restartCount'),'message':c.get('message'),'reason':c.get('reason')} for c in clist[:10]],'containers_body_sha256':containers_hash,'secret_values_exported':False}
           print(json.dumps(result,sort_keys=True))
           PY
