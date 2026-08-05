@@ -21,7 +21,7 @@ concurrency:
 env:
   TERM: xterm
   EXACT_SHA: ${{ github.event.pull_request.head.sha }}
-  PRODUCT_BASE_SHA: ac0d1dfd77f8b931cb02a5d67b632e3b169342e3
+  PRODUCT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
 jobs:
   evidence:
