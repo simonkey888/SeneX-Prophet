@@ -33,6 +33,7 @@ jobs:
       - name: Apply bounded correction
         run: |
           set -euo pipefail
+          git show e91faa59233bc33b8fa8964aa5cb9502ace2dfaf:.github/workflows/senex-execution-truth.yml > .github/workflows/senex-execution-truth.yml
           cat .arq-bootstrap/patch.* | base64 --decode | gzip --decompress > tools/apply_arq_crash_recovery.py
           python tools/apply_arq_crash_recovery.py
           git rm -r .arq-bootstrap
