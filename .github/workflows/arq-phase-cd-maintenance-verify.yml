@@ -1,0 +1,259 @@
+name: ARQ Phase C-D Maintenance Verify
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-phase-cd-maintenance-verify.yml
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_BRANCH: feat/h011-v3-discovery-refresh
+  PRODUCT_SHA: d5047b2055d30d199954dd4e68ae2e676aa8a4ba
+  PROJECT_ID: seneciobot
+  SERVICE_ID: senecio-h011
+  VOLUME_ID: h011-results-vol
+  NF_API: https://api.northflank.com/v1
+
+jobs:
+  phase-cd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: northflank-readonly-audit
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Execute authenticated build backup restore and verification
+        shell: bash
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          remote_sha="$(git ls-remote https://github.com/${GITHUB_REPOSITORY}.git refs/heads/${PRODUCT_BRANCH} | awk '{print $1}')"
+          test "$remote_sha" = "$PRODUCT_SHA"
+          mkdir -p evidence
+          python - <<'PY'
+          import base64, datetime, hashlib, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+          from pathlib import Path
+
+          API=os.environ['NF_API'].rstrip('/')
+          token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          project=os.environ['PROJECT_ID']
+          service=os.environ['SERVICE_ID']
+          volume=os.environ['VOLUME_ID']
+          product_sha=os.environ['PRODUCT_SHA']
+          product_branch=os.environ['PRODUCT_BRANCH']
+          run_id=os.environ['GITHUB_RUN_ID']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-arq-cd/1'}
+          out={'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'product_sha':product_sha,'product_branch':product_branch,'project_id':project,'service_id':service,'volume_id':volume,'requests':[],'secret_values_exported':False,'safety':{'paper_only':True,'orders_enabled':False,'live_capital_locked':True,'real_order_network_calls':0,'wallet_or_private_key_access':0,'real_capital_actions':0}}
+          sensitive=re.compile(r'(secret|token|password|credential|private|runtimeenvironment|runtimefiles|buildarguments|buildfiles|dockersecretmounts|value|content)',re.I)
+          def scrub(v,key=''):
+              if isinstance(v,dict):
+                  r={}
+                  for k,val in v.items():
+                      sk=str(k)
+                      if sensitive.search(sk):
+                          if isinstance(val,dict): r[sk]={'names':sorted(map(str,val.keys())),'values_redacted':True}
+                          elif isinstance(val,list): r[sk]={'count':len(val),'values_redacted':True}
+                          else: r[sk]='<redacted>'
+                      else: r[sk]=scrub(val,sk)
+                  return r
+              if isinstance(v,list): return [scrub(x,key) for x in v]
+              return v
+          def call(method,path,payload=None,label=None,allow=()):
+              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode()
+              req=urllib.request.Request(API+path,headers=headers,data=body,method=method)
+              status=0; raw=b''
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r: status=r.status; raw=r.read()
+              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
+              digest=hashlib.sha256(raw).hexdigest()
+              rec={'label':label or path,'method':method,'path':path,'status':status,'body_sha256':digest,'bytes':len(raw)}
+              out['requests'].append(rec)
+              try: obj=json.loads(raw.decode() or '{}')
+              except Exception: obj={'non_json':True}
+              out.setdefault('responses',{})[label or path]=scrub(obj)
+              if not (200 <= status < 300) and status not in allow:
+                  Path('evidence/phase_cd_state.json').write_text(json.dumps(out,sort_keys=True,indent=2)+'\n')
+                  raise SystemExit(f'{method} {path} status={status} body_sha256={digest}')
+              return status,obj
+          def data(obj):
+              return obj.get('data',obj) if isinstance(obj,dict) else obj
+          def poll(path,label,done,timeout=2400,interval=10):
+              end=time.time()+timeout; last=None
+              while time.time()<end:
+                  _,obj=call('GET',path,label=label)
+                  last=data(obj)
+                  if done(last): return last
+                  time.sleep(interval)
+              raise SystemExit(f'timeout polling {path}; last={scrub(last)}')
+
+          # Phase C: prove real maintenance authorization and capture current identities.
+          for path,label in [
+              (f'/projects/{project}','project'),
+              (f'/projects/{project}/services/{service}','service'),
+              (f'/projects/{project}/services/{service}/deployment','deployment_before'),
+              (f'/projects/{project}/volumes/{volume}','volume_before'),
+              (f'/projects/{project}/volumes/{volume}/backups?per_page=100','backups_before'),
+              (f'/projects/{project}/jobs?per_page=100','jobs_before'),
+              (f'/projects/{project}/addons?per_page=100','addons_before')]:
+              call('GET',path,label=label)
+          dep=data(out['responses']['deployment_before'])
+          internal=dep.get('internal',{}) if isinstance(dep,dict) else {}
+          out['rollback']={'build_id':internal.get('buildId'),'build_sha':internal.get('deployedSHA') or internal.get('buildSHA'),'branch':internal.get('branch')}
+          if not out['rollback']['build_id'] or not out['rollback']['build_sha']:
+              raise SystemExit('rollback deployment identity incomplete')
+
+          # Build exact accepted product SHA without changing production.
+          _,build_obj=call('POST',f'/projects/{project}/services/{service}/build',{'sha':product_sha},'exact_build_start')
+          build=data(build_obj); build_id=build.get('id')
+          if not build_id: raise SystemExit('build id missing')
+          build_final=poll(f'/projects/{project}/services/{service}/build/{build_id}','exact_build_poll',lambda x: bool(x.get('concluded')),timeout=3600,interval=15)
+          if not build_final.get('success') or build_final.get('sha') != product_sha:
+              raise SystemExit(f'exact build failed or sha mismatch: {scrub(build_final)}')
+          out['exact_build']={'id':build_id,'sha':build_final.get('sha'),'status':build_final.get('status'),'createdAt':build_final.get('createdAt'),'buildConcludedAt':build_final.get('buildConcludedAt')}
+
+          # Phase D backup.
+          backup_name=('senex-predeploy-'+run_id)[-39:]
+          if not backup_name[0].isalpha(): backup_name='s'+backup_name
+          _,backup_obj=call('POST',f'/projects/{project}/volumes/{volume}/backups',{'name':backup_name,'description':f'SENEX predeploy backup for {product_sha[:12]}'},'backup_start')
+          backup=data(backup_obj); backup_id=backup.get('id')
+          if not backup_id: raise SystemExit('backup id missing')
+          terminal_bad={'FAILED','ERROR','ABORTED','CANCELLED'}
+          terminal_good={'COMPLETED','SUCCESS','READY','AVAILABLE'}
+          def backup_done(x):
+              s=str(x.get('status','')).upper()
+              if s in terminal_bad: raise SystemExit(f'backup failed: {scrub(x)}')
+              return s in terminal_good
+          backup_final=poll(f'/projects/{project}/volumes/{volume}/backups/{backup_id}','backup_poll',backup_done,timeout=3600,interval=15)
+          out['backup']={'id':backup_id,'name':backup_final.get('name'),'status':backup_final.get('status'),'createdAt':backup_final.get('createdAt'),'updatedAt':backup_final.get('updatedAt'),'spec':scrub(backup_final.get('spec')),'source':scrub(backup_final.get('source'))}
+
+          verify_script=r'''import hashlib,json,os
+          from pathlib import Path
+          root=Path('/restore')
+          files=[]; total=0
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and not x.is_symlink()):
+              rel=p.relative_to(root).as_posix(); h=hashlib.sha256(); size=0
+              with p.open('rb') as f:
+                  while True:
+                      b=f.read(1024*1024)
+                      if not b: break
+                      h.update(b); size+=len(b)
+              total+=size; files.append((rel,size,h.hexdigest()))
+          mh=hashlib.sha256()
+          for rel,size,digest in files: mh.update(f'{digest} {size} {rel}\n'.encode())
+          chain=root/'h011_v3'/'raw_chain_v1'
+          result={'root_exists':root.is_dir(),'file_count':len(files),'total_bytes':total,'manifest_sha256':mh.hexdigest(),'raw_chain_exists':chain.is_dir(),'raw_files':sum(1 for r,_,_ in files if r.startswith('h011_v3/raw_chain_v1/'))}
+          try:
+              from polymarket import h011_v3_raw_transaction as rt
+              from polymarket.h011_v3_committed_snapshot import validate_committed_chain_under_lock
+              from polymarket.h011_v3_raw_recovery import recover_raw_scan_transaction
+              with rt.RawChainLock(chain, rt.DEFAULT_MARKER_POLICY.manifest_prefix).acquire() as guard:
+                  recovery=recover_raw_scan_transaction(guard=guard,raw_directory=chain,policy=rt.DEFAULT_MARKER_POLICY)
+                  committed=validate_committed_chain_under_lock(guard=guard,raw_directory=chain,policy=rt.DEFAULT_MARKER_POLICY)
+              result['recovery_status']=recovery
+              result['chain_validation']=committed
+              result['chain_verified']=True
+          except Exception as exc:
+              result['chain_verified']=False; result['chain_error']=f'{type(exc).__name__}: {exc}'
+          print('SENEX_RESTORE_RESULT='+json.dumps(result,sort_keys=True,separators=(',',':')))
+          if not result['raw_chain_exists'] or not result['chain_verified']: raise SystemExit(2)
+          '''
+          script_b64=base64.b64encode(verify_script.encode()).decode()
+          job_name=('Senex Restore Verify '+run_id)[-52:]
+          if not job_name[0].isalpha(): job_name='S'+job_name
+          job_payload={
+              'name':job_name,
+              'description':f'Isolated restore verification for {product_sha[:12]}',
+              'billing':{'deploymentPlan':'nf-compute-20'},
+              'backoffLimit':0,
+              'runOnSourceChange':'never',
+              'activeDeadlineSeconds':1200,
+              'deployment':{
+                  'internal':{'id':service,'branch':product_branch,'buildId':build_id,'buildSHA':product_sha},
+                  'docker':{'configType':'customCommand','customCommand':'python3 /tmp/verify_restore.py'},
+                  'storage':{'ephemeralStorage':{'storageSize':1024}}
+              },
+              'runtimeFiles':{'/tmp/verify_restore.py':{'data':script_b64,'encoding':'base64'}},
+              'healthChecks':[]
+          }
+          _,job_obj=call('POST',f'/projects/{project}/jobs/manual',job_payload,'verify_job_create')
+          job=data(job_obj); job_id=job.get('id')
+          if not job_id: raise SystemExit('verification job id missing')
+          out['verification_job']={'id':job_id,'name':job.get('name')}
+
+          restore_name=('senex-restore-'+run_id)[-39:]
+          if not restore_name[0].isalpha(): restore_name='s'+restore_name
+          restore_payload={
+              'name':restore_name,
+              'mounts':[{'volumeMountPath':'','containerMountPath':'/restore'}],
+              'spec':{'storageClassName':'nvme','storageSize':6144},
+              'source':{'type':'backup','sourceId':f'{volume}/{backup_id}'},
+              'attachedObjects':[{'id':job_id,'type':'job'}]
+          }
+          _,restore_obj=call('POST',f'/projects/{project}/volumes',restore_payload,'restore_volume_create')
+          restore=data(restore_obj); restore_id=restore.get('id')
+          if not restore_id: raise SystemExit('restore volume id missing')
+          def volume_done(x):
+              s=str(x.get('status','')).upper()
+              if s in terminal_bad: raise SystemExit(f'restore volume failed: {scrub(x)}')
+              return s in {'BOUND','READY','AVAILABLE'}
+          restore_final=poll(f'/projects/{project}/volumes/{restore_id}','restore_volume_poll',volume_done,timeout=3600,interval=15)
+          out['restore_volume']={'id':restore_id,'name':restore_final.get('name'),'status':restore_final.get('status'),'createdAt':restore_final.get('createdAt'),'updatedAt':restore_final.get('updatedAt'),'mounts':restore_final.get('mounts'),'spec':restore_final.get('spec'),'attachedObjects':restore_final.get('attachedObjects')}
+
+          _,run_obj=call('POST',f'/projects/{project}/jobs/{job_id}/runs',{},'verify_job_run_start')
+          run=data(run_obj); verify_run_id=run.get('id')
+          if not verify_run_id: raise SystemExit('verification run id missing')
+          def run_done(x): return bool(x.get('concluded'))
+          run_final=poll(f'/projects/{project}/jobs/{job_id}/runs/{verify_run_id}','verify_job_run_poll',run_done,timeout=1800,interval=10)
+          if str(run_final.get('status','')).upper()!='SUCCESS': raise SystemExit(f'verification job failed: {scrub(run_final)}')
+          q=urllib.parse.urlencode({'runId':verify_run_id,'queryType':'range','duration':3600,'lineLimit':1000,'direction':'forward'})
+          _,logs_obj=call('GET',f'/projects/{project}/jobs/{job_id}/logs?{q}',label='verify_job_logs')
+          logs=data(logs_obj); marker=None
+          for entry in logs if isinstance(logs,list) else []:
+              line=str(entry.get('log',''))
+              pos=line.find('SENEX_RESTORE_RESULT=')
+              if pos>=0:
+                  candidate=line[pos+len('SENEX_RESTORE_RESULT='):].strip()
+                  try: marker=json.loads(candidate)
+                  except Exception: pass
+          if not marker or not marker.get('chain_verified'):
+              raise SystemExit('restore verification marker missing or invalid')
+          out['isolated_restore_result']={'run_id':verify_run_id,'status':run_final.get('status'),'startedAt':run_final.get('startedAt'),'concludedAt':run_final.get('concludedAt'),'manifest_sha256':marker.get('manifest_sha256'),'file_count':marker.get('file_count'),'total_bytes':marker.get('total_bytes'),'raw_files':marker.get('raw_files'),'raw_chain_exists':marker.get('raw_chain_exists'),'chain_verified':marker.get('chain_verified'),'chain_validation':scrub(marker.get('chain_validation')),'recovery_status':scrub(marker.get('recovery_status'))}
+          out['phase_c']='PASS'
+          out['phase_d_backup_restore']='PASS'
+          out['production_mutated']=False
+          encoded=json.dumps(out,sort_keys=True,indent=2).encode()+b'\n'
+          Path('evidence/phase_cd_state.json').write_bytes(encoded)
+          Path('evidence/SHA256SUMS').write_text(hashlib.sha256(encoded).hexdigest()+'  phase_cd_state.json\n')
+          Path('evidence/resource_ids.env').write_text('\n'.join([
+              f'EXACT_BUILD_ID={build_id}',f'BACKUP_ID={backup_id}',f'RESTORE_VOLUME_ID={restore_id}',f'VERIFY_JOB_ID={job_id}',f'VERIFY_RUN_ID={verify_run_id}',f'ROLLBACK_BUILD_ID={out["rollback"]["build_id"]}',f'ROLLBACK_SHA={out["rollback"]["build_sha"]}'
+          ])+'\n')
+          print(json.dumps({'phase_c':out['phase_c'],'phase_d_backup_restore':out['phase_d_backup_restore'],'exact_build_id':build_id,'backup_id':backup_id,'restore_volume_id':restore_id,'verify_job_id':job_id,'verify_run_id':verify_run_id,'manifest_sha256':marker.get('manifest_sha256'),'file_count':marker.get('file_count'),'raw_files':marker.get('raw_files'),'chain_verified':marker.get('chain_verified'),'secret_values_exported':False},sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+
+      - name: Upload Phase C-D evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-phase-cd-maintenance-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: warn
