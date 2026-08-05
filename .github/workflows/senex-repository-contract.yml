@@ -3,7 +3,7 @@ name: SENEX Repository Contract
 on:
   pull_request:
     branches:
-      - governance/senex-r0-contract-gates
+      - feat/h011-v3-discovery-refresh
     paths:
       - "governance/**"
       - "tools/verify_repository_contract.py"
@@ -39,8 +39,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          test "${{ github.event.pull_request.base.ref }}" = "governance/senex-r0-contract-gates"
-          test "${{ github.event.pull_request.base.sha }}" = "39e1cf1bdad31a2b6f2178949a2977c837ebdf18"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
+          test "${{ github.event.pull_request.base.sha }}" = "2f8503533543832147caf4c8e97a0cc6f5af3cbc"
           git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
 
       - name: Set up Python
