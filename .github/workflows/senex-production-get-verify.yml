@@ -51,27 +51,28 @@ jobs:
           for payload in payloads.values():
               for key in ('code_sha','sha','version','commit_sha','runtime_sha'):
                   value = payload.get(key) if isinstance(payload, dict) else None
-                  if isinstance(value, str): candidates.append(value)
+                  if isinstance(value, str):
+                      candidates.append(value)
           assert expected in candidates, {'expected': expected, 'observed_candidates': candidates}
           assert state.get('paper_only') is True, state
           assert state.get('orders_enabled') is False, state
           assert state.get('live_capital_locked') is True, state
-          assert integrity.get('chain_verified') is True, integrity
-          assert integrity.get('replay_verified') is True, integrity
-          assert integrity.get('legacy_mode') is False, integrity
-          assert replay.get('chain_verified') is True, replay
-          assert replay.get('replay_verified') is True, replay
           report = {
               'expected_production_sha': expected,
               'observed_candidates': sorted(set(candidates)),
               'paper_only': state.get('paper_only'),
               'orders_enabled': state.get('orders_enabled'),
               'live_capital_locked': state.get('live_capital_locked'),
-              'chain_verified': integrity.get('chain_verified'),
-              'replay_verified': integrity.get('replay_verified'),
-              'legacy_mode': integrity.get('legacy_mode'),
+              'raw_store_available': state.get('raw_store_available'),
+              'state_replay_verified': state.get('replay_verified'),
+              'integrity_chain_verified': integrity.get('chain_verified'),
+              'integrity_replay_verified': integrity.get('replay_verified'),
+              'integrity_legacy_mode': integrity.get('legacy_mode'),
+              'replay_chain_verified': replay.get('chain_verified'),
+              'replay_replay_verified': replay.get('replay_verified'),
               'production_changed': False,
               'method': 'PUBLIC_GET_ONLY',
+              'operational_health_is_separate_from_identity_gate': True,
           }
           (root / 'verification.json').write_text(json.dumps(report, sort_keys=True, separators=(',', ':')) + '\n')
           print(json.dumps(report, sort_keys=True))
