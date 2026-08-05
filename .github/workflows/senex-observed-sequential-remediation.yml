@@ -110,6 +110,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git restore --worktree --staged -- polymarket/results 2>/dev/null || true
+          git clean -fdx -- polymarket/results
           git add -A
           git diff --cached --check
           python - <<'PY'
