@@ -1,0 +1,70 @@
+name: ARQ Restore Production Baseline
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-restore-production-baseline.yml
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: northflank-readonly-audit
+    steps:
+      - name: Enforce recorded rollback deployment at one instance
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          import datetime,hashlib,json,os,time,urllib.error,urllib.request
+          base='https://api.northflank.com/v1'; token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-restore-baseline/1'}
+          expected_build='reach-page-2757'; expected_sha='2f8503533543832147caf4c8e97a0cc6f5af3cbc'
+          out={'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'requests':[],'expected_build_id':expected_build,'expected_sha':expected_sha,'secret_values_exported':False}
+          def call(method,route,payload=None,label=None):
+              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode()
+              req=urllib.request.Request(base+route,headers=headers,data=body,method=method); raw=b''; status=0
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r: status=r.status; raw=r.read()
+              except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+              digest=hashlib.sha256(raw).hexdigest(); out['requests'].append({'label':label or route,'method':method,'path':route,'status':status,'bytes':len(raw),'body_sha256':digest})
+              try: obj=json.loads(raw.decode() or '{}')
+              except Exception: obj={'non_json':True}
+              if not 200<=status<300: raise SystemExit(f'{method} {route} status={status} sha256={digest}')
+              return obj.get('data',obj) if isinstance(obj,dict) else obj
+          dep=call('GET','/projects/seneciobot/services/senecio-h011/deployment',label='deployment_before')
+          internal=dep.get('internal') or {}
+          if internal.get('buildId')!=expected_build or internal.get('deployedSHA')!=expected_sha:
+              raise SystemExit(f'unexpected deployment identity build={internal.get("buildId")} sha={internal.get("deployedSHA")}')
+          if int(dep.get('instances',0))!=1:
+              call('POST','/projects/seneciobot/services/senecio-h011/scale',{'instances':1},'scale_one')
+          deadline=time.time()+900; final=None
+          while time.time()<deadline:
+              final=call('GET','/projects/seneciobot/services/senecio-h011/deployment',label='deployment_poll')
+              internal=final.get('internal') or {}
+              if int(final.get('instances',0))==1 and internal.get('buildId')==expected_build and internal.get('deployedSHA')==expected_sha:
+                  break
+              time.sleep(10)
+          else: raise SystemExit('baseline deployment did not stabilize')
+          out['result']={'status':'PASS','instances':final.get('instances'),'build_id':(final.get('internal') or {}).get('buildId'),'deployed_sha':(final.get('internal') or {}).get('deployedSHA')}
+          encoded=json.dumps(out,sort_keys=True,indent=2).encode()+b'\n'; open('evidence/baseline_restore.json','wb').write(encoded); open('evidence/SHA256SUMS','w').write(hashlib.sha256(encoded).hexdigest()+'  baseline_restore.json\n')
+          print(json.dumps(out['result'],sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-baseline-restored-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: error
