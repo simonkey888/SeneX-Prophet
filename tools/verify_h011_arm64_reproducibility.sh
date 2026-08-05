@@ -90,11 +90,12 @@ report = {
 }
 (root / "result.json").write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 PY
-  find "$EVIDENCE" -type f ! -name SHA256SUMS -print0 \
-    | sort -z | xargs -0 sha256sum > "$EVIDENCE/SHA256SUMS.tmp" 2>/dev/null || true
-  if [[ -f "$EVIDENCE/SHA256SUMS.tmp" ]]; then
-    mv "$EVIDENCE/SHA256SUMS.tmp" "$EVIDENCE/SHA256SUMS"
-  fi
+  (
+    cd "$EVIDENCE"
+    find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.tmp -print0 \
+      | sort -z | xargs -0 sha256sum > SHA256SUMS.tmp
+    mv SHA256SUMS.tmp SHA256SUMS
+  ) || true
   RESULT_WRITTEN="1"
   set -e
 }
