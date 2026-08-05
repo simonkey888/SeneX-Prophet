@@ -1,0 +1,69 @@
+name: ARQ Current Volume Inventory V2
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-current-volume-inventory-v2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: northflank-readonly-audit
+    steps:
+      - name: Capture current sanitized volume inventory
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          import datetime,hashlib,json,os,urllib.error,urllib.request
+          base='https://api.northflank.com/v1'; token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-current-volume-inventory-v2/1'}
+          out={'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'requests':[],'volumes':[],'secret_values_exported':False}
+          def get(route,label,required=True):
+              req=urllib.request.Request(base+route,headers=headers,method='GET'); raw=b''; status=0
+              try:
+                  with urllib.request.urlopen(req,timeout=30) as r: status=r.status; raw=r.read()
+              except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+              digest=hashlib.sha256(raw).hexdigest(); out['requests'].append({'label':label,'method':'GET','path':route,'status':status,'bytes':len(raw),'body_sha256':digest})
+              try: obj=json.loads(raw.decode() or '{}')
+              except Exception: obj={'non_json':True}
+              if required and status!=200: raise SystemExit(f'{route} status={status} sha256={digest}')
+              return status,(obj.get('data',obj) if isinstance(obj,dict) else obj)
+          status,data=get('/projects/seneciobot/volumes?per_page=100','volumes')
+          if isinstance(data,list): volume_list=data
+          elif isinstance(data,dict): volume_list=data.get('volumes',data.get('items',[]))
+          else: volume_list=[]
+          for volume in volume_list:
+              vid=volume.get('id')
+              _,detail=get(f'/projects/seneciobot/volumes/{vid}',f'volume:{vid}') if vid else (200,volume)
+              out['volumes'].append({k:detail.get(k) for k in ('id','name','status','createdAt','updatedAt','spec','mounts','attachedObjects','source')})
+          for route,label in [('/projects/seneciobot/jobs?per_page=100','jobs'),('/projects/seneciobot/services?per_page=100','services')]:
+              status,obj=get(route,label,required=False)
+              out[label+'_status']=status
+              if status==200:
+                  values=obj if isinstance(obj,list) else obj.get(label,obj.get('items',[])) if isinstance(obj,dict) else []
+                  out[label]=[{k:item.get(k) for k in ('id','name','type','createdAt','updatedAt','status')} for item in values]
+          encoded=json.dumps(out,sort_keys=True,indent=2).encode()+b'\n'
+          open('evidence/current_volume_inventory.json','wb').write(encoded)
+          open('evidence/SHA256SUMS','w').write(hashlib.sha256(encoded).hexdigest()+'  current_volume_inventory.json\n')
+          print(json.dumps({'volumes':out['volumes'],'jobs_status':out.get('jobs_status'),'jobs':out.get('jobs',[]),'services_status':out.get('services_status'),'services':out.get('services',[]),'request_count':len(out['requests']),'secret_values_exported':False},sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-current-volume-inventory-v2-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: error
