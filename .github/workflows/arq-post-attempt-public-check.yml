@@ -1,0 +1,63 @@
+name: ARQ Post-Attempt Public Check
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-post-attempt-public-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Capture public production state
+        shell: bash
+        env:
+          BASE: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 20 "${BASE}/api/v3/state" -o evidence/state.json; then
+              ready=1
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" -eq 1
+          for route in healthz api/v3/integrity api/v3/replay; do
+            name="${route//\//_}"
+            curl --fail --silent --show-error --max-time 20 "${BASE}/${route}" -o "evidence/${name}.json"
+          done
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          state=json.loads(Path('evidence/state.json').read_text())
+          summary={
+              'code_sha':state.get('code_sha') or state.get('source_sha') or state.get('sha') or (state.get('provenance') or {}).get('code_sha'),
+              'paper_only':state.get('paper_only'),
+              'orders_enabled':state.get('orders_enabled'),
+              'live_capital_locked':state.get('live_capital_locked'),
+              'runtime_state':state.get('runtime_state'),
+              'raw_store_available':state.get('raw_store_available'),
+          }
+          assert summary['paper_only'] is True
+          assert summary['orders_enabled'] is False
+          assert summary['live_capital_locked'] is True
+          Path('evidence/summary.json').write_text(json.dumps(summary,sort_keys=True,indent=2)+'\n')
+          for p in sorted(Path('evidence').glob('*.json')):
+              print(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}')
+          print(json.dumps(summary,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-post-attempt-public-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: error
