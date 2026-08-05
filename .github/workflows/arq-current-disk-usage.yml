@@ -1,0 +1,41 @@
+name: ARQ Current Disk Usage
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-current-disk-usage.yml
+
+permissions:
+  contents: read
+
+jobs:
+  usage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: northflank-readonly-audit
+    steps:
+      - name: Read service disk metrics
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          python - <<'PY'
+          import hashlib,json,os,urllib.error,urllib.request
+          route='/projects/seneciobot/services/senecio-h011/metrics?queryType=single&metricTypes=diskUsage&metricTypes=memory&metricTypes=cpu'
+          req=urllib.request.Request('https://api.northflank.com/v1'+route,headers={'Authorization':f"Bearer {os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']}",'Accept':'application/json','User-Agent':'senex-current-disk-usage/1'},method='GET')
+          raw=b''; status=0
+          try:
+              with urllib.request.urlopen(req,timeout=30) as r: status=r.status; raw=r.read()
+          except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+          digest=hashlib.sha256(raw).hexdigest()
+          try: obj=json.loads(raw.decode() or '{}')
+          except Exception: obj={'non_json':True}
+          print(json.dumps({'status':status,'body_sha256':digest,'bytes':len(raw),'data':obj.get('data',obj) if status==200 and isinstance(obj,dict) else {'error_code':obj.get('code') if isinstance(obj,dict) else None,'message':obj.get('message') if isinstance(obj,dict) else None},'secret_values_exported':False},sort_keys=True))
+          if status!=200: raise SystemExit(1)
+          PY
