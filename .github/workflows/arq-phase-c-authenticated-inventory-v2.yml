@@ -1,0 +1,100 @@
+name: ARQ Phase C Authenticated Inventory V2
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-phase-c-authenticated-inventory-v2.yml
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  PRODUCT_SHA: d5047b2055d30d199954dd4e68ae2e676aa8a4ba
+
+jobs:
+  inventory-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: northflank-readonly-audit
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Capture full sanitized objects
+        shell: bash
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          mkdir -p evidence-v2
+          python - <<'PY'
+          import datetime,hashlib,json,os,re,urllib.error,urllib.request
+          API=os.environ['NF_API'].rstrip('/')
+          H={'Authorization':'Bearer '+os.environ['NORTHFLANK_API_TOKEN'],'Accept':'application/json','User-Agent':'senex-arq-phase-c-v2/1'}
+          sensitive=re.compile(r'(secret|token|password|credential|private.?key|runtimeEnvironment|buildArguments|buildFiles|runtimeFiles|dockerSecretMounts)',re.I)
+          def scrub(v,key=''):
+              if isinstance(v,dict):
+                  if sensitive.search(key): return {'names':sorted(str(k) for k in v),'values_redacted':True}
+                  return {str(k):scrub(x,str(k)) for k,x in v.items()}
+              if isinstance(v,list): return [scrub(x,key) for x in v]
+              if sensitive.search(key) and v is not None: return '<redacted>'
+              return v
+          reqs=[]; objects={}
+          def get(path,label):
+              body=b''; status=0
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(API+path,headers=H,method='GET'),timeout=30) as r: status=r.status; body=r.read()
+              except urllib.error.HTTPError as e: status=e.code; body=e.read()
+              reqs.append({'method':'GET','path':path,'label':label,'status':status,'body_sha256':hashlib.sha256(body).hexdigest(),'bytes':len(body)})
+              try: parsed=json.loads(body.decode() or '{}')
+              except Exception: parsed={'non_json':True}
+              objects[label]=scrub(parsed)
+              return status,parsed
+          paths=[
+            ('/projects?per_page=100','projects'),('/teams?per_page=100','teams'),('/projects/seneciobot','project'),
+            ('/projects/seneciobot/services?per_page=100','services'),('/projects/seneciobot/jobs?per_page=100','jobs'),
+            ('/projects/seneciobot/addons?per_page=100','addons'),('/projects/seneciobot/volumes?per_page=100','volumes'),
+            ('/projects/seneciobot/services/seneciobot','service:seneciobot'),
+            ('/projects/seneciobot/services/seneciobot/deployment','deployment:seneciobot'),
+            ('/projects/seneciobot/services/seneciobot/build?per_page=100','builds:seneciobot'),
+            ('/projects/seneciobot/services/seneciobot/containers?per_page=100','containers:seneciobot'),
+            ('/projects/seneciobot/services/senecio-h011','service:senecio-h011'),
+            ('/projects/seneciobot/services/senecio-h011/deployment','deployment:senecio-h011'),
+            ('/projects/seneciobot/services/senecio-h011/build?per_page=100','builds:senecio-h011'),
+            ('/projects/seneciobot/services/senecio-h011/containers?per_page=100','containers:senecio-h011'),
+            ('/projects/seneciobot/volumes/h011-results-vol','volume:h011-results-vol'),
+            ('/projects/seneciobot/volumes/h011-results-vol/backups?per_page=100','backups:h011-results-vol'),
+          ]
+          for p,l in paths: get(p,l)
+          # fetch all extra build/container pages when cursors are present
+          for base,label in [('/projects/seneciobot/services/senecio-h011/build','builds:senecio-h011'),('/projects/seneciobot/services/senecio-h011/containers','containers:senecio-h011')]:
+              first=objects.get(label,{})
+              cursor=((first.get('pagination') or {}).get('cursor')) if isinstance(first,dict) else None
+              n=2
+              while cursor and n<=10:
+                  _,raw=get(base+'?per_page=100&cursor='+cursor,label+f':page{n}')
+                  cursor=((raw.get('pagination') or {}).get('cursor')) if isinstance(raw,dict) else None
+                  n+=1
+          payload={'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'product_sha':os.environ['PRODUCT_SHA'],'requests':reqs,'objects':objects,'secret_values_exported':False}
+          raw=(json.dumps(payload,sort_keys=True,separators=(',',':'))+'\n').encode()
+          open('evidence-v2/inventory.json','wb').write(raw)
+          digest=hashlib.sha256(raw).hexdigest()
+          open('evidence-v2/SHA256SUMS','w').write(digest+'  inventory.json\n')
+          # concise authority summary
+          summary={'inventory_sha256':digest,'request_count':len(reqs),'statuses':sorted(set(x['status'] for x in reqs)),'project_id':'seneciobot','service_ids':['seneciobot','senecio-h011'],'volume_id':'h011-results-vol','permission_denials':[x for x in reqs if x['status'] in (401,403)],'secret_values_exported':False}
+          open('evidence-v2/summary.json','w').write(json.dumps(summary,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(summary,sort_keys=True))
+          PY
+          (cd evidence-v2 && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: northflank-phase-c-authenticated-v2-${{ github.sha }}
+          path: evidence-v2
+          retention-days: 30
+          if-no-files-found: error
