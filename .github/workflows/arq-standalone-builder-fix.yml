@@ -1,0 +1,64 @@
+name: ARQ Standalone Builder Fix
+
+on:
+  push:
+    branches: [feat/senex-paper-execution-truth-v1]
+    paths: [.github/workflows/arq-standalone-builder-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-verify-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: feat/senex-paper-execution-truth-v1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Make evidence builder standalone
+        run: |
+          set -euo pipefail
+          cp .github/workflows/arq-standalone-builder-fix.yml /tmp/arq-standalone-builder-fix.yml
+          git rm .github/workflows/arq-standalone-builder-fix.yml
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/build_execution_truth_artifacts.py')
+          text = path.read_text(encoding='utf-8')
+          anchor = 'from typing import Any\n\nfrom polymarket.monitoring.site import build_monitoring_model, render_monitoring_site\n'
+          replacement = 'from typing import Any\n\nROOT = Path(__file__).resolve().parents[1]\nif str(ROOT) not in __import__("sys").path:\n    __import__("sys").path.insert(0, str(ROOT))\n\nfrom polymarket.monitoring.site import build_monitoring_model, render_monitoring_site\n'
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one import anchor, found {text.count(anchor)}')
+          path.write_text(text.replace(anchor, replacement, 1), encoding='utf-8')
+          PY
+          git add -A
+          python tools/verify_repository_contract.py --generate
+          git add -A
+          git diff --cached --check
+      - name: Install and verify standalone invocation
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+          python tools/build_execution_truth_artifacts.py --output-dir /tmp/standalone-builder --code-sha "$(printf 'a%.0s' {1..40})" --tree-sha "$(printf 'b%.0s' {1..40})" --generated-at 2026-08-05T00:00:00Z --regression-count 1
+          (cd /tmp/standalone-builder && sha256sum -c SHA256SUMS)
+          python -m pytest -q
+      - name: Commit verified standalone fix
+        run: |
+          set -euo pipefail
+          git clean -fdx
+          mkdir -p .github/workflows
+          cp /tmp/arq-standalone-builder-fix.yml .github/workflows/arq-standalone-builder-fix.yml
+          git add -A
+          test -z "$(git diff --cached --name-only | grep '^.github/workflows/arq-standalone-builder-fix.yml$' || true)"
+          git config user.name "SENEX ARQ"
+          git config user.email "simonkey888@users.noreply.github.com"
+          git commit -m "fix(tools): make execution evidence builder standalone"
+          git push origin HEAD:feat/senex-paper-execution-truth-v1
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
