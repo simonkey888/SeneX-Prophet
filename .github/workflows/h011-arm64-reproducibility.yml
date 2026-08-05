@@ -59,6 +59,7 @@ jobs:
               'harness_self_test':'PASS',
           }
           PY
+          (cd "$evidence/harness-self-test" && sha256sum -c SHA256SUMS)
 
       - name: Register ARM64 emulation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
@@ -74,6 +75,13 @@ jobs:
           set -euo pipefail
           bash tools/verify_h011_arm64_reproducibility.sh \
             "$RUNNER_TEMP/senex-arm64-evidence"
+
+      - name: Verify portable evidence checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/senex-arm64-evidence"
+          sha256sum -c SHA256SUMS
 
       - name: Upload checksummed evidence
         if: always()
