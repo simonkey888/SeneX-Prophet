@@ -1,10 +1,23 @@
 name: SENECIO Oracle Quarantined Reference
 
-# Intentionally disabled. Historical Oracle automation is retained as a
-# non-runnable reference; it has no event trigger and no write permission.
-on: {}
+# Historical Oracle automation is retained only as a callable, read-only
+# quarantine check. It has no scheduled, push, pull-request or manual trigger.
+on:
+  workflow_call:
 
 permissions:
   contents: read
 
-jobs: {}
+jobs:
+  quarantined:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Confirm quarantine
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'ORACLE_EXECUTION=DISABLED' \
+            'REPOSITORY_MUTATION=DISABLED' \
+            'PAGES_DEPLOYMENT=DISABLED'
