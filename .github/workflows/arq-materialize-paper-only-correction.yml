@@ -1,0 +1,166 @@
+name: ARQ Materialize Paper-Only Correction
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-materialize-paper-only-correction.yml
+
+permissions:
+  contents: write
+
+env:
+  PRODUCT_SHA: d5047b2055d30d199954dd4e68ae2e676aa8a4ba
+  CORRECTION_BRANCH: fix/senex-paper-only-repository-20260805
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout correction branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: ${{ env.CORRECTION_BRANCH }}
+
+      - name: Verify branch authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base HEAD "${PRODUCT_SHA}")" = "${PRODUCT_SHA}"
+          remote_sha="$(git ls-remote origin refs/heads/${CORRECTION_BRANCH} | awk '{print $1}')"
+          test "$(git rev-parse HEAD)" = "${remote_sha}"
+
+      - name: Remove authenticated exchange routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          for relative in (
+              'exchange_connector.py',
+              'senecio_polymarket/oracle/exchange_connector.py',
+          ):
+              path = Path(relative)
+              text = path.read_text(encoding='utf-8')
+              text = text.replace(
+                  'import time\nimport os\nimport logging\n',
+                  'import time\nimport logging\n',
+              )
+              text = text.replace(
+                  'SUPPORTED_EXCHANGES = ("okx", "kraken", "gate", "mexc", "bitget", "binance", "bybit", "binance_testnet")',
+                  'SUPPORTED_EXCHANGES = ("okx", "kraken", "gate", "mexc", "bitget", "binance", "bybit")',
+              )
+              text = re.sub(
+                  r'\n            "binance_testnet": \{\n.*?\n            \},\n        \}\n',
+                  '\n        }\n',
+                  text,
+                  count=1,
+                  flags=re.S,
+              )
+              start = text.index(
+                  '                # binance_testnet uses ccxt.binance with testnet config\n'
+              )
+              end = text.index('                self.exchanges[name] = instance\n', start)
+              replacement = '''                exchange_class = getattr(ccxt, name)\n                ex_config = dict(exchange_configs.get(name, {"enableRateLimit": True}))\n\n                # Public-data-only connector: reject authentication, sandbox/testnet\n                # routing and private endpoint overrides even when supplied by a caller.\n                user_config = dict(config.get(name, {}))\n                forbidden_options = {\n                    "apiKey", "secret", "password", "uid", "token", "privateKey",\n                    "wallet", "headers", "urls",\n                }\n                rejected = sorted(forbidden_options.intersection(user_config))\n                if rejected:\n                    raise ValueError(\n                        f"Authenticated/private exchange configuration is prohibited for {name}: {rejected}"\n                    )\n                ex_config.update(user_config)\n                instance = exchange_class(ex_config)\n\n'''
+              text = text[:start] + replacement + text[end:]
+              order_start = text.index(
+                  '    # -----------------------------------------------------------------------\n'
+                  '    # Testnet order execution (Act IX)\n'
+                  '    # -----------------------------------------------------------------------\n'
+              )
+              cleanup = (
+                  '    # -----------------------------------------------------------------------\n'
+                  '    # Cleanup\n'
+                  '    # -----------------------------------------------------------------------\n'
+              )
+              cleanup_start = text.index(cleanup, order_start)
+              text = text[:order_start] + cleanup + text[cleanup_start + len(cleanup):]
+              for forbidden in (
+                  'BINANCE_TESTNET_KEY', 'BINANCE_TESTNET_SECRET',
+                  'place_market_order', 'create_market_order', 'fetch_positions',
+                  'binance_testnet', 'fapiPrivate',
+              ):
+                  if forbidden in text:
+                      raise SystemExit(f'{forbidden} remains in {relative}')
+              path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Replace predeployment scan and refresh state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tools/build_phase_f_h_evidence.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('import ast\n', '')
+          text = text.replace(
+              'from typing import Any, Iterable\n',
+              'from typing import Any, Iterable\n\nfrom verify_paper_only_repository import scan_repository\n',
+          )
+          start = text.index('def static_security_scan(repo_root: Path) -> dict[str, Any]:')
+          end = text.index('\n\ndef runbook_manifest', start)
+          text = text[:start] + '''def static_security_scan(repo_root: Path) -> dict[str, Any]:\n    """Run the canonical repository-wide paper-only safety gate."""\n    return scan_repository(repo_root)\n''' + text[end:]
+          path.write_text(text, encoding='utf-8')
+
+          state = Path('docs/CURRENT_STATE.md')
+          existing = state.read_text(encoding='utf-8')
+          marker = '## Candidate contracts\n'
+          position = existing.index(marker)
+          header = '''# SENEX / SENECIO H-011 V3 — Current State\n\n## Canonical identity\n\n- Product: **SENEX**\n- Technical system: **SENECIO H-011 V3**\n- Repository: `simonkey888/SeneX-Prophet`\n- Canonical delivery branch: `feat/h011-v3-discovery-refresh`\n- Accepted product merge before correction: `d5047b2055d30d199954dd4e68ae2e676aa8a4ba`\n- Accepted product tree before correction: `781ee4166d37c041c609d151bd308661c6569191`\n- Corrective authority: Issue #23 comments `5190770249` and `5191330569`\n- Production rollback SHA before promotion: `2f8503533543832147caf4c8e97a0cc6f5af3cbc`\n- Production remains on the rollback SHA until repository-wide paper-only correction, backup, isolated restore and rollback gates pass.\n\n## Permanent product boundary\n\n```text\npaper_only=true\norders_enabled=false\nlive_capital_locked=true\nREAL_ORDER_NETWORK_CALLS=0\nWALLET_OR_PRIVATE_KEY_ACCESS=0\nREAL_CAPITAL_ACTIONS=0\n```\n\nThe deployable product contains public-data observation and deterministic paper simulation only. Authenticated exchange credentials, private positions or balances, order creation or cancellation, wallets, signing and real-capital routes are prohibited. The Binance testnet credential/order route is removed from both connector copies. The Oracle workflow is read-only and cannot commit, push or deploy Pages. `tools/verify_paper_only_repository.py` scans tracked root code, packages, scripts, workflows, Dockerfiles and configuration and fails closed on these capabilities.\n\n'''
+          state.write_text(header + existing[position:], encoding='utf-8')
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+          python tools/verify_repository_contract.py --generate
+          python tools/verify_paper_only_repository.py \
+            --repo-root . \
+            --output /tmp/paper-only-corrected.json
+          python -m compileall -q exchange_connector.py polymarket senecio_polymarket tools tests
+          PYTHONPATH=.:polymarket python -m pytest -q \
+            tests/governance tests/operations tests/paper_trial tests/monitoring
+          PYTHONPATH=.:polymarket python -m pytest -q tests/h011_v3 tests/cp
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          git diff --check
+          rm -rf polymarket/results
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
+          git config user.name "SENEX ARQ"
+          git config user.email "senex-arq@users.noreply.github.com"
+          git commit -m "security(senex): enforce repository-wide paper-only boundary"
+          git push origin "HEAD:refs/heads/${CORRECTION_BRANCH}"
+          printf 'FINAL_HEAD=%s\nFINAL_TREE=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" \
+            | tee /tmp/correction-identity.txt
+
+      - name: Upload correction evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-paper-only-correction-${{ github.sha }}
+          path: |
+            /tmp/paper-only-corrected.json
+            /tmp/correction-identity.txt
+          retention-days: 30
+          if-no-files-found: error
