@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 PIN_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)(?:\s*\\)?$")
 HASH_RE = re.compile(r"^--hash=sha256:([0-9a-f]{64})(?:\s*\\)?$")
@@ -16,9 +17,9 @@ def canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def parse_lock(path: Path) -> dict[str, object]:
-    entries: list[dict[str, object]] = []
-    current: dict[str, object] | None = None
+def parse_lock(path: Path) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
     errors: list[str] = []
     for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
@@ -37,9 +38,7 @@ def parse_lock(path: Path) -> dict[str, object]:
             continue
         hashed = HASH_RE.fullmatch(line)
         if hashed and current is not None:
-            hashes = current["hashes"]
-            assert isinstance(hashes, list)
-            hashes.append(hashed.group(1))
+            current["hashes"].append(hashed.group(1))
             continue
         errors.append(f"{path}:{number}: invalid lock syntax: {line}")
     if current is not None:
@@ -66,17 +65,33 @@ def parse_lock(path: Path) -> dict[str, object]:
     }
 
 
+def entry_map(lock: dict[str, Any]) -> dict[str, tuple[str, tuple[str, ...]]]:
+    return {
+        str(entry["name"]): (
+            str(entry["version"]),
+            tuple(sorted(str(value) for value in entry["hashes"])),
+        )
+        for entry in lock["entries"]
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--test", type=Path, required=True)
+    parser.add_argument("--ci", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     runtime = parse_lock(args.runtime)
     test = parse_lock(args.test)
+    ci = parse_lock(args.ci) if args.ci else None
     errors = [*runtime["errors"], *test["errors"]]
-    runtime_names = {str(x["name"]) for x in runtime["entries"]}
-    test_names = {str(x["name"]) for x in test["entries"]}
+    if ci:
+        errors.extend(ci["errors"])
+    runtime_map = entry_map(runtime)
+    test_map = entry_map(test)
+    runtime_names = set(runtime_map)
+    test_names = set(test_map)
     if "pytest" in runtime_names:
         errors.append("pytest must not be present in the runtime lock")
     if "pytest" not in test_names:
@@ -84,17 +99,36 @@ def main() -> int:
     overlap = sorted(runtime_names & test_names)
     if overlap:
         errors.append(f"runtime/test locks overlap: {overlap}")
+    expected_ci = {**runtime_map, **test_map}
+    ci_consistent: bool | None = None
+    if ci:
+        actual_ci = entry_map(ci)
+        ci_consistent = actual_ci == expected_ci
+        if not ci_consistent:
+            missing = sorted(set(expected_ci) - set(actual_ci))
+            extra = sorted(set(actual_ci) - set(expected_ci))
+            changed = sorted(
+                name for name in set(expected_ci) & set(actual_ci)
+                if expected_ci[name] != actual_ci[name]
+            )
+            errors.append(
+                f"CI compatibility lock differs from runtime+test union: "
+                f"missing={missing} extra={extra} changed={changed}"
+            )
     report = {
-        "schema_version": "senex-h011-dependency-lock-v1",
+        "schema_version": "senex-h011-dependency-lock-v2",
         "status": "PASS" if not errors else "FAIL",
         "runtime": runtime,
         "test": test,
+        "ci": ci,
         "runtime_and_test_separated": not overlap and "pytest" not in runtime_names,
+        "ci_lock_equals_runtime_test_union": ci_consistent,
         "unpinned_requirements": 0 if not errors else None,
         "unhashed_requirements": 0 if not errors else None,
         "source_distributions_allowed": 0,
         "only_binary": True,
         "pip_require_hashes": True,
+        "no_deps_for_complete_locks": True,
         "errors": errors,
     }
     rendered = json.dumps(report, sort_keys=True, indent=2) + "\n"
