@@ -213,6 +213,7 @@ class PaperEngine:
         fee_schedules: Mapping[str, FeeSchedule] | None = None,
         configured_transport_delay_ms: int = 500,
         maximum_pair_skew_ms: float = 1_000.0,
+        apply_first_fill: bool = True,
     ) -> PaperEngineResult | PendingPaperExecution:
         prepared = self._prepare_h011_record(
             record=record,
@@ -239,6 +240,7 @@ class PaperEngine:
             fee_schedules=verified_schedules,
             first_now_utc=timestamp_utc,
             portfolio=self.portfolio,
+            apply_first_fill=apply_first_fill,
         )
         if pending_execution.first_fill is None:
             execution = executor.complete(
@@ -274,6 +276,7 @@ class PaperEngine:
         second_epoch: float | None = None,
         require_distinct_snapshot: bool = False,
         second_failure_reason: str | None = None,
+        apply_second_fill: bool = True,
     ) -> PaperEngineResult:
         execution = pending.executor.complete(
             pending=pending.pending_execution,
@@ -284,6 +287,7 @@ class PaperEngine:
             second_epoch=second_epoch,
             require_distinct_snapshot=require_distinct_snapshot,
             second_failure_reason=second_failure_reason,
+            apply_second_fill=apply_second_fill,
         )
         result = PaperEngineResult(
             decision=pending.decision,

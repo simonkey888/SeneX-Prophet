@@ -220,7 +220,7 @@ class _ChangingSnapshotClient:
         return payload, sha256_json({"token_id": token_id, "call": count, "payload": payload})
 
 
-def observed_runner_integration_report() -> dict[str, Any]:
+def observed_runner_integration_report(code_sha: str) -> dict[str, Any]:
     clock = _HarnessClock(1_785_844_800.0)
     client = _ChangingSnapshotClient(clock)
     with tempfile.TemporaryDirectory(prefix="senex-runner-integration-") as temp:
@@ -237,10 +237,12 @@ def observed_runner_integration_report() -> dict[str, Any]:
             fixture=False,
             clock=clock.trial_clock(),
             client_factory=lambda: client,
+            code_sha_override=code_sha,
         )
         report = json.loads((root / "observed_runner_integration.json").read_text(encoding="utf-8"))
         report["summary"] = result["summary"]
         report["client_book_calls"] = dict(client.book_calls)
+        report["code_sha"] = code_sha
         records = list(report.get("records") or [])
         checks = {
             "observed_path_sequential_executions": result["summary"]["sequential_executions"] == 1,
@@ -252,12 +254,95 @@ def observed_runner_integration_report() -> dict[str, Any]:
             "no_duplicate_first_fill_on_next_poll": client.book_calls == {"yes": 1, "no": 2},
             "second_leg_snapshot_required_not_terminal": bool(records) and records[0]["second_leg_snapshot_required_terminal"] is False,
             "replay_equality": report.get("replay_result") == "PASS",
+            "runner_summary_exact_head_bound": report.get("summary", {}).get("code_sha") == code_sha,
         }
         report["checks"] = checks
         report["result"] = "PASS" if all(checks.values()) else "FAIL"
         return report
 
 
+
+
+class _InjectedRecoveryCrash(RuntimeError):
+    pass
+
+
+def crash_recovery_report(code_sha: str) -> dict[str, Any]:
+    points = [
+        "AFTER_FIRST_STATE_DURABLE",
+        "AFTER_FIRST_FILL_DURABLE",
+        "AFTER_FIRST_COMMIT_DURABLE",
+        "AFTER_SECOND_STATE_DURABLE",
+        "AFTER_SECOND_FILL_DURABLE",
+        "AFTER_TERMINAL_DURABLE",
+    ]
+    scenarios = []
+    for point in points:
+        clock = _HarnessClock(1_785_844_800.0)
+        client = _ChangingSnapshotClient(clock)
+        fired = False
+
+        def inject(observed: str) -> None:
+            nonlocal fired
+            if observed == point and not fired:
+                fired = True
+                raise _InjectedRecoveryCrash(point)
+
+        with tempfile.TemporaryDirectory(prefix="senex-crash-recovery-") as temp:
+            root = Path(temp)
+            config = TrialConfig(
+                duration_minutes=1, minimum_windows=1, poll_seconds=15,
+                slippage_bps_floor=0.0, sequential_transport_delay_ms=500,
+            )
+            crashed = False
+            try:
+                run_trial(
+                    output_dir=root, config=config, fixture=False,
+                    clock=clock.trial_clock(), client_factory=lambda: client,
+                    code_sha_override=code_sha, fault_injector=inject,
+                )
+            except _InjectedRecoveryCrash:
+                crashed = True
+            result = run_trial(
+                output_dir=root, config=config, fixture=False,
+                clock=clock.trial_clock(), client_factory=lambda: client,
+                code_sha_override=code_sha,
+            )
+            report = json.loads((root / "crash_recovery_report.json").read_text(encoding="utf-8"))
+            ledger = [json.loads(line) for line in (root / "portfolio_ledger.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            fill_ids = [item["fill"]["deterministic_id"] for item in ledger if item.get("type") == "PAPER_FILL"]
+            passed = (
+                crashed
+                and len(fill_ids) == 2
+                and len(set(fill_ids)) == 2
+                and client.book_calls == {"yes": 1, "no": 2}
+                and result["summary"]["fills"] == 2
+                and report["restart_count"] >= 1
+                and report["portfolio_replay_result"] == "PASS"
+                and report["orchestration_replay_result"] == "PASS"
+                and report["sequential_result_replay_result"] == "PASS"
+            )
+            scenarios.append({
+                "fault_point": point,
+                "pass": passed,
+                "fill_count": len(fill_ids),
+                "unique_fill_count": len(set(fill_ids)),
+                "book_calls": dict(client.book_calls),
+                "restart_count": report["restart_count"],
+                "event_counts": report["event_counts"],
+                "code_sha": report["code_sha"],
+            })
+    return {
+        "schema_version": "senex-crash-recovery-fault-matrix-v1",
+        "code_sha": code_sha,
+        "fault_points": points,
+        "scenarios": scenarios,
+        "first_leg_exactly_once_across_restart": all(item["unique_fill_count"] == 2 for item in scenarios),
+        "second_leg_exactly_once_across_restart": all(item["fill_count"] == 2 for item in scenarios),
+        "orchestration_replay_result": "PASS" if all(item["pass"] for item in scenarios) else "FAIL",
+        "sequential_result_replay_result": "PASS" if all(item["pass"] for item in scenarios) else "FAIL",
+        "result": "PASS" if all(item["pass"] for item in scenarios) else "FAIL",
+    }
 def settlement_report() -> dict[str, Any]:
     portfolio = PaperPortfolio(starting_equity_usd=1_000.0)
     broker = SimulatedBroker(slippage_bps_floor=0.0)
@@ -356,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     fees["fee_enabled"] = True
     fees["raw_schedule_hash"] = FeeSchedule.deterministic_fixture(exponent=2).raw_schedule_hash
     seq=sequential_report()
-    runner=observed_runner_integration_report()
+    runner=observed_runner_integration_report(args.code_sha)
+    crash=crash_recovery_report(args.code_sha)
     settlement=settlement_report()
     risk=risk_authority_report()
     regression={"test_count":args.regression_count,"zero_failures":True,"repository_gates":"PENDING_CI","static_real_execution_exclusion":"PASS","result":"PASS"}
@@ -365,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         "fee_model_conformance.json":fees,
         "sequential_leg_scenarios.json":seq,
         "observed_runner_integration_report.json":runner,
+        "crash_recovery_report.json":crash,
         "settlement_replay_report.json":settlement,
         "paper_risk_authority_map.json":risk,
         "regression_summary.json":regression,
@@ -381,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         {"gate_id":"GATE_1_EXACT_BASE","status":"PASS"},
         {"gate_id":"GATE_2_SOURCE_TIME_TRUTH","status":source["result"]},
         {"gate_id":"GATE_3_FEE_MODEL_OFFICIAL_CONFORMANCE","status":fees["result"]},
-        {"gate_id":"GATE_4_SEQUENTIAL_LEG_RISK","status":"PASS" if seq["result"]=="PASS" and runner["result"]=="PASS" else "FAIL"},
+        {"gate_id":"GATE_4_SEQUENTIAL_LEG_RISK","status":"PASS" if seq["result"]=="PASS" and runner["result"]=="PASS" and crash["result"]=="PASS" else "FAIL"},
         {"gate_id":"GATE_5_SETTLEMENT_AND_VALUATION","status":settlement["result"]},
         {"gate_id":"GATE_6_RISK_AUTHORITY_NO_DUPLICATION","status":risk["result"]},
         {"gate_id":"GATE_7_MONITORING_TRUTH","status":"PENDING_RENDER"},

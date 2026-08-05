@@ -26,6 +26,7 @@ from polymarket.paper.fees import FeeModelError, FeeSchedule, calculate_fee
 from polymarket.paper.models import PaperTrialSummary, deterministic_id, sha256_json
 from polymarket.paper.portfolio import AppendOnlyJournal, PaperPortfolio
 from polymarket.paper.report import REQUIRED_ARTIFACTS, TrialArtifactWriter, verify_artifact_bundle
+from polymarket.paper.recovery import SequentialRecoveryError, SequentialRecoveryStore
 from polymarket.paper.risk import PaperRiskConfig, PaperRiskEngine
 
 
@@ -333,16 +334,23 @@ def run_trial(
     fixture: bool = False,
     clock: TrialClock | None = None,
     client_factory: Callable[[], PublicDataClient] = PublicDataClient,
+    code_sha_override: str | None = None,
+    fault_injector: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     runtime_clock = clock or default_clock()
     started_utc = runtime_clock.now_utc()
     started_monotonic = runtime_clock.monotonic()
-    sha = code_sha()
+    sha = str(code_sha_override or code_sha())
     config_dict = asdict(config)
     config_sha = sha256_json(config_dict)
     trial_id = deterministic_id("trial", {"start_utc": started_utc, "code_sha": sha, "config_sha": config_sha})
+    output_dir.mkdir(parents=True, exist_ok=True)
     journal = AppendOnlyJournal(output_dir / "portfolio_ledger.jsonl")
-    portfolio = PaperPortfolio(starting_equity_usd=config.virtual_starting_equity_usd, journal=journal)
+    portfolio = PaperPortfolio.replay(
+        starting_equity_usd=config.virtual_starting_equity_usd,
+        records=journal.read_all(),
+    )
+    portfolio.journal = journal
     risk_config = PaperRiskConfig(
         virtual_starting_equity_usd=config.virtual_starting_equity_usd,
         max_order_notional_pct=config.max_order_notional_pct,
@@ -362,23 +370,34 @@ def run_trial(
         risk=PaperRiskEngine(risk_config),
         portfolio=portfolio,
     )
-    decisions: list[dict[str, Any]] = []
-    orders: list[dict[str, Any]] = []
-    fills: list[dict[str, Any]] = []
+    recovery_store = SequentialRecoveryStore(output_dir / "sequential_recovery.jsonl")
+    try:
+        recovered = recovery_store.recover(portfolio=portfolio, broker=engine.broker)
+    except SequentialRecoveryError as exc:
+        raise RuntimeError(f"RECOVERY_STATE_INVALID:{exc}") from exc
+    recovery_store.record_process_start(timestamp_utc=started_utc, code_sha=sha, config_sha=config_sha)
+    recovered = recovery_store.recover(portfolio=portfolio, broker=engine.broker)
+
+    decisions: list[dict[str, Any]] = list(recovered.decisions)
+    orders: list[dict[str, Any]] = list(recovered.orders)
+    fills: list[dict[str, Any]] = [
+        dict(record["fill"]) for record in journal.read_all() if record.get("type") == "PAPER_FILL"
+    ]
     snapshots: list[dict[str, Any]] = []
-    risk_decisions: list[dict[str, Any]] = []
+    risk_decisions: list[dict[str, Any]] = list(recovered.risk_decisions)
     abstentions: list[dict[str, Any]] = []
-    sequential_executions: list[dict[str, Any]] = []
-    runner_integration_records: list[dict[str, Any]] = []
-    terminal_windows: set[str] = set()
-    pending_windows: dict[str, PendingPaperExecution] = {}
+    sequential_executions: list[dict[str, Any]] = list(recovered.sequential_results)
+    runner_integration_records: list[dict[str, Any]] = list(recovered.runner_records)
+    terminal_windows: set[str] = set(recovered.terminal_windows)
+    pending_windows: dict[str, PendingPaperExecution] = dict(recovered.pending)
+    pending_metadata: dict[str, dict[str, Any]] = dict(recovered.pending_metadata)
     valid_observed_windows: set[str] = set()
     gamma_discovered_windows: set[str] = set()
     expected_closed_no_book_windows: set[str] = set()
     malformed_source_windows: set[str] = set()
     valid_order_book_keys: set[str] = set()
     observed_markets: set[str] = set()
-    recorded_fill_ids: set[str] = set()
+    recorded_fill_ids: set[str] = set(portfolio.applied_fill_ids)
     unexpected_source_failures = 0
     stale_events = 0
     integrity_failures = 0
@@ -438,8 +457,132 @@ def run_trial(
             prices={},
         ).to_dict())
 
+    def fault(point: str) -> None:
+        if fault_injector is not None:
+            fault_injector(point)
+
+    def complete_pending(window_slug: str) -> None:
+        nonlocal unexpected_source_failures
+        begun = pending_windows[window_slug]
+        metadata = pending_metadata[window_slug]
+        key = str(metadata["execution_key"])
+        state_history = list(metadata.get("state_history") or ["DISCOVERED", "FIRST_SNAPSHOT_CAPTURED", "FIRST_LEG_FILLED_PENDING_SECOND_SNAPSHOT"])
+        configured_delay_ms = begun.executor.configured_transport_delay_ms
+        ready_epoch = float(metadata["first_committed_epoch"]) + configured_delay_ms / 1000.0
+        delay_start = runtime_clock.monotonic()
+        remaining = max(0.0, ready_epoch - runtime_clock.epoch())
+        if remaining:
+            runtime_clock.sleep(remaining)
+        delay_end = runtime_clock.monotonic()
+        second_now_utc = runtime_clock.now_utc()
+        second_epoch = runtime_clock.epoch()
+        second_token = begun.intents[1].token_id
+        first_fill = begun.pending_execution.first_fill
+        if first_fill is None:
+            raise RuntimeError("recovered pending sequential execution missing first fill")
+        first_second_book = begun.pending_execution.first_books[second_token]
+        second_books: dict[str, PublicOrderBook] = {}
+        second_failure_reason: str | None = None
+        second_book: PublicOrderBook | None = None
+        window_end_epoch = metadata.get("window_end_epoch")
+        if window_end_epoch is None or second_epoch < float(window_end_epoch):
+            try:
+                second_payload, second_evidence_hash = client.book(second_token)
+                second_book = PublicOrderBook.from_payload(
+                    market_id=str(metadata["market_id"]),
+                    token_id=second_token,
+                    timestamp_utc=second_now_utc,
+                    payload=second_payload,
+                    source_evidence_hash=second_evidence_hash,
+                )
+                second_books[second_token] = second_book
+                state_history.append("SECOND_SNAPSHOT_CAPTURED")
+            except Exception as exc:
+                second_failure_reason = getattr(exc, "reason", type(exc).__name__)
+                if second_failure_reason not in {
+                    "EMPTY_LIQUIDITY", "STALE_DATA", "MISSING_SOURCE_TIMESTAMP",
+                    "MALFORMED_SOURCE_TIMESTAMP", "FUTURE_SOURCE_TIMESTAMP",
+                }:
+                    unexpected_source_failures += 1
+                    second_failure_reason = "SOURCE_FAILURE"
+        completed = engine.complete_h011_record(
+            pending=begun,
+            second_leg_books=second_books,
+            second_timestamp_utc=second_now_utc,
+            window_end_epoch=window_end_epoch,
+            second_epoch=second_epoch,
+            require_distinct_snapshot=True,
+            second_failure_reason=second_failure_reason,
+            apply_second_fill=False,
+        )
+        if completed.sequential_execution is None:
+            raise RuntimeError("terminal sequential result missing")
+        result = completed.sequential_execution
+        second_fill = result.fills[1] if len(result.fills) > 1 else None
+        runner_record = {
+            "evidence_class": "OBSERVED_RUNNER_INTEGRATION_EVIDENCE",
+            "runner_mode": "PUBLIC_GET_RUNNER_WITH_INJECTED_OR_PUBLIC_CLIENT",
+            "window_slug": window_slug,
+            "market_id": str(metadata["market_id"]),
+            "state_history": state_history + ["SEQUENTIAL_EXECUTION_TERMINAL"],
+            "configured_delay_ms": configured_delay_ms,
+            "monotonic_before_delay": delay_start,
+            "monotonic_after_delay": delay_end,
+            "delay_elapsed_ms": round(max(0.0, (second_epoch - float(metadata["first_committed_epoch"])) * 1000.0), 6),
+            "first_leg_token_id": begun.intents[0].token_id,
+            "second_leg_token_id": second_token,
+            "first_snapshot_source_timestamp_utc": first_second_book.source_timestamp_utc,
+            "first_snapshot_received_timestamp_utc": first_second_book.received_timestamp_utc,
+            "first_snapshot_evidence_hash": first_second_book.source_evidence_hash,
+            "second_snapshot_source_timestamp_utc": None if second_book is None else second_book.source_timestamp_utc,
+            "second_snapshot_received_timestamp_utc": None if second_book is None else second_book.received_timestamp_utc,
+            "second_snapshot_evidence_hash": None if second_book is None else second_book.source_evidence_hash,
+            "first_and_second_snapshot_hashes_distinct": bool(second_book and second_book.source_evidence_hash != first_second_book.source_evidence_hash),
+            "second_source_or_receive_time_later": bool(second_book and (
+                datetime.fromisoformat(second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp()
+                or datetime.fromisoformat(second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp()
+            )),
+            "first_fill_id": first_fill.deterministic_id,
+            "second_fill_id": None if second_fill is None else second_fill.deterministic_id,
+            "first_leg_applied_count": 1,
+            "second_leg_applied_count": 0 if second_fill is None else 1,
+            "completion_status": result.completion_status,
+            "second_leg_reason": result.second_leg.reason,
+            "leg_imbalance_shares": result.leg_imbalance_shares,
+            "second_leg_repricing": result.second_leg_repricing,
+            "second_leg_snapshot_required_terminal": "SECOND_LEG_SNAPSHOT_REQUIRED" in completed.abstention_reasons,
+            "no_duplicate_first_fill": True,
+            "second_leg_applied_or_failed_exactly_once": True,
+        }
+        recovery_store.prepare_second(
+            execution_key_value=key,
+            window_slug=window_slug,
+            result=result,
+            runner_record=runner_record,
+        )
+        fault("AFTER_SECOND_STATE_DURABLE")
+        if second_fill is not None:
+            portfolio.apply_fill(second_fill)
+        fault("AFTER_SECOND_FILL_DURABLE")
+        recovery_store.commit_terminal(execution_key_value=key, window_slug=window_slug)
+        fault("AFTER_TERMINAL_DURABLE")
+        append_result(
+            completed,
+            timestamp_utc=second_now_utc,
+            books_for_marks={**begun.pending_execution.first_books, **second_books},
+            append_decision=False,
+            append_intents=False,
+            append_risk=False,
+        )
+        pending_windows.pop(window_slug, None)
+        pending_metadata.pop(window_slug, None)
+        terminal_windows.add(window_slug)
+        runner_integration_records.append(runner_record)
+
     try:
         while True:
+            for recovered_window in list(pending_windows):
+                complete_pending(recovered_window)
             now_utc = runtime_clock.now_utc()
             markets: tuple[dict[str, Any], ...] = ()
             if fixture:
@@ -637,110 +780,42 @@ def run_trial(
                         fee_schedules=fee_schedules,
                         configured_transport_delay_ms=config.sequential_transport_delay_ms,
                         maximum_pair_skew_ms=config.maximum_pair_skew_ms,
+                        apply_first_fill=False,
                     )
                     if isinstance(begun, PaperEngineResult):
                         append_result(begun, timestamp_utc=now_utc, books_for_marks=books)
                         state_history.append("DECISION_REJECTED_TERMINAL")
                         terminal_windows.add(window_slug)
                         continue
-                    pending_windows[window_slug] = begun
-                    decisions.append(begun.decision.to_dict())
-                    orders.extend(intent.to_dict() for intent in begun.intents)
-                    risk_decisions.append(begun.risk_decision.to_dict())
                     first_fill = begun.pending_execution.first_fill
                     if first_fill is None:
                         raise RuntimeError("pending sequential execution missing first fill")
+                    metadata = {
+                        "market_id": market_id,
+                        "window_end_epoch": record.get("window_end_epoch"),
+                        "first_committed_epoch": runtime_clock.epoch(),
+                        "state_history": state_history + ["FIRST_LEG_FILLED_PENDING_SECOND_SNAPSHOT"],
+                    }
+                    key = recovery_store.prepare_first(window_slug=window_slug, pending=begun, metadata=metadata)
+                    metadata["execution_key"] = key
+                    fault("AFTER_FIRST_STATE_DURABLE")
+                    portfolio.apply_fill(first_fill)
+                    fault("AFTER_FIRST_FILL_DURABLE")
+                    recovery_store.commit_first(
+                        execution_key_value=key,
+                        window_slug=window_slug,
+                        first_fill_id=first_fill.deterministic_id,
+                    )
+                    fault("AFTER_FIRST_COMMIT_DURABLE")
+                    pending_windows[window_slug] = begun
+                    pending_metadata[window_slug] = metadata
+                    decisions.append(begun.decision.to_dict())
+                    orders.extend(intent.to_dict() for intent in begun.intents)
+                    risk_decisions.append(begun.risk_decision.to_dict())
                     if first_fill.deterministic_id not in recorded_fill_ids:
                         fills.append(first_fill.to_dict())
                         recorded_fill_ids.add(first_fill.deterministic_id)
-                    state_history.append("FIRST_LEG_FILLED_PENDING_SECOND_SNAPSHOT")
-                    delay_start = runtime_clock.monotonic()
-                    runtime_clock.sleep(config.sequential_transport_delay_ms / 1000.0)
-                    delay_end = runtime_clock.monotonic()
-                    second_now_utc = runtime_clock.now_utc()
-                    second_epoch = runtime_clock.epoch()
-                    second_token = begun.intents[1].token_id
-                    first_second_book = books[second_token]
-                    second_books: dict[str, PublicOrderBook] = {}
-                    second_failure_reason: str | None = None
-                    second_book: PublicOrderBook | None = None
-                    if record.get("window_end_epoch") is None or second_epoch < float(record["window_end_epoch"]):
-                        try:
-                            second_payload, second_evidence_hash = client.book(second_token)
-                            second_book = PublicOrderBook.from_payload(
-                                market_id=market_id,
-                                token_id=second_token,
-                                timestamp_utc=second_now_utc,
-                                payload=second_payload,
-                                source_evidence_hash=second_evidence_hash,
-                            )
-                            second_books[second_token] = second_book
-                            state_history.append("SECOND_SNAPSHOT_CAPTURED")
-                        except Exception as exc:
-                            second_failure_reason = getattr(exc, "reason", type(exc).__name__)
-                            if second_failure_reason not in {
-                                "EMPTY_LIQUIDITY",
-                                "STALE_DATA",
-                                "MISSING_SOURCE_TIMESTAMP",
-                                "MALFORMED_SOURCE_TIMESTAMP",
-                                "FUTURE_SOURCE_TIMESTAMP",
-                            }:
-                                unexpected_source_failures += 1
-                                second_failure_reason = "SOURCE_FAILURE"
-                    completed = engine.complete_h011_record(
-                        pending=begun,
-                        second_leg_books=second_books,
-                        second_timestamp_utc=second_now_utc,
-                        window_end_epoch=record.get("window_end_epoch"),
-                        second_epoch=second_epoch,
-                        require_distinct_snapshot=True,
-                        second_failure_reason=second_failure_reason,
-                    )
-                    append_result(
-                        completed,
-                        timestamp_utc=second_now_utc,
-                        books_for_marks={**books, **second_books},
-                        append_decision=False,
-                        append_intents=False,
-                        append_risk=False,
-                    )
-                    state_history.append("SEQUENTIAL_EXECUTION_TERMINAL")
-                    pending_windows.pop(window_slug, None)
-                    terminal_windows.add(window_slug)
-                    second_fill = completed.sequential_execution.fills[1] if completed.sequential_execution and len(completed.sequential_execution.fills) > 1 else None
-                    runner_integration_records.append({
-                        "evidence_class": "OBSERVED_RUNNER_INTEGRATION_EVIDENCE",
-                        "runner_mode": "PUBLIC_GET_RUNNER_WITH_INJECTED_OR_PUBLIC_CLIENT",
-                        "window_slug": window_slug,
-                        "market_id": market_id,
-                        "state_history": state_history,
-                        "configured_delay_ms": config.sequential_transport_delay_ms,
-                        "monotonic_before_delay": delay_start,
-                        "monotonic_after_delay": delay_end,
-                        "delay_elapsed_ms": round((delay_end - delay_start) * 1000.0, 6),
-                        "first_leg_token_id": begun.intents[0].token_id,
-                        "second_leg_token_id": second_token,
-                        "first_snapshot_source_timestamp_utc": first_second_book.source_timestamp_utc,
-                        "first_snapshot_received_timestamp_utc": first_second_book.received_timestamp_utc,
-                        "first_snapshot_evidence_hash": first_second_book.source_evidence_hash,
-                        "second_snapshot_source_timestamp_utc": None if second_book is None else second_book.source_timestamp_utc,
-                        "second_snapshot_received_timestamp_utc": None if second_book is None else second_book.received_timestamp_utc,
-                        "second_snapshot_evidence_hash": None if second_book is None else second_book.source_evidence_hash,
-                        "first_and_second_snapshot_hashes_distinct": bool(second_book and second_book.source_evidence_hash != first_second_book.source_evidence_hash),
-                        "second_source_or_receive_time_later": bool(second_book and (
-                            datetime.fromisoformat(second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.source_timestamp_utc.replace("Z", "+00:00")).timestamp()
-                            or datetime.fromisoformat(second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp() > datetime.fromisoformat(first_second_book.received_timestamp_utc.replace("Z", "+00:00")).timestamp()
-                        )),
-                        "first_fill_id": first_fill.deterministic_id,
-                        "second_fill_id": None if second_fill is None else second_fill.deterministic_id,
-                        "first_leg_applied_count": sum(1 for item in portfolio.ledger if item.get("type") == "PAPER_FILL" and item.get("fill", {}).get("deterministic_id") == first_fill.deterministic_id),
-                        "second_leg_applied_count": 0 if second_fill is None else sum(1 for item in portfolio.ledger if item.get("type") == "PAPER_FILL" and item.get("fill", {}).get("deterministic_id") == second_fill.deterministic_id),
-                        "completion_status": None if completed.sequential_execution is None else completed.sequential_execution.completion_status,
-                        "second_leg_reason": None if completed.sequential_execution is None else completed.sequential_execution.second_leg.reason,
-                        "leg_imbalance_shares": None if completed.sequential_execution is None else completed.sequential_execution.leg_imbalance_shares,
-                        "second_leg_repricing": None if completed.sequential_execution is None else completed.sequential_execution.second_leg_repricing,
-                        "second_leg_snapshot_required_terminal": "SECOND_LEG_SNAPSHOT_REQUIRED" in completed.abstention_reasons,
-                    })
+                    complete_pending(window_slug)
                 if not markets:
                     abstentions.append({"timestamp_utc": now_utc, "market_id": None, "reason": "NO_PUBLIC_BTC_WINDOW_AVAILABLE"})
             elapsed_seconds = runtime_clock.monotonic() - started_monotonic
@@ -770,10 +845,19 @@ def run_trial(
         source_evidence_hash=sha256_json(client.evidence),
         prices=final_prices,
     )
+    recovery_summary = recovery_store.summary()
+    in_memory_result_hashes = sorted(sha256_json(item) for item in sequential_executions)
+    orchestration_replay_result = "PASS" if fixture or (
+        recovery_summary["pending_windows"] == sorted(pending_windows)
+        and recovery_summary["terminal_windows"] == sorted(terminal_windows)
+    ) else "FAIL"
+    sequential_result_replay_result = "PASS" if fixture or recovery_summary["sequential_result_hashes"] == in_memory_result_hashes else "FAIL"
     replay_result = "PASS" if (
         abs(final_snapshot.cash_usd - replay_snapshot.cash_usd) < 1e-9
         and abs(final_snapshot.realized_pnl - replay_snapshot.realized_pnl) < 1e-9
         and [p.to_dict() for p in final_snapshot.positions] == [p.to_dict() for p in replay_snapshot.positions]
+        and orchestration_replay_result == "PASS"
+        and sequential_result_replay_result == "PASS"
     ) else "FAIL"
     for item in runner_integration_records:
         item["replay_result"] = replay_result
@@ -886,11 +970,30 @@ def run_trial(
     writer.write_jsonl("sequential_executions.jsonl", sequential_executions)
     writer.write_json("observed_runner_integration.json", {
         "schema_version": "senex-observed-runner-integration-v1",
+        "code_sha": sha,
+        "config_sha": config_sha,
         "evidence_class": "FIXTURE_CONTRACT_EVIDENCE" if fixture else "OBSERVED_RUNNER_INTEGRATION_EVIDENCE",
         "runner_mode": "DETERMINISTIC_FIXTURE" if fixture else "PUBLIC_GET_RUNNER_WITH_INJECTED_OR_PUBLIC_CLIENT",
         "records": runner_integration_records,
         "replay_result": replay_result,
         "result": "NOT_APPLICABLE_FIXTURE" if fixture else runner_result,
+    })
+    first_counts = [item.get("first_leg_applied_count") for item in runner_integration_records]
+    second_counts = [item.get("second_leg_applied_count") for item in runner_integration_records]
+    writer.write_json("crash_recovery_report.json", {
+        "schema_version": "senex-crash-recovery-report-v1",
+        "code_sha": sha,
+        "config_sha": config_sha,
+        "event_counts": recovery_summary["event_counts"],
+        "restart_count": recovery_summary["restart_count"],
+        "terminal_windows": recovery_summary["terminal_windows"],
+        "pending_windows": recovery_summary["pending_windows"],
+        "first_leg_exactly_once_across_restart": all(value == 1 for value in first_counts) if first_counts else True,
+        "second_leg_exactly_once_across_restart": all(value in {0, 1} for value in second_counts) if second_counts else True,
+        "portfolio_replay_result": "PASS" if abs(final_snapshot.cash_usd - replay_snapshot.cash_usd) < 1e-9 and [p.to_dict() for p in final_snapshot.positions] == [p.to_dict() for p in replay_snapshot.positions] else "FAIL",
+        "orchestration_replay_result": orchestration_replay_result,
+        "sequential_result_replay_result": sequential_result_replay_result,
+        "result": "PASS" if replay_result == "PASS" else "FAIL",
     })
     (output_dir / "portfolio_ledger.jsonl").touch(exist_ok=True)
     writer.write_jsonl("portfolio_snapshots.jsonl", snapshots + [final_snapshot.to_dict()])
@@ -909,13 +1012,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minimum-windows", type=int, default=12)
     parser.add_argument("--poll-seconds", type=int, default=15)
     parser.add_argument("--fixture", action="store_true")
+    parser.add_argument("--code-sha")
     args = parser.parse_args(argv)
     config = TrialConfig(
         duration_minutes=max(1, args.duration_minutes),
         minimum_windows=max(1, args.minimum_windows),
         poll_seconds=max(1, args.poll_seconds),
     )
-    result = run_trial(output_dir=args.output_dir, config=config, fixture=args.fixture)
+    result = run_trial(output_dir=args.output_dir, config=config, fixture=args.fixture, code_sha_override=args.code_sha)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 

@@ -140,6 +140,7 @@ class SequentialPaperExecutor:
         fee_schedules: Mapping[str, FeeSchedule],
         first_now_utc: str,
         portfolio: PaperPortfolio,
+        apply_first_fill: bool = True,
     ) -> PendingSequentialExecution:
         ordered = tuple(intents)
         first_intent = ordered[0]
@@ -164,7 +165,8 @@ class SequentialPaperExecutor:
                     getattr(exc, "reason", type(exc).__name__),
                 )
             else:
-                portfolio.apply_fill(first_fill)
+                if apply_first_fill:
+                    portfolio.apply_fill(first_fill)
                 first_leg = _filled_leg(1, first_fill)
         return PendingSequentialExecution(
             intents=ordered,
@@ -186,6 +188,7 @@ class SequentialPaperExecutor:
         second_epoch: float | None = None,
         require_distinct_snapshot: bool = False,
         second_failure_reason: str | None = None,
+        apply_second_fill: bool = True,
     ) -> SequentialExecutionResult:
         first_intent, second_intent = pending.intents
         first_schedule = pending.fee_schedules.get(first_intent.token_id)
@@ -237,7 +240,8 @@ class SequentialPaperExecutor:
                     getattr(exc, "reason", type(exc).__name__),
                 )
             else:
-                portfolio.apply_fill(second_fill)
+                if apply_second_fill:
+                    portfolio.apply_fill(second_fill)
                 second_leg = _filled_leg(2, second_fill)
                 first_best = first_second_book.asks[0][0] if first_second_book.asks else None
                 if first_best is not None:
