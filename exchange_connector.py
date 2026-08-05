@@ -22,7 +22,6 @@ Use --live flag to optionally verify real connectivity.
 """
 
 import time
-import os
 import logging
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -272,7 +271,7 @@ class ExchangeConnector:
     """
 
     # Exchange names we support
-    SUPPORTED_EXCHANGES = ("okx", "kraken", "gate", "mexc", "bitget", "binance", "bybit", "binance_testnet")
+    SUPPORTED_EXCHANGES = ("okx", "kraken", "gate", "mexc", "bitget", "binance", "bybit")
 
     def __init__(self, symbol: str = "BTC/USDT", config: dict = None):
         """Initialize the dual-exchange connector.
@@ -349,19 +348,6 @@ class ExchangeConnector:
                 "enableRateLimit": True,
                 "options": {"defaultType": "spot"},
             },
-            "binance_testnet": {
-                "enableRateLimit": True,
-                "options": {
-                    "defaultType": "future",
-                    # ccxt blocks futures testnet with a deprecation warning.
-                    # This flag disables that check so we can use the testnet.
-                    # SAFETY: Only used with binance_testnet, never on mainnet.
-                    "disableFuturesSandboxWarning": True,
-                },
-                # We do NOT pass urls or sandbox in the constructor.
-                # Instead, we call ex.set_sandbox_mode(True) after creation
-                # which properly configures ALL fapi URLs to testnet.binancefuture.com
-            },
         }
 
         for name in enabled:
@@ -370,54 +356,23 @@ class ExchangeConnector:
                 continue
 
             try:
-                # binance_testnet uses ccxt.binance with testnet config
-                ccxt_name = "binance" if name == "binance_testnet" else name
-                exchange_class = getattr(ccxt, ccxt_name)
+                exchange_class = getattr(ccxt, name)
                 ex_config = dict(exchange_configs.get(name, {"enableRateLimit": True}))
 
-                # Load API keys for testnet from .env
-                if name == "binance_testnet":
-                    try:
-                        from dotenv import load_dotenv
-                        load_dotenv()
-                    except ImportError:
-                        pass
-                    api_key = os.environ.get("BINANCE_TESTNET_KEY", "")
-                    api_secret = os.environ.get("BINANCE_TESTNET_SECRET", "")
-                    if api_key and api_secret:
-                        ex_config["apiKey"] = api_key
-                        ex_config["secret"] = api_secret
-                        logger.info(f"Loaded testnet API credentials from .env")
-                    else:
-                        logger.warning("No BINANCE_TESTNET_KEY/SECRET in .env — testnet orders will fail")
-
-                # Merge any user-provided config for this exchange
-                # SAFETY: For binance_testnet, do NOT allow URL overrides (defense-in-depth)
-                user_config = config.get(name, {})
-                if name == "binance_testnet" and "urls" in user_config:
-                    logger.warning(f"SAFETY: Ignoring user-provided URL override for {name} — testnet URLs must not be changed")
-                    user_config = {k: v for k, v in user_config.items() if k != "urls"}
+                # Public-data-only connector: reject authentication, sandbox/testnet
+                # routing and private endpoint overrides even when supplied by a caller.
+                user_config = dict(config.get(name, {}))
+                forbidden_options = {
+                    "apiKey", "secret", "password", "uid", "token", "privateKey",
+                    "wallet", "headers", "urls",
+                }
+                rejected = sorted(forbidden_options.intersection(user_config))
+                if rejected:
+                    raise ValueError(
+                        f"Authenticated/private exchange configuration is prohibited for {name}: {rejected}"
+                    )
                 ex_config.update(user_config)
-
                 instance = exchange_class(ex_config)
-
-                # SAFETY: Enable testnet sandbox mode AFTER creation.
-                # This sets ALL fapi URLs to testnet.binancefuture.com correctly.
-                # We use set_sandbox_mode() instead of passing URLs in constructor
-                # because ccxt has special URL routing logic for sandbox that
-                # handles V2/V3 fapi endpoints automatically.
-                if name == "binance_testnet":
-                    instance.set_sandbox_mode(True)
-                    # Verify URLs point to testnet (defense-in-depth)
-                    fapi_urls = [
-                        instance.urls.get('api', {}).get('fapiPublic', ''),
-                        instance.urls.get('api', {}).get('fapiPrivate', ''),
-                    ]
-                    for url in fapi_urls:
-                        if 'testnet' not in url:
-                            raise RuntimeError(
-                                f"SAFETY ABORT: binance_testnet fapi URL not pointing to testnet: {url}"
-                            )
 
                 self.exchanges[name] = instance
 
@@ -981,130 +936,6 @@ class ExchangeConnector:
         except Exception as e:
             logger.warning(f"Latency measurement failed for {exchange}: {e}")
             return -1.0
-
-    # -----------------------------------------------------------------------
-    # Testnet order execution (Act IX)
-    # -----------------------------------------------------------------------
-
-    def place_market_order(self, exchange_name: str, symbol: str, side: str,
-                           amount: float, params: dict = None) -> dict:
-        """Place a real market order on the specified exchange.
-
-        SAFETY: This method MUST only be called in testnet mode.
-        The main.py testnet mode guards against mainnet usage.
-
-        Args:
-            exchange_name: Exchange to use (must be "binance_testnet").
-            symbol: Trading pair (e.g. "ETH/USDT").
-            side: "buy" or "sell".
-            amount: Amount in base currency (e.g. ETH).
-            params: Optional extra ccxt params.
-
-        Returns:
-            Dict with fill details: {order_id, fill_price, fill_amount,
-            fill_cost, fees, timestamp, slippage_bps, expected_price}
-        """
-        if exchange_name not in self.exchanges:
-            raise ValueError(f"Exchange '{exchange_name}' not initialized")
-
-        ex = self.exchanges[exchange_name]
-
-        # SAFETY: Verify we are NOT on mainnet (multi-layer defense)
-        is_testnet = (
-            exchange_name == "binance_testnet"
-            or getattr(ex, 'isSandboxModeEnabled', False)
-            or getattr(ex, 'sandbox', False)
-        )
-        # Defense-in-depth: also verify the actual fapi URLs point to testnet
-        fapi_private = ex.urls.get("api", {}).get("fapiPrivate", "")
-        if not is_testnet and "testnet" not in fapi_private:
-            raise RuntimeError(
-                f"SAFETY ABORT: place_market_order called on NON-TESTNET exchange "
-                f"'{exchange_name}'. This would place REAL orders with REAL money. "
-                f"Use --mode testnet with --exchange binance_testnet only."
-            )
-
-        # Get expected price from ticker before order
-        ticker = ex.fetch_ticker(symbol)
-        expected_price = float(ticker.get("last") or ticker.get("close") or 0)
-
-        # Place market order
-        order = ex.create_market_order(symbol, side, amount, params=params or {})
-
-        # Binance testnet often returns None for average/price/cost in the initial
-        # create_order response. Fetch the order again to get real fill data.
-        order_id = order.get("id")
-        if order_id and order.get("status") != "closed":
-            # Order might still be processing — wait briefly and refetch
-            time.sleep(0.3)
-
-        if order_id:
-            try:
-                fetched = ex.fetch_order(order_id, symbol)
-                if fetched:
-                    order = fetched  # Use the fetched data which has real fill prices
-            except Exception as e:
-                logger.warning(f"Could not refetch order {order_id}: {e}")
-
-        # Extract fill details
-        # Handle None values explicitly: dict.get("key", default) returns None
-        # (not the default) when the key exists but the value is None.
-        raw_avg = order.get("average")
-        raw_price = order.get("price")
-        raw_filled = order.get("filled")
-        raw_cost = order.get("cost")
-
-        fill_price = float(raw_avg if raw_avg is not None else
-                           (raw_price if raw_price is not None else expected_price))
-        fill_amount = float(raw_filled if raw_filled is not None else amount)
-        fill_cost = float(raw_cost if raw_cost is not None else fill_price * fill_amount)
-        order_id = str(order.get("id") or "UNKNOWN")
-        fees = order.get("fees") or []
-
-        # Calculate real slippage vs expected
-        slippage_bps = 0.0
-        if expected_price > 0:
-            slippage_bps = (fill_price - expected_price) / expected_price * 10000
-            if side == "sell":
-                slippage_bps = -slippage_bps  # Negative slippage = worse for seller
-
-        result = {
-            "order_id": order_id,
-            "side": side,
-            "symbol": symbol,
-            "expected_price": round(expected_price, 2),
-            "fill_price": round(fill_price, 2),
-            "fill_amount": round(fill_amount, 6),
-            "fill_cost_usdt": round(fill_cost, 2),
-            "fees": fees,
-            "slippage_bps": round(slippage_bps, 2),
-            "timestamp": int(time.time() * 1000),
-            "exchange": exchange_name,
-            "is_testnet": True,
-        }
-        logger.info(f"TESTNET ORDER: {side} {fill_amount} {symbol} @ {fill_price} "
-                    f"(expected {expected_price}, slippage={slippage_bps:.2f}bps) id={order_id}")
-        return result
-
-    def fetch_positions(self, exchange_name: str, symbol: str = None) -> list:
-        """Fetch open positions on testnet (for reconciliation).
-
-        Args:
-            exchange_name: Exchange to query.
-            symbol: Optional symbol filter.
-
-        Returns:
-            List of position dicts from ccxt.
-        """
-        if exchange_name not in self.exchanges:
-            return []
-        ex = self.exchanges[exchange_name]
-        try:
-            positions = ex.fetch_positions(symbols=[symbol] if symbol else None)
-            return positions
-        except Exception as e:
-            logger.warning(f"fetch_positions failed for {exchange_name}: {e}")
-            return []
 
     # -----------------------------------------------------------------------
     # Cleanup

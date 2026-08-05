@@ -1,36 +1,90 @@
-name: H-011 Integrity CI
+name: SENEX Repository-Wide Paper-Only Integrity
 
 on:
-  push:
-    branches: [audit/h011-v3-integrity-v2]
   pull_request:
-    branches: [main]
+    branches:
+      - feat/h011-v3-discovery-refresh
+  push:
+    branches:
+      - feat/h011-v3-discovery-refresh
 
 permissions:
   contents: read
 
+concurrency:
+  group: senex-paper-only-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  integrity-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  repository-wide-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          python-version: '3.11'
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Install dependencies
-        run: pip install httpx numpy fastapi uvicorn pytest
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
 
-      - name: Compile all Python files
-        run: python -m compileall polymarket senecio_polymarket/backend
-
-      - name: Run H-011 V3 tests
-        run: pytest -q tests/h011_v3 tests/cp
-
-      - name: Forbidden symbol scan
+      - name: Install exact runtime requirements
+        shell: bash
         run: |
-          ! grep -r "post_order\|place_order\|submit_order\|execute_order\|private_key\|PM_PRIVATE_KEY\|ghp_\|nf-eyJ" polymarket/ senecio_polymarket/backend/ 2>/dev/null
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+
+      - name: Verify repository-wide paper-only boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/senex-paper-only
+          python tools/verify_paper_only_repository.py \
+            --repo-root . \
+            --output /tmp/senex-paper-only/current.json
+          python -m compileall -q exchange_connector.py polymarket senecio_polymarket tools tests
+          PYTHONPATH=.:polymarket python -m pytest -q \
+            tests/governance/test_paper_only_repository.py \
+            tests/h011_v3 tests/cp
+
+      - name: Prove the gate rejects the accepted pre-fix tree
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PRE_FIX_SHA: d5047b2055d30d199954dd4e68ae2e676aa8a4ba
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/senex-pre-fix "${PRE_FIX_SHA}"
+          set +e
+          python tools/verify_paper_only_repository.py \
+            --repo-root /tmp/senex-pre-fix \
+            --output /tmp/senex-paper-only/pre-fix.json
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+          python - <<'PY'
+          import json
+          report=json.load(open('/tmp/senex-paper-only/pre-fix.json'))
+          assert report['status']=='FAIL'
+          paths={x['path'] for x in report['findings']}
+          rules={x['rule'] for x in report['findings']}
+          assert 'exchange_connector.py' in paths
+          assert 'senecio_polymarket/oracle/exchange_connector.py' in paths
+          assert '.github/workflows/oracle.yml' in paths
+          assert 'AUTHENTICATED_TRADING_CALL' in rules
+          assert 'TRADING_CREDENTIAL_LOADER' in rules
+          assert 'WORKFLOW_WRITE_PERMISSION' in rules
+          PY
+
+      - name: Upload integrity evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-paper-only-integrity-${{ github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/senex-paper-only
+          retention-days: 30
+          if-no-files-found: error
