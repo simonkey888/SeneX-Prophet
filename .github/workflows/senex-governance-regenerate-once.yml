@@ -1,0 +1,65 @@
+name: SENEX Governance Regenerate Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-reproducible-runtime-v2
+    paths:
+      - .github/workflows/senex-governance-regenerate-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-and-self-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-reproducible-runtime-v2
+          persist-credentials: true
+
+      - name: Remove temporary workflow before inventory generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/senex-governance-regenerate-once.yml
+          test -z "$(git ls-files .github/workflows/senex-governance-regenerate-once.yml)"
+
+      - name: Generate canonical governance artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/verify_repository_contract.py --generate \
+            > /tmp/senex-governance-generation.json
+          git add \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          git diff --check --cached
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest=json.loads(Path('governance/repository_manifest.json').read_text())
+          assert manifest['files_tracked_total'] == len(manifest['files'])
+          paths={row['path'] for row in manifest['files']}
+          assert '.github/workflows/senex-governance-regenerate-once.yml' not in paths
+          assert 'tools/verify_h011_shell_harness.py' in paths
+          assert 'tools/verify_h011_arm64_reproducibility.sh' in paths
+          assert '.github/workflows/h011-arm64-reproducibility.yml' in paths
+          PY
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Commit final generated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'governance(senex): regenerate repository inventory for reproducible runtime'
+          git push origin HEAD:fix/senex-arm64-reproducible-runtime-v2
