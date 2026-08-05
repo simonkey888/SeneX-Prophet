@@ -5,264 +5,117 @@
 - Product: **SENEX**
 - Technical system: **SENECIO H-011 V3**
 - Repository: `simonkey888/SeneX-Prophet`
-- Purpose: defensive discovery, immutable evidence capture, integrity validation, replay, observability, and paper-only shadow execution for BTC Up/Down five-minute markets.
+- Delivery branch before integration: `feat/h011-v3-discovery-refresh`
+- Pre-integration production and rollback SHA: `2f8503533543832147caf4c8e97a0cc6f5af3cbc`
+- Integration candidate branch: `feat/senex-paper-execution-truth-v1`
+- Candidate validated SHA: `72df6b78c27dcc20bec2405a4d4177c677468d9f`
+- Candidate validated tree: `98f43935037f4fc1f38a67279725469ed330823b`
+- Exact-head CI run: `30987358828`
+- Exact-head CI job: `92245123499`
+- Exact-head artifact: `8922658841`
+- Artifact ZIP SHA-256: `0ad6412d20df3f689a2729056ebade1ea49b11da8fbbf6c330a793a76333bb0b`
 
-## Permanent safety flags
+## Permanent product boundary
 
 ```text
 paper_only=true
 orders_enabled=false
 live_capital_locked=true
+REAL_ORDER_NETWORK_CALLS=0
+WALLET_OR_PRIVATE_KEY=ABSENT
+REAL_CAPITAL=ABSENT
 ```
 
-No wallet, private key, real order, real fill, realized PnL, NAV, or real-capital path is authorized or enabled.
+The current mission completes paper execution, durable evidence, replay, evaluation, deployment and read-only monitoring. Real-money execution is not a pending SENEX capability.
 
-## Authoritative branches and pull requests
+## Reconciled causal stack
+
+The product stack is a strict linear ancestry chain:
 
 ```text
-product/base branch: feat/h011-v3-discovery-refresh
-product/base SHA: 2f8503533543832147caf4c8e97a0cc6f5af3cbc
-main development branch: feat/h011-v3-control-plane-coverage
-PR #5: OPEN / DRAFT / UNMERGED
-PR #5 old head before Phase II-C merge: 495265f162fc2fc44bbcfc4707b1c38ecde2fd3a
-Phase II-C source branch: feat/h011-v3-runtime-transaction-integration
-PR #20 source head: 3ffeddf29ea02ed691dc12f3f979d1be58a486d3
-PR #20 merge commit: 4c2a00db86d1740f0a53b6f62a523dabedfae21d
-PR #20: CLOSED / MERGED
-validated PR #5 head before this continuity-only commit: 17d86f66f22675a7d16bf1e66070a22b909e78d1
+2f8503533543832147caf4c8e97a0cc6f5af3cbc  product/rollback baseline
+  -> aeb50867738b7ae7199f621a730080e09465458e  PR #5 control plane and transactional runtime
+  -> 39e1cf1bdad31a2b6f2178949a2977c837ebdf18  PR #24 executable repository constitution
+  -> 00f018484f6e39f4cc7c518df02e1f1b0ab97df8  PR #25 paper-trial and architecture completion
+  -> 72df6b78c27dcc20bec2405a4d4177c677468d9f  PR #26 execution truth and crash recovery
 ```
 
-PR #20 was merged into `feat/h011-v3-control-plane-coverage` using a merge commit. PR #5 remains Draft and was not merged into `feat/h011-v3-discovery-refresh`.
+Each child is strictly ahead of its parent with the parent as merge base. No subsystem was reimplemented during reconciliation and no commit from PRs #5, #24, #25 or #26 is omitted by the final candidate.
 
-## Production and infrastructure
+PR #21 is optional, local-only TradingView research. It is non-authoritative, not a production dependency, not a raw-chain input and not part of the deployable candidate. It is to be closed as superseded research reference, with its branch and historical artifacts retained for final audit.
 
-Known public service:
+## Candidate contracts
 
-- Dashboard: `https://h011-web--senecio-h011--wbjggn89fnf8.code.run/`
-- Health: `/healthz`
-- State: `/api/v3/state`
-- Integrity: `/api/v3/integrity`
-- Replay: `/api/v3/replay`
+The candidate contains:
 
-Last known production code SHA:
+1. one authoritative transactional raw chain under `/app/polymarket/results/h011_v3/raw_chain_v1`;
+2. startup recovery before scanner or publication enablement;
+3. committed manifest-chain readers for state, integrity and replay;
+4. fail-closed runtime states and no silent legacy-writer fallback;
+5. public-GET paper execution with dynamic market fee authority;
+6. sequential first/second-leg execution against distinct snapshots;
+7. append-only crash-consistent orchestration recovery;
+8. startup hydration of portfolio, deterministic fill IDs, pending executions and terminal windows;
+9. full replay of portfolio, orchestration and sequential execution results;
+10. exact-head monitoring evidence which distinguishes runtime, harness, fixture and historical data.
+
+## Gate A evidence
 
 ```text
-2f8503533543832147caf4c8e97a0cc6f5af3cbc
+FOCUSED_TESTS=99_PASS
+GLOBAL_TESTS=660_PASS
+REPOSITORY_GATES=28_OF_28_PASS
+MISSION_GATES=11_OF_11_PASS
+CRASH_FAULT_POINTS=6_OF_6_PASS
+FIRST_LEG_EXACTLY_ONCE_ACROSS_RESTART=PASS
+SECOND_LEG_EXACTLY_ONCE_ACROSS_RESTART=PASS
+ORCHESTRATION_REPLAY=PASS
+SEQUENTIAL_RESULT_REPLAY=PASS
+ALL_INTERNAL_SHA_BINDINGS=72df6b78c27dcc20bec2405a4d4177c677468d9f
+PAPER_ONLY_STATIC_EXCLUSION=PASS
+ARTIFACT_INTERNAL_SHA256SUMS=PASS
 ```
 
-Phase II-C has not been deployed. Northflank services, deployments, variables, secrets, domains, replicas, and volumes were not accessed or modified.
-
-Authoritative delivery architecture remains:
+The six validated interruption boundaries are:
 
 ```text
-GitHub -> GitHub Actions -> Python 3.11 Docker image
-       -> FastAPI/Uvicorn supervised runtime -> Northflank -> code.run
+AFTER_FIRST_STATE_DURABLE
+AFTER_FIRST_FILL_DURABLE
+AFTER_FIRST_COMMIT_DURABLE
+AFTER_SECOND_STATE_DURABLE
+AFTER_SECOND_FILL_DURABLE
+AFTER_TERMINAL_DURABLE
 ```
 
-Cloudflare is not the authoritative runtime.
+## Delivery and rollback
 
-## Integrated Phase II-C architecture
-
-The PR #5 branch contains:
-
-1. compatibility normalization for legacy `InvariantResult` values without changing UNKNOWN semantics, severity, or the 31-invariant catalog;
-2. startup recovery before scanner and publication enablement;
-3. explicit fail-closed runtime states;
-4. one hardened stager, publisher, recovery implementation, and authoritative raw chain;
-5. transactional publication integrated into `run_scan_v3`;
-6. committed manifest-chain reader for state, integrity, and replay;
-7. `latest.json` as a regenerable cache bound to the latest committed manifest, never as authority;
-8. Python PID-1 supervision with signal forwarding, graceful shutdown, liveness, readiness, and scanner status;
-9. manual isolated filesystem capability probe;
-10. Linux and Docker same-volume crash/restart validation;
-11. exact-head, read-only Phase II-C evidence workflow with pinned action SHAs.
-
-## Storage contract
-
-Authoritative transactional root:
+Repository history and deployment documentation establish the product delivery path as:
 
 ```text
-/app/polymarket/results/h011_v3/raw_chain_v1
+GitHub delivery branch
+  -> pinned GitHub Actions / reproducible Python 3.11 image
+  -> supervised FastAPI/Uvicorn runtime
+  -> Northflank SENEX service
+  -> public code.run endpoints
 ```
 
-Legacy paths remain non-authoritative and are never automatically migrated or mixed into the committed chain:
+Cloudflare is not the authoritative SENEX runtime. The pre-integration rollback point is permanently recorded as:
 
 ```text
-/app/polymarket/results/v3/raw
-/app/polymarket/results/v3/scans
-/app/polymarket/results/v3/state
-bundle_*.json
-YYYY-MM-DD.events.jsonl.gz
-v3_scan_*.jsonl
+ROLLBACK_SHA=2f8503533543832147caf4c8e97a0cc6f5af3cbc
 ```
 
-The latest committed scan is selected by contiguous sequence, previous-manifest linkage, canonical manifest hash, artifact SHA-256, sidecar validation, permissions, and residue checks. It is never selected by mtime, filename ordering, or a legacy bundle.
+No branch or artifact in the historical stack is to be deleted before final AUD.
 
-## Runtime states
+## Production state
+
+The last independently verified production SHA remains `2f8503533543832147caf4c8e97a0cc6f5af3cbc`. Its storage/replay state was degraded. Until a fresh authenticated Northflank inventory and public GET reconciliation are completed, production must be represented as:
 
 ```text
-STARTING
-RECOVERING
-RUNNING
-DEGRADED
-BLOCKED_RAW_INTEGRITY
-BLOCKED_STORAGE_UNVERIFIED
-SCANNER_FAILED
-STOPPING
+CURRENT_PRODUCTION_STATE=UNKNOWN_OR_DEGRADED
+CANDIDATE_DEPLOYED=NO
 ```
 
-Scanner and publication remain disabled during recovery and in blocked states. No silent legacy-writer fallback exists.
+## Next operational phase
 
-## Pre-merge Phase II-C evidence
-
-```text
-run_id=29826214658
-job_id=88620050451
-validated_head=3ffeddf29ea02ed691dc12f3f979d1be58a486d3
-conclusion=success
-artifact_id=8493410423
-artifact_digest=sha256:c01046dd1f81eddbb2315d77afd289722a85b223936c884dc487ed8228bab707
-```
-
-## Post-merge exact-head evidence
-
-The integrated PR #5 branch was validated directly at its exact branch head, not at a synthetic merge ref:
-
-```text
-run_id=29830860459
-job_id=88635003168
-validated_head=17d86f66f22675a7d16bf1e66070a22b909e78d1
-conclusion=success
-artifact_id=8495223681
-artifact_digest=sha256:b6fb5198afe35d60f682fc8476577ee407ba5f93b36a2221c95c6687f7300f19
-```
-
-Results:
-
-```text
-Phase II-C focused suite: 29 passed
-transaction/publisher/recovery regression: 268 passed
-H-011 complete suite: 534 passed
-full global suite: 561 passed, 0 failed
-compileall: PASS
-host filesystem probe: PASS
-Docker build: PASS
-Docker module completeness: PASS
-container filesystem probe: PASS
-controlled container startup: PASS
-liveness: PASS
-readiness: PASS
-/api/v3/state: PASS
-/api/v3/integrity: PASS
-/api/v3/replay: PASS
-SIGTERM graceful shutdown: PASS
-crash matrix: 7/7 PASS
-restart matrix: 7/7 PASS
-unresolved marker/temp residue: 0
-```
-
-Runtime evidence:
-
-```text
-invariants.total=31
-invariants.pass=31
-invariants.fail=0
-invariants.unknown=0
-chain_verified=true
-replay_verified=true
-legacy_mode=false
-raw_store_available=true
-paper_only=true
-orders_enabled=false
-live_capital_locked=true
-```
-
-Validated crash/restart points:
-
-```text
-PUBLISH_AFTER_STAGED_MARKER
-PUBLISH_AFTER_ARTIFACT_MARKER_UPDATE
-PUBLISH_AFTER_SIDECAR_MARKER_UPDATE
-PUBLISH_AFTER_MANIFEST_MARKER_UPDATE
-PUBLISH_AFTER_COMMITTED_MARKER
-PUBLISH_AFTER_STAGING_UNLINK
-PUBLISH_AFTER_MARKER_UNLINK
-```
-
-Each case used an interrupted process/container followed by startup recovery in a second container over the same isolated temporary volume. Final chain verification passed without marker, marker-temp, pending, or unowned transaction residue.
-
-## CI compatibility repair after integration
-
-The inherited PR3 and PR5 smoke workflows assumed a legacy discovery artifact. Phase II-C intentionally removed that path as an authoritative output. The workflows were updated to validate the committed raw chain, exact-head checkout, controlled runtime APIs, pinned actions, security flags, sidecar checksum, and zero marker residue.
-
-Validated workflow-repair head:
-
-```text
-head=17d86f66f22675a7d16bf1e66070a22b909e78d1
-H011_PR3_DOCKER_SMOKE=PASS
-H011_PR5_CONTROL_PLANE_SMOKE=PASS
-H011_PR5_PHASE_IIC_EXACT_HEAD=PASS
-```
-
-No product transaction-core or recovery contract change was required.
-
-## Historical baseline
-
-```text
-run_id=29821019238
-H-011=515 passed
-global=542 passed, 0 failed
-Docker=PASS
-safety_flags=PASS
-artifact_id=8491371840
-artifact_digest=sha256:594ecaa1651be29340d7a74a5955c7b01a6ee6bfef01ba99028689a0f88dd875
-```
-
-Phase II-C increased coverage while preserving the hardened transaction and recovery contracts.
-
-## Current milestone
-
-```text
-PR20_STATE=CLOSED
-PR20_MERGED=YES
-PR20_MERGE_COMMIT=4c2a00db86d1740f0a53b6f62a523dabedfae21d
-PR5_STATE=OPEN
-PR5_DRAFT=YES
-PR5_MERGED=NO
-INVARIANT_COMPATIBILITY_FIX=PASS
-STARTUP_RECOVERY=PASS
-TRANSACTIONAL_PUBLISHER_RUNTIME=PASS
-COMMITTED_SNAPSHOT_READER=PASS
-PYTHON_PID1_RUNTIME=PASS
-DOCKER_RUNTIME_INTEGRATION=PASS
-CRASH_MATRIX=7/7_PASS
-RESTART_MATRIX=7/7_PASS
-GLOBAL_TESTS_ZERO_FAILED=YES
-LEGACY_AUTHORITATIVE_WRITER=ABSENT
-SILENT_LEGACY_FALLBACK=ABSENT
-TEMPORARY_MATERIALIZER_FILES=REMOVED
-PRODUCTION_CHANGED=NO
-NORTHFLANK_CHANGED=NO
-DEPLOY_EXECUTED=NO
-```
-
-## Open blocker
-
-The sole pre-deploy blocker is direct verification of the real Northflank volume and filesystem:
-
-- exact mount path;
-- persistence across restart and deployment;
-- `flock`;
-- hardlinks;
-- `renameat2(RENAME_EXCHANGE)`;
-- file and directory `fsync`;
-- `O_NOFOLLOW`;
-- final `0444` permissions and inode stability;
-- ownership and capacity;
-- backup and rollback behavior.
-
-The probe exists but must not be run against production without explicit infrastructure authorization.
-
-## Next exact step
-
-Revalidate the branch head containing this canonical continuity commit with all exact-head and smoke gates. Keep PR #5 Draft. The next authorized technical action after that is an isolated Northflank volume/filesystem probe; no deploy decision is valid before that evidence exists.
+After the final integration candidate is merged into the delivery branch, capture an authenticated reversible Northflank baseline, verify backup and rollback, probe the real volume in isolation, and deploy only if all storage and paper-only gates pass.
