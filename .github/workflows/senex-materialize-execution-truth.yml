@@ -31,10 +31,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find audit -maxdepth 1 -name 'execution_truth_patch.part*' | wc -l)" = "6"
-          cat audit/execution_truth_patch.part* | base64 --decode > /tmp/execution-truth.patch.gz
+          cat \
+            audit/execution_truth_source.part00a \
+            audit/execution_truth_source.part00b \
+            audit/execution_truth_patch.part01 \
+            audit/execution_truth_patch.part02 \
+            audit/execution_truth_patch.part03 \
+            audit/execution_truth_patch.part04 \
+            audit/execution_truth_source.part05a \
+            audit/execution_truth_source.part05b \
+            | base64 --decode > /tmp/execution-truth.patch.gz
           echo "9882b19b6bc6d900d78ec658b1f90573eb6b204d68c4f94b35ffc8715b9ca992  /tmp/execution-truth.patch.gz" | sha256sum -c -
           gzip -dc /tmp/execution-truth.patch.gz > /tmp/execution-truth.patch
+          echo "f965e1d9c95d2075dabebd9dffd676e6c0f5fde779d7cb648ad66fc649d23130  /tmp/execution-truth.patch" | sha256sum -c -
 
       - name: Verify exact base and absent target
         shell: bash
