@@ -1,0 +1,187 @@
+name: SENEX Deterministic Runtime Seed Correction Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-reproducible-runtime-v2
+    paths:
+      - .github/workflows/senex-deterministic-runtime-seed-correction-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  correct-regenerate-and-self-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-reproducible-runtime-v2
+          persist-credentials: true
+
+      - name: Make runtime validation deterministic and fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script=Path('tools/verify_h011_arm64_reproducibility.sh')
+          text=script.read_text()
+
+          marker='''fi
+
+          docker run -d \\
+          '''
+          seed='''fi
+
+          docker run --rm \\
+            --platform linux/arm64 \\
+            -v "$RESULTS:/app/polymarket/results" \\
+            -e SENECIO_CODE_SHA="$HEAD_SHA" \\
+            "$IMAGE" \\
+            python3 /app/polymarket/h011_v3_runtime.py \\
+              --synthetic-publish \\
+              --run-id arm64-baseline-run \\
+              --scan-id arm64-baseline-scan \\
+            > "$EVIDENCE/synthetic-publish.log" 2>&1 \\
+            || die "SYNTHETIC_BASELINE_PUBLISH_FAILED"
+          [[ -s "$EVIDENCE/synthetic-publish.log" ]] \\
+            || die "SYNTHETIC_BASELINE_EVIDENCE_MISSING"
+
+          docker run -d \\
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit(f'synthetic seed insertion point count={text.count(marker)}')
+          text=text.replace(marker,seed)
+
+          daemon_env='''  -e H011_ORDERS_ENABLED=false \\
+            -e H011_RESULTS_DIR=/app/polymarket/results \\
+          '''
+          daemon_env_new='''  -e H011_ORDERS_ENABLED=false \\
+            -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \\
+            -e H011_RESULTS_DIR=/app/polymarket/results \\
+          '''
+          if text.count(daemon_env) != 1:
+              raise SystemExit(f'daemon env insertion point count={text.count(daemon_env)}')
+          text=text.replace(daemon_env,daemon_env_new)
+
+          if text.count('deadline=$((SECONDS + 1200))') != 2:
+              raise SystemExit('expected two 1200-second deadline blocks')
+          text=text.replace('deadline=$((SECONDS + 1200))','deadline=$((SECONDS + 300))')
+
+          pre='''pre_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-before.json")"
+          pre_artifact="$(jq -r '.raw_chain.artifact_name' "$EVIDENCE/integrity-before.json")"
+          '''
+          pre_new='''pre_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-before.json")"
+          [[ "$pre_seq" =~ ^[0-9]+$ ]] \\
+            || die "PRE_RESTART_RAW_SEQUENCE_MISSING"
+          pre_artifact="$(jq -r '.raw_chain.artifact_name' "$EVIDENCE/integrity-before.json")"
+          '''
+          if text.count(pre) != 1:
+              raise SystemExit(f'pre sequence insertion point count={text.count(pre)}')
+          text=text.replace(pre,pre_new)
+
+          baseline_guard='''[[ -n "$pre_sha" && "$pre_sha" != "null" ]] \\
+            || die "PRE_RESTART_RAW_SHA_MISSING"
+          sha256sum "$RESULTS/h011_v3/raw_chain_v1/$pre_artifact" \\
+          '''
+          baseline_guard_new='''[[ -n "$pre_sha" && "$pre_sha" != "null" ]] \\
+            || die "PRE_RESTART_RAW_SHA_MISSING"
+          jq -e \\
+            '.raw_chain.run_id=="arm64-baseline-run" and .raw_chain.scan_id=="arm64-baseline-scan"' \\
+            "$EVIDENCE/integrity-before.json" >/dev/null \\
+            || die "SYNTHETIC_BASELINE_IDENTITY_MISMATCH"
+          sha256sum "$RESULTS/h011_v3/raw_chain_v1/$pre_artifact" \\
+          '''
+          if text.count(baseline_guard) != 1:
+              raise SystemExit(f'baseline identity insertion point count={text.count(baseline_guard)}')
+          text=text.replace(baseline_guard,baseline_guard_new)
+
+          post='''post_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-after.json")"
+          (( post_seq >= pre_seq )) || die "RAW_CHAIN_SEQUENCE_REGRESSION"
+          '''
+          post_new='''post_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-after.json")"
+          [[ "$post_seq" =~ ^[0-9]+$ ]] \\
+            || die "POST_RESTART_RAW_SEQUENCE_MISSING"
+          (( post_seq >= pre_seq )) || die "RAW_CHAIN_SEQUENCE_REGRESSION"
+          '''
+          if text.count(post) != 1:
+              raise SystemExit(f'post sequence insertion point count={text.count(post)}')
+          text=text.replace(post,post_new)
+          script.write_text(text)
+
+          checker=Path('tools/verify_h011_shell_harness.py')
+          ctext=checker.read_text()
+          required='''    "--controlled-failure",
+          )
+          '''
+          required_new='''    "--controlled-failure",
+              "--synthetic-publish",
+              "--run-id arm64-baseline-run",
+              "--scan-id arm64-baseline-scan",
+              "H011_RUNTIME_DIAGNOSTIC_ONLY=true",
+              "PRE_RESTART_RAW_SEQUENCE_MISSING",
+              "POST_RESTART_RAW_SEQUENCE_MISSING",
+              "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",
+          )
+          '''
+          if ctext.count(required) != 1:
+              raise SystemExit(f'checker required-marker insertion count={ctext.count(required)}')
+          checker.write_text(ctext.replace(required,required_new))
+
+          docs=Path('docs/H011_REPRODUCIBLE_RUNTIME.md')
+          dtext=docs.read_text()
+          section='''
+          ## Deterministic runtime baseline
+
+          The ARM64 runtime gate publishes a fixed synthetic committed scan into the
+          shared results volume before starting the service. The service then runs with
+          `H011_RUNTIME_DIAGNOSTIC_ONLY=true`, so endpoint, shutdown and restart/replay
+          checks do not depend on current Polymarket network state. Both pre- and
+          post-restart raw-chain sequences must be decimal integers, and the committed
+          baseline identity must match the fixed run and scan IDs.
+          '''
+          if '## Deterministic runtime baseline' not in dtext:
+              docs.write_text(dtext.rstrip()+"\n"+section.lstrip())
+          PY
+
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python3 tools/verify_h011_shell_harness.py \
+            --script tools/verify_h011_arm64_reproducibility.sh \
+            --output /tmp/harness-static.json
+          bash tools/verify_h011_arm64_reproducibility.sh \
+            --self-test /tmp/harness-self-test
+          (cd /tmp/harness-self-test && sha256sum -c SHA256SUMS)
+
+      - name: Remove temporary workflow and regenerate governance
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/senex-deterministic-runtime-seed-correction-once.yml
+          test -z "$(git ls-files .github/workflows/senex-deterministic-runtime-seed-correction-once.yml)"
+          python3 tools/verify_repository_contract.py --generate \
+            > /tmp/senex-governance-generation.json
+          git add \
+            tools/verify_h011_arm64_reproducibility.sh \
+            tools/verify_h011_shell_harness.py \
+            docs/H011_REPRODUCIBLE_RUNTIME.md \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          git diff --check --cached
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+
+      - name: Commit deterministic canonical tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'test(senex): seed deterministic ARM64 runtime baseline'
+          git push origin HEAD:fix/senex-arm64-reproducible-runtime-v2
