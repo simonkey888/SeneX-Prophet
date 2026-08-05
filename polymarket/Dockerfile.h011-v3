@@ -26,8 +26,9 @@ RUN python -m pip install \
       -r /tmp/requirements-h011-v3-runtime.txt \
     && rm -f /tmp/requirements-h011-v3-runtime.txt
 
-# Copy only the complete runtime package. Repository data and secrets are never
-# baked into the image. File modes are normalized for reproducible layers.
+# Copy the complete runtime package, including polymarket/discovery_v3.py.
+# Repository data and secrets are never baked into the image. File modes are
+# normalized for reproducible layers.
 COPY --link polymarket/ /app/polymarket/
 RUN find /app/polymarket -type d -exec chmod 0755 '{}' + \
     && find /app/polymarket -type f -exec chmod 0644 '{}' + \
