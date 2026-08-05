@@ -1,0 +1,40 @@
+name: ARQ Current Deployment Read
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-current-deployment-read.yml
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: northflank-readonly-audit
+    steps:
+      - name: Read sanitized deployment identity
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          python - <<'PY'
+          import hashlib,json,os,urllib.error,urllib.request
+          req=urllib.request.Request('https://api.northflank.com/v1/projects/seneciobot/services/senecio-h011/deployment',headers={'Authorization':f"Bearer {os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']}",'Accept':'application/json','User-Agent':'senex-current-deployment-read/1'},method='GET')
+          raw=b''; status=0
+          try:
+              with urllib.request.urlopen(req,timeout=30) as r: status=r.status; raw=r.read()
+          except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+          if status!=200: raise SystemExit(f'status={status} sha256={hashlib.sha256(raw).hexdigest()}')
+          obj=json.loads(raw.decode()).get('data',{})
+          internal=obj.get('internal') or {}
+          result={'instances':obj.get('instances'),'build_id':internal.get('buildId'),'deployed_sha':internal.get('deployedSHA'),'branch':internal.get('branch'),'body_sha256':hashlib.sha256(raw).hexdigest(),'secret_values_exported':False}
+          print(json.dumps(result,sort_keys=True))
+          PY
