@@ -1,0 +1,67 @@
+name: ARQ Manifest Bootstrap
+
+on:
+  push:
+    branches: [feat/senex-paper-execution-truth-v1]
+    paths: [.github/workflows/arq-manifest-bootstrap.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: senex-arq-manifest-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  regenerate-verify-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: feat/senex-paper-execution-truth-v1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Regenerate canonical manifests
+        run: |
+          set -euo pipefail
+          cp .github/workflows/arq-manifest-bootstrap.yml /tmp/arq-manifest-bootstrap.yml
+          git rm .github/workflows/arq-manifest-bootstrap.yml
+          git add -A
+          python tools/verify_repository_contract.py --generate
+          git add -A
+          TRACKED="$(git ls-files | wc -l | tr -d ' ')"
+          python - "${TRACKED}" <<'PY'
+          import json,sys
+          manifest=json.load(open('governance/repository_manifest.json'))
+          tracked=int(sys.argv[1])
+          assert manifest['files_tracked_total'] == tracked, (manifest['files_tracked_total'], tracked)
+          PY
+          git diff --cached --check
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+      - name: Verify reconciled state
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q tests/paper_trial tests/monitoring tests/governance
+          PYTHONPATH=.:polymarket python -m pytest -q
+      - name: Commit reconciled manifests
+        run: |
+          set -euo pipefail
+          git clean -fdx
+          mkdir -p .github/workflows
+          cp /tmp/arq-manifest-bootstrap.yml .github/workflows/arq-manifest-bootstrap.yml
+          git add -A
+          test -z "$(git diff --cached --name-only | grep '^.github/workflows/' || true)"
+          git config user.name "SENEX ARQ"
+          git config user.email "simonkey888@users.noreply.github.com"
+          git commit -m "docs(governance): record reconciled delivery state"
+          git push origin HEAD:feat/senex-paper-execution-truth-v1
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
