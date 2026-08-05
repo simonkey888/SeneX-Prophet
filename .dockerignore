@@ -1,0 +1,4 @@
+**
+!.dockerignore
+!polymarket/
+!polymarket/**
