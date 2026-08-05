@@ -1,0 +1,56 @@
+name: ARQ Phase D Manual Copy V4
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-phase-d-v4-manual-copy.yml
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  PROJECT_ID: seneciobot
+  SERVICE_ID: senecio-h011
+  SOURCE_VOLUME_ID: h011-results-vol
+  PRODUCT_BRANCH: feat/h011-v3-discovery-refresh
+  PRODUCT_SHA: 6ee7a139055766a1e2fda1eae7e39358e88974c2
+  PRODUCT_TREE: b6eeb359f7e177a33f4b7bed77a8f77fe9acf96e
+
+jobs:
+  phase-d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: northflank-readonly-audit
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Execute quiesced manual backup and isolated restore
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          remote_sha="$(git ls-remote https://github.com/${GITHUB_REPOSITORY}.git refs/heads/${PRODUCT_BRANCH} | awk '{print $1}')"
+          test "$remote_sha" = "$PRODUCT_SHA"
+          mkdir -p evidence
+          python .github/scripts/arq_phase_d_manual_copy.py
+          (cd evidence && sha256sum -c SHA256SUMS)
+      - name: Upload Phase D evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-phase-d-v4-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: warn
