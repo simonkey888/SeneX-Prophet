@@ -1,0 +1,146 @@
+name: SENEX Stack Integration
+
+on:
+  pull_request:
+    branches:
+      - feat/h011-v3-discovery-refresh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-stack-integration-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TERM: xterm
+  PRODUCT_BASE_SHA: 2f8503533543832147caf4c8e97a0cc6f5af3cbc
+  EXACT_SHA: ${{ github.event.pull_request.head.sha }}
+
+jobs:
+  exact-product-stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact integration head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.EXACT_SHA }}
+
+      - name: Verify delivery base and linear stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
+          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
+          test "${{ github.event.pull_request.base.sha }}" = "${PRODUCT_BASE_SHA}"
+          test "$(git merge-base "${PRODUCT_BASE_SHA}" "${EXACT_SHA}")" = "${PRODUCT_BASE_SHA}"
+          for sha in \
+            aeb50867738b7ae7199f621a730080e09465458e \
+            39e1cf1bdad31a2b6f2178949a2977c837ebdf18 \
+            00f018484f6e39f4cc7c518df02e1f1b0ab97df8 \
+            e91faa59233bc33b8fa8964aa5cb9502ace2dfaf; do
+            git merge-base --is-ancestor "${sha}" "${EXACT_SHA}"
+          done
+          git diff --check "${PRODUCT_BASE_SHA}...${EXACT_SHA}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r polymarket/requirements-h011-v3.txt
+
+      - name: Compile and test exact integration head
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall polymarket tools tests
+          PYTHONPATH=.:polymarket python -m pytest -q tests/paper_trial tests/monitoring tests/governance
+          PYTHONPATH=.:polymarket python -m pytest -q
+
+      - name: Verify deterministic repository contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --hard "${EXACT_SHA}"
+          git clean -fdx
+          cp governance/repository_manifest.json /tmp/manifest.committed
+          cp governance/component_registry.json /tmp/registry.committed
+          cp governance/migration_map.json /tmp/migration.committed
+          cp governance/target_architecture.yaml /tmp/architecture.committed
+          python tools/verify_repository_contract.py --generate > /tmp/generate.json
+          cmp /tmp/manifest.committed governance/repository_manifest.json
+          cmp /tmp/registry.committed governance/component_registry.json
+          cmp /tmp/migration.committed governance/migration_map.json
+          cmp /tmp/architecture.committed governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          python tools/verify_repository_contract.py --base "${PRODUCT_BASE_SHA}" --head "${EXACT_SHA}" --report /tmp/stack-contract.json
+          python - /tmp/stack-contract.json <<'PY'
+          import json,sys
+          report=json.load(open(sys.argv[1]))
+          assert report['pass'] is True
+          assert len(report['gates']) == 28
+          assert all(gate['status'] == 'PASS' for gate in report['gates'])
+          PY
+
+      - name: Paper-only capability exclusion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          roots=[Path('polymarket/paper'),Path('polymarket/monitoring'),Path('tools/build_execution_truth_artifacts.py')]
+          forbidden_modules=('web3','eth_account','py_clob_client.client')
+          forbidden_calls=('post_order','create_order','submit_order','cancel_order','delete_order','derive_api_key')
+          violations=[]
+          for root in roots:
+              paths=[root] if root.is_file() else list(root.rglob('*.py'))
+              for path in paths:
+                  tree=ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+                  for node in ast.walk(tree):
+                      if isinstance(node,(ast.Import,ast.ImportFrom)):
+                          names=[a.name for a in node.names] if isinstance(node,ast.Import) else [node.module or '']
+                          if any(name.startswith(forbidden_modules) for name in names): violations.append(f'{path}:import:{names}')
+                      if isinstance(node,ast.Call):
+                          name=node.func.attr if isinstance(node.func,ast.Attribute) else node.func.id if isinstance(node.func,ast.Name) else ''
+                          if name in forbidden_calls: violations.append(f'{path}:call:{name}')
+          assert not violations, violations
+          PY
+
+      - name: Build exact integration image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -f polymarket/Dockerfile.h011-v3 -t senex-stack:"${EXACT_SHA}" .
+          docker run --rm -e SENECIO_CODE_SHA="${EXACT_SHA}" senex-stack:"${EXACT_SHA}" python3 - <<'PY'
+          import os
+          assert os.environ['SENECIO_CODE_SHA'] == '${{ env.EXACT_SHA }}'
+          PY
+
+      - name: Record integration evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/senex-stack-integration"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          cat > "${RUNNER_TEMP}/senex-stack-integration/manifest.json" <<JSON
+          {"base_sha":"${PRODUCT_BASE_SHA}","head_sha":"${EXACT_SHA}","tree_sha":"${TREE_SHA}","rollback_sha":"${PRODUCT_BASE_SHA}","stack":["aeb50867738b7ae7199f621a730080e09465458e","39e1cf1bdad31a2b6f2178949a2977c837ebdf18","00f018484f6e39f4cc7c518df02e1f1b0ab97df8","e91faa59233bc33b8fa8964aa5cb9502ace2dfaf"],"paper_only":true,"orders_enabled":false,"live_capital_locked":true,"result":"PASS"}
+          JSON
+          (cd "${RUNNER_TEMP}/senex-stack-integration" && sha256sum manifest.json > SHA256SUMS)
+
+      - name: Upload integration evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-stack-integration-${{ env.EXACT_SHA }}
+          path: ${{ runner.temp }}/senex-stack-integration
+          retention-days: 14
+          if-no-files-found: error
