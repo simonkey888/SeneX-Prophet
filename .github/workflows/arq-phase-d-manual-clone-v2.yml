@@ -1,0 +1,158 @@
+name: ARQ Phase D Manual Clone V2
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-phase-d-manual-clone-v2.yml
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  PROJECT_ID: seneciobot
+  SERVICE_ID: senecio-h011
+  SOURCE_VOLUME_ID: h011-results-vol
+  PRODUCT_BRANCH: feat/h011-v3-discovery-refresh
+  PRODUCT_SHA: 6ee7a139055766a1e2fda1eae7e39358e88974c2
+  PRODUCT_TREE: b6eeb359f7e177a33f4b7bed77a8f77fe9acf96e
+
+jobs:
+  clone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: northflank-readonly-audit
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Clone source to backup and isolated restore
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          remote_sha="$(git ls-remote https://github.com/${GITHUB_REPOSITORY}.git refs/heads/${PRODUCT_BRANCH} | awk '{print $1}')"
+          test "$remote_sha" = "$PRODUCT_SHA"
+          mkdir -p evidence
+          python - <<'PY'
+          import datetime,hashlib,json,os,pathlib,re,time,urllib.error,urllib.parse,urllib.request
+          API=os.environ['NF_API'].rstrip('/'); token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']; source=os.environ['SOURCE_VOLUME_ID']
+          sha=os.environ['PRODUCT_SHA']; tree=os.environ['PRODUCT_TREE']; branch=os.environ['PRODUCT_BRANCH']; run_id=os.environ['GITHUB_RUN_ID']
+          H={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-phase-d-v2/1'}
+          E={'schema_version':'senex-phase-d-manual-clone-v2','started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'product_sha':sha,'product_tree':tree,'project_id':project,'service_id':service,'source_volume_id':source,'requests':[],'phase_c':'PASS','phase_d':'IN_PROGRESS','secret_values_exported':False,'safety':{'paper_only':True,'orders_enabled':False,'live_capital_locked':True,'real_order_network_calls':0,'wallet_or_private_key_access':0,'real_capital_actions':0}}
+          P=pathlib.Path('evidence/phase_d.json')
+          sensitive=re.compile(r'(secret|token|password|credential|private|runtimeenvironment|runtimefiles|value|content)',re.I)
+          def scrub(v,key=''):
+              if isinstance(v,dict):
+                  o={}
+                  for k,x in v.items():
+                      sk=str(k)
+                      if sensitive.search(sk): o[sk]={'names':sorted(map(str,x.keys())),'values_redacted':True} if isinstance(x,dict) else '<redacted>'
+                      else: o[sk]=scrub(x,sk)
+                  return o
+              if isinstance(v,list): return [scrub(x,key) for x in v]
+              return v
+          def save(): P.write_text(json.dumps(E,sort_keys=True,indent=2)+'\n')
+          def call(method,route,payload=None,label=None):
+              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode()
+              req=urllib.request.Request(API+route,headers=H,data=body,method=method); raw=b''; status=0
+              try:
+                  with urllib.request.urlopen(req,timeout=90) as r: status=r.status; raw=r.read()
+              except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+              digest=hashlib.sha256(raw).hexdigest(); E['requests'].append({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'label':label or route,'method':method,'path':route,'status':status,'body_sha256':digest,'bytes':len(raw)})
+              try: obj=json.loads(raw.decode() or '{}')
+              except Exception: obj={'non_json':True}
+              E.setdefault('responses',{})[label or route]=scrub(obj); save()
+              if not 200<=status<300: raise RuntimeError(f'{method} {route} status={status} body_sha256={digest}')
+              return obj
+          def data(obj): return obj.get('data',obj) if isinstance(obj,dict) else obj
+          def poll(route,label,predicate,timeout=2400):
+              end=time.time()+timeout; last=None
+              while time.time()<end:
+                  last=data(call('GET',route,label=label))
+                  if predicate(last): return last
+                  time.sleep(10)
+              raise RuntimeError(f'timeout {route}: {scrub(last)}')
+          def scale(n):
+              call('POST',f'/projects/{project}/services/{service}/scale',{'instances':n},f'scale_{n}')
+              return poll(f'/projects/{project}/services/{service}/deployment',f'scale_{n}_poll',lambda x:int(x.get('instances',-1))==n,900)
+          rollback=None; scaled=False; attached=False
+          try:
+              dep=data(call('GET',f'/projects/{project}/services/{service}/deployment','deployment_before'))
+              internal=dep.get('internal') or {}; rollback={'build_id':internal.get('buildId'),'sha':internal.get('deployedSHA'),'branch':internal.get('branch'),'instances':dep.get('instances')}
+              if not rollback['build_id'] or not rollback['sha']: raise RuntimeError('rollback identity incomplete')
+              E['rollback']=rollback
+              vol=data(call('GET',f'/projects/{project}/volumes/{source}','source_volume_before')); spec=vol.get('spec') or {}
+              if vol.get('status')!='BOUND' or int(spec.get('storageSize',0))<6144: raise RuntimeError('source volume invalid')
+              E['source_volume']={'id':vol.get('id'),'status':vol.get('status'),'mounts':vol.get('mounts'),'spec':spec,'createdAt':vol.get('createdAt'),'updatedAt':vol.get('updatedAt'),'attachedObjects':vol.get('attachedObjects')}
+              build_id=data(call('POST',f'/projects/{project}/services/{service}/build',{'sha':sha},'exact_build_start')).get('id')
+              if not build_id: raise RuntimeError('build id missing')
+              build=poll(f'/projects/{project}/services/{service}/build/{build_id}','exact_build_poll',lambda x:bool(x.get('concluded')),3600)
+              if not build.get('success') or build.get('sha')!=sha: raise RuntimeError(f'exact build failed: {scrub(build)}')
+              E['exact_build']={'id':build_id,'sha':build.get('sha'),'status':build.get('status'),'createdAt':build.get('createdAt'),'buildConcludedAt':build.get('buildConcludedAt')}
+              scale(0); scaled=True
+              containers=data(call('GET',f'/projects/{project}/services/{service}/containers?per_page=100','containers_after_scale_zero'))
+              if any(x.get('status')=='TASK_RUNNING' for x in (containers.get('containers',[]) if isinstance(containers,dict) else [])): raise RuntimeError('running container remains')
+              suffix=run_id[-9:]
+              verifier_b64='aW1wb3J0IGhhc2hsaWIsanNvbgpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCmRlZiBtYW5pZmVzdChyb290KToKICAgIHJvb3Q9UGF0aChyb290KTsgcm93cz1bXTsgdG90YWw9MAogICAgaWYgcm9vdC5pc19kaXIoKToKICAgICAgICBmb3IgcCBpbiBzb3J0ZWQoeCBmb3IgeCBpbiByb290LnJnbG9iKCcqJykgaWYgeC5pc19maWxlKCkgYW5kIG5vdCB4LmlzX3N5bWxpbmsoKSk6CiAgICAgICAgICAgIHJlbD1wLnJlbGF0aXZlX3RvKHJvb3QpLmFzX3Bvc2l4KCk7IGg9aGFzaGxpYi5zaGEyNTYoKTsgc2l6ZT0wCiAgICAgICAgICAgIHdpdGggcC5vcGVuKCdyYicpIGFzIGY6CiAgICAgICAgICAgICAgICB3aGlsZSBUcnVlOgogICAgICAgICAgICAgICAgICAgIGI9Zi5yZWFkKDEwMjQqMTAyNCkKICAgICAgICAgICAgICAgICAgICBpZiBub3QgYjogYnJlYWsKICAgICAgICAgICAgICAgICAgICBoLnVwZGF0ZShiKTsgc2l6ZSs9bGVuKGIpCiAgICAgICAgICAgIHJvd3MuYXBwZW5kKChyZWwsc2l6ZSxoLmhleGRpZ2VzdCgpKSk7IHRvdGFsKz1zaXplCiAgICBtaD1oYXNobGliLnNoYTI1NigpCiAgICBmb3IgcmVsLHNpemUsZGlnZXN0IGluIHJvd3M6IG1oLnVwZGF0ZShmJ3tkaWdlc3R9IHtzaXplfSB7cmVsfVxuJy5lbmNvZGUoKSkKICAgIHJldHVybiB7J2V4aXN0cyc6cm9vdC5pc19kaXIoKSwnZmlsZXMnOmxlbihyb3dzKSwnYnl0ZXMnOnRvdGFsLCdtYW5pZmVzdF9zaGEyNTYnOm1oLmhleGRpZ2VzdCgpLCdyb3dzJzpyb3dzfQpyb290cz17J3NvdXJjZSc6bWFuaWZlc3QoJy9hcHAvcG9seW1hcmtldC9yZXN1bHRzJyksJ2JhY2t1cCc6bWFuaWZlc3QoJy9iYWNrdXAnKSwncmVzdG9yZSc6bWFuaWZlc3QoJy9yZXN0b3JlJyl9CmZvciB2YWx1ZSBpbiByb290cy52YWx1ZXMoKTogdmFsdWUucG9wKCdyb3dzJyxOb25lKQpyZXN1bHQ9eydyb290cyc6cm9vdHMsJ3NvdXJjZV9lcXVhbHNfYmFja3VwJzpyb290c1snc291cmNlJ109PXJvb3RzWydiYWNrdXAnXSwnYmFja3VwX2VxdWFsc19yZXN0b3JlJzpyb290c1snYmFja3VwJ109PXJvb3RzWydyZXN0b3JlJ10sJ3NvdXJjZV9lcXVhbHNfcmVzdG9yZSc6cm9vdHNbJ3NvdXJjZSddPT1yb290c1sncmVzdG9yZSddfQpjaGFpbj1QYXRoKCcvcmVzdG9yZS9oMDExX3YzL3Jhd19jaGFpbl92MScpCnJlc3VsdFsncmF3X2NoYWluX2V4aXN0cyddPWNoYWluLmlzX2RpcigpCmlmIGNoYWluLmlzX2RpcigpOgogICAgdHJ5OgogICAgICAgIGltcG9ydCBoMDExX3YzX3Jhd190cmFuc2FjdGlvbiBhcyBydAogICAgICAgIGZyb20gaDAxMV92M19jb21taXR0ZWRfc25hcHNob3QgaW1wb3J0IHZhbGlkYXRlX2NvbW1pdHRlZF9jaGFpbl91bmRlcl9sb2NrCiAgICAgICAgZnJvbSBoMDExX3YzX3Jhd19yZWNvdmVyeSBpbXBvcnQgcmVjb3Zlcl9yYXdfc2Nhbl90cmFuc2FjdGlvbgogICAgICAgIHdpdGggcnQuUmF3Q2hhaW5Mb2NrKGNoYWluLHJ0LkRFRkFVTFRfTUFSS0VSX1BPTElDWS5tYW5pZmVzdF9wcmVmaXgpLmFjcXVpcmUoKSBhcyBndWFyZDoKICAgICAgICAgICAgcmVzdWx0WydyZWNvdmVyeSddPXJlY292ZXJfcmF3X3NjYW5fdHJhbnNhY3Rpb24oZ3VhcmQ9Z3VhcmQscmF3X2RpcmVjdG9yeT1jaGFpbixwb2xpY3k9cnQuREVGQVVMVF9NQVJLRVJfUE9MSUNZKQogICAgICAgICAgICByZXN1bHRbJ2NoYWluJ109dmFsaWRhdGVfY29tbWl0dGVkX2NoYWluX3VuZGVyX2xvY2soZ3VhcmQ9Z3VhcmQscmF3X2RpcmVjdG9yeT1jaGFpbixwb2xpY3k9cnQuREVGQVVMVF9NQVJLRVJfUE9MSUNZKQogICAgICAgIHJlc3VsdFsnY2hhaW5fdmVyaWZpZWQnXT1UcnVlCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzoKICAgICAgICByZXN1bHRbJ2NoYWluX3ZlcmlmaWVkJ109RmFsc2U7IHJlc3VsdFsnY2hhaW5fZXJyb3InXT1mJ3t0eXBlKGV4YykuX19uYW1lX199OiB7ZXhjfScKZWxzZToKICAgIHJlc3VsdFsnY2hhaW5fdmVyaWZpZWQnXT1Ob25lCnByaW50KCdTRU5FWF9DTE9ORV9SRVNVTFQ9Jytqc29uLmR1bXBzKHJlc3VsdCxzb3J0X2tleXM9VHJ1ZSxzZXBhcmF0b3JzPSgnLCcsJzonKSkpCmlmIG5vdCAocmVzdWx0Wydzb3VyY2VfZXF1YWxzX2JhY2t1cCddIGFuZCByZXN1bHRbJ2JhY2t1cF9lcXVhbHNfcmVzdG9yZSddIGFuZCByZXN1bHRbJ3NvdXJjZV9lcXVhbHNfcmVzdG9yZSddKTogcmFpc2UgU3lzdGVtRXhpdCgyKQppZiByZXN1bHRbJ3Jhd19jaGFpbl9leGlzdHMnXSBhbmQgcmVzdWx0WydjaGFpbl92ZXJpZmllZCddIGlzIG5vdCBUcnVlOiByYWlzZSBTeXN0ZW1FeGl0KDMpCg=='
+              job_payload={'name':f'Senex clone verify {suffix}','description':f'Paper-only clone verification {sha[:12]}','billing':{'deploymentPlan':'nf-compute-20'},'deployment':{'internal':{'id':service,'branch':branch,'buildId':build_id,'buildSHA':sha},'docker':{'configType':'customCommand','customCommand':'python3 /tmp/verify.py'},'storage':{'ephemeralStorage':{'storageSize':1024}}},'runtimeFiles':{'/tmp/verify.py':{'data':verifier_b64,'encoding':'base64'}},'settings':{'backoffLimit':0,'runOnSourceChange':'never','activeDeadlineSeconds':1800}}
+              job=data(call('POST',f'/projects/{project}/jobs',job_payload,'clone_job_create')); job_id=job.get('id')
+              if not job_id: raise RuntimeError('job id missing')
+              E['clone_job']={'id':job_id,'name':job.get('name'),'createdAt':job.get('createdAt')}
+              backup=data(call('POST',f'/projects/{project}/volumes',{'name':f'senex-backup-{suffix}','mounts':[{'volumeMountPath':'','containerMountPath':'/backup'}],'spec':{'storageClassName':'nvme','storageSize':int(spec.get('storageSize',6144))},'source':{'type':'volume','sourceId':source},'attachedObjects':[{'id':job_id,'type':'job'}]},'backup_clone_create')); backup_id=backup.get('id')
+              if not backup_id: raise RuntimeError('backup id missing')
+              backup=poll(f'/projects/{project}/volumes/{backup_id}','backup_clone_poll',lambda x:x.get('status')=='BOUND',1800)
+              E['manual_backup']={'id':backup_id,'name':backup.get('name'),'status':backup.get('status'),'source_volume_id':source,'mounts':backup.get('mounts'),'spec':backup.get('spec'),'createdAt':backup.get('createdAt'),'updatedAt':backup.get('updatedAt')}
+              restore=data(call('POST',f'/projects/{project}/volumes',{'name':f'senex-restore-{suffix}','mounts':[{'volumeMountPath':'','containerMountPath':'/restore'}],'spec':{'storageClassName':'nvme','storageSize':int(spec.get('storageSize',6144))},'source':{'type':'volume','sourceId':backup_id},'attachedObjects':[{'id':job_id,'type':'job'}]},'restore_clone_create')); restore_id=restore.get('id')
+              if not restore_id: raise RuntimeError('restore id missing')
+              restore=poll(f'/projects/{project}/volumes/{restore_id}','restore_clone_poll',lambda x:x.get('status')=='BOUND',1800)
+              E['isolated_restore']={'id':restore_id,'name':restore.get('name'),'status':restore.get('status'),'source_volume_id':backup_id,'mounts':restore.get('mounts'),'spec':restore.get('spec'),'createdAt':restore.get('createdAt'),'updatedAt':restore.get('updatedAt')}
+              call('POST',f'/projects/{project}/volumes/{source}/attach',{'nfObject':{'id':job_id,'type':'job'}},'attach_source'); attached=True
+              run=data(call('POST',f'/projects/{project}/jobs/{job_id}/runs',{},'clone_run_start')); run_id2=run.get('id')
+              if not run_id2: raise RuntimeError('run id missing')
+              run=poll(f'/projects/{project}/jobs/{job_id}/runs/{run_id2}','clone_run_poll',lambda x:bool(x.get('concluded')),1800)
+              if run.get('status')!='SUCCESS': raise RuntimeError(f'clone job failed: {scrub(run)}')
+              q=urllib.parse.urlencode({'runId':run_id2,'queryType':'range','duration':3600,'lineLimit':1000,'direction':'forward'})
+              logs=data(call('GET',f'/projects/{project}/jobs/{job_id}/logs?{q}','clone_logs')); marker=None
+              for entry in logs if isinstance(logs,list) else []:
+                  line=str(entry.get('log',''))
+                  if 'SENEX_CLONE_RESULT=' in line:
+                      try: marker=json.loads(line.split('SENEX_CLONE_RESULT=',1)[1].strip())
+                      except Exception: pass
+              if not marker or not marker.get('source_equals_backup') or not marker.get('backup_equals_restore') or not marker.get('source_equals_restore'): raise RuntimeError('clone equality failed')
+              if marker.get('raw_chain_exists') and marker.get('chain_verified') is not True: raise RuntimeError('raw chain verify failed')
+              E['clone_verification']={'run_id':run_id2,'status':run.get('status'),'startedAt':run.get('startedAt'),'concludedAt':run.get('concludedAt'),'result':marker}
+              E['phase_d']='PASS'; save()
+          except Exception as exc:
+              E['phase_d']='FAILED'; E['failure']={'error_class':type(exc).__name__,'message':str(exc)}; save(); raise
+          finally:
+              if attached:
+                  try: call('POST',f'/projects/{project}/volumes/{source}/detach',{'nfObject':{'id':E.get('clone_job',{}).get('id'),'type':'job'}},'detach_source')
+                  except Exception as exc: E['detach_warning']={'error_class':type(exc).__name__,'message':str(exc)}
+              if scaled:
+                  try: scale(1)
+                  except Exception as exc: E['scale_restore_failure']={'error_class':type(exc).__name__,'message':str(exc)}
+              E['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); save()
+          raw=P.read_bytes(); pathlib.Path('evidence/SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  phase_d.json\n')
+          print(json.dumps({'phase_d':E['phase_d'],'build_id':E.get('exact_build',{}).get('id'),'backup_volume_id':E.get('manual_backup',{}).get('id'),'restore_volume_id':E.get('isolated_restore',{}).get('id'),'verification':E.get('clone_verification'),'secret_values_exported':False},sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+      - name: Upload Phase D evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-phase-d-v2-${{ github.sha }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: warn
