@@ -1,0 +1,46 @@
+name: ARQ Current Service Logs
+
+on:
+  push:
+    branches:
+      - audit/h011-northflank-readonly-inspection
+    paths:
+      - .github/workflows/arq-current-service-logs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  logs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: northflank-readonly-audit
+    steps:
+      - name: Read recent sanitized service logs
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          python - <<'PY'
+          import hashlib,json,os,re,urllib.error,urllib.parse,urllib.request
+          query=urllib.parse.urlencode({'queryType':'range','duration':1800,'lineLimit':300,'direction':'backward'})
+          url='https://api.northflank.com/v1/projects/seneciobot/services/senecio-h011/logs?'+query
+          req=urllib.request.Request(url,headers={'Authorization':f"Bearer {os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']}",'Accept':'application/json','User-Agent':'senex-current-service-logs/1'},method='GET')
+          raw=b''; status=0
+          try:
+              with urllib.request.urlopen(req,timeout=30) as r: status=r.status; raw=r.read()
+          except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+          if status!=200: raise SystemExit(f'status={status} sha256={hashlib.sha256(raw).hexdigest()}')
+          obj=json.loads(raw.decode()).get('data',[])
+          sensitive=re.compile(r'(?i)(token|secret|password|private[_-]?key|mnemonic|credential)')
+          lines=[]
+          for item in obj if isinstance(obj,list) else []:
+              line=str(item.get('log',''))
+              if sensitive.search(line): line='<redacted-sensitive-line>'
+              lines.append({'timestamp':item.get('timestamp'),'log':line[:1000]})
+          print(json.dumps({'status':status,'body_sha256':hashlib.sha256(raw).hexdigest(),'line_count':len(lines),'lines':lines,'secret_values_exported':False},sort_keys=True))
+          PY
