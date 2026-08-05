@@ -1,130 +1,49 @@
-# SENECIO Oracle Cycle — Predict + Deploy Pages in one workflow
-# NOTE (ACT XIX): scheduled cron DISABLED — oracle now runs in Northflank
-# every 15 min via backend/oracle_runner.py. This workflow is kept for
-# manual backfill / verification only (workflow_dispatch).
-name: SENECIO Oracle Cycle
+name: SENECIO Oracle Read-Only Evidence
 
 on:
-  # schedule:
-  #   - cron: '*/15 * * * *'   # disabled — moved to Northflank
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: "oracle-cycle"
-  cancel-in-progress: false
+  group: senecio-oracle-read-only-evidence
+  cancel-in-progress: true
 
 jobs:
-  predict-and-deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      # ── PREDICTION PIPELINE ──
-
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Verify past predictions
+      - name: Verify read-only paper boundary
+        shell: bash
         run: |
-          echo "=== VERIFY — filling outcomes for past predictions ==="
-          python3 predict_only.py --verify --symbol ETH/USDT 2>&1 || true
-          python3 predict_only.py --verify --symbol BTC/USDT 2>&1 || true
+          set -euo pipefail
+          mkdir -p /tmp/senecio-oracle-evidence
+          python tools/verify_paper_only_repository.py \
+            --repo-root . \
+            --output /tmp/senecio-oracle-evidence/paper-only-repository.json
+          python -m compileall -q exchange_connector.py senecio_polymarket/oracle
+          python exchange_connector.py | tee /tmp/senecio-oracle-evidence/public-connector-self-test.log
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
 
-      - name: Run Oracle — ETH/USDT
-        run: |
-          echo "=== SENECIO ORACLE — $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
-          python3 predict_only.py --symbol ETH/USDT --timeframe 15m --json 2>&1 | tee oracle_cycle.log
-
-      - name: Run Oracle — BTC/USDT
-        run: |
-          python3 predict_only.py --symbol BTC/USDT --timeframe 15m --json 2>&1 | tee oracle_cycle_btc.log || true
-
-      - name: Data quality gate — remove garbage entries
-        run: |
-          python3 -c "
-          import json
-          with open('senecio_output/predictions.jsonl') as f:
-              lines = [l.strip() for l in f if l.strip()]
-          clean = []
-          removed = 0
-          for line in lines:
-              p = json.loads(line)
-              if p.get('price_now', 0) == 0 and p.get('confidence', 0) == 0:
-                  removed += 1
-              else:
-                  clean.append(line)
-          if removed > 0:
-              with open('senecio_output/predictions.jsonl', 'w') as f:
-                  for line in clean:
-                      f.write(line + '\n')
-              print(f'Data quality gate: removed {removed} garbage, kept {len(clean)}')
-          else:
-              print(f'Data quality gate: all {len(clean)} entries clean')
-          "
-
-      - name: Health check — verify new predictions exist
-        run: |
-          python3 -c "
-          import json
-          from datetime import datetime, timezone, timedelta
-          with open('senecio_output/predictions.jsonl') as f:
-              preds = [json.loads(l.strip()) for l in f if l.strip()]
-          now = datetime.now(timezone.utc)
-          one_hour_ago = now - timedelta(hours=1)
-          recent = [p for p in preds
-                    if p.get('timestamp') and
-                    datetime.fromisoformat(p['timestamp'].replace('Z','+00:00')) > one_hour_ago
-                    and p.get('price_now', 0) > 0]
-          if len(recent) == 0:
-              print(f'HEALTH CHECK FAILED: No valid predictions in the last hour')
-              print(f'Total predictions: {len(preds)}, Recent valid: {len(recent)}')
-              exit(1)
-          else:
-              print(f'HEALTH CHECK OK: {len(recent)} valid prediction(s) in the last hour')
-          "
-
-      - name: Generate Oracle Lab report
-        run: |
-          python3 oracle_lab.py 2>&1 | tee oracle_lab.log || true
-
-      - name: Commit and push predictions + heartbeat
-        run: |
-          git config user.name "SENECIO Oracle"
-          git config user.email "oracle@senecio.bot"
-          # Ensure heartbeat file exists (may not on first run with duplicate candle)
-          touch senecio_output/last_heartbeat.json
-          git add senecio_output/predictions.jsonl senecio_output/oracle_report.json senecio_output/oracle_report.md senecio_output/last_heartbeat.json index.html
-          git diff --cached --quiet && echo "No new data to commit" && exit 0
-          git commit -m "oracle: prediction cycle $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git push
-
-      # ── PAGES DEPLOY (same workflow — no GITHUB_TOKEN trigger issue) ──
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload read-only evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          path: '.'
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v5
+          name: senecio-oracle-read-only-${{ github.sha }}
+          path: /tmp/senecio-oracle-evidence
+          retention-days: 14
+          if-no-files-found: error
