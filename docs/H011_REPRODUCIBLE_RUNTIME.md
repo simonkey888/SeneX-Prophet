@@ -97,3 +97,6 @@ evidence can pass.
 `EVENT_SHA` remains recorded for CI provenance but is not a required candidate
 identity field when the verifier runs outside GitHub Actions. Candidate SHA/tree,
 observed image tag/ID/label and immutable toolchain identity remain mandatory.
+The identity probe emits the dedicated schema `senex-h011-identity-probe-v1`
+with `conclusion=NON_APPROVING`. It never writes `ARM64_PREFLIGHT=PASS`, runtime
+invariants, or the reproducibility result schema; its files remain checksummed.

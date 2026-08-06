@@ -136,6 +136,49 @@ PY
   set -e
 }
 
+write_identity_probe_result() {
+  set +e
+  mkdir -p "$EVIDENCE"
+  {
+    printf 'PROBE_STATUS=IDENTITY_PROBE\n'
+    printf 'PROBE_CONCLUSION=NON_APPROVING\n'
+    printf 'CANDIDATE_HEAD_SHA=%s\n' "$CANDIDATE_HEAD_SHA"
+    printf 'CANDIDATE_HEAD_TREE=%s\n' "$CANDIDATE_HEAD_TREE"
+    printf 'EVENT_SHA=%s\n' "$EVENT_SHA"
+    printf 'IMAGE_TAG_EXPECTED=%s\n' "$IMAGE"
+    printf 'IMAGE_REVISION_LABEL_EXPECTED=%s\n' "$IMAGE_REVISION_LABEL_EXPECTED"
+  } > "$EVIDENCE/identity-probe.env"
+  python3 - "$EVIDENCE/identity-probe.json" \
+    "$CANDIDATE_HEAD_SHA" "$CANDIDATE_HEAD_TREE" "$EVENT_SHA" \
+    "$IMAGE" "$IMAGE_REVISION_LABEL_EXPECTED" <<'PY_PROBE' || true
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+(candidate_sha, candidate_tree, event_sha, image_tag, revision_label) = sys.argv[2:]
+report = {
+    "schema_version": "senex-h011-identity-probe-v1",
+    "status": "IDENTITY_PROBE",
+    "conclusion": "NON_APPROVING",
+    "candidate_head_sha": candidate_sha,
+    "candidate_head_tree": candidate_tree,
+    "event_sha": event_sha,
+    "image_tag_expected": image_tag,
+    "image_revision_label_expected": revision_label,
+}
+path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+PY_PROBE
+  rm -f "$EVIDENCE/result.env" "$EVIDENCE/result.json"
+  (
+    cd "$EVIDENCE"
+    find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.tmp -print0 \
+      | sort -z | xargs -0 sha256sum > SHA256SUMS.tmp
+    mv SHA256SUMS.tmp SHA256SUMS
+  ) || true
+  RESULT_WRITTEN="1"
+  set -e
+}
+
 die() {
   local reason="${1:?reason required}"
   local code="${2:-1}"
@@ -207,6 +250,7 @@ printf '%s\n' "$SOURCE_DATE_EPOCH" > "$EVIDENCE/source-date-epoch.txt"
 } > "$EVIDENCE/candidate-identity.env"
 
 if [[ "$MODE" == "identity-probe" ]]; then
+  write_identity_probe_result
   exit 0
 fi
 
@@ -257,6 +301,22 @@ run_self_test() {
     || die "IDENTITY_SELF_TEST_IMAGE_TAG_INVALID"
   grep -qx "IMAGE_REVISION_LABEL_EXPECTED=$HEAD_SHA" "$identity/candidate-identity.env" \
     || die "IDENTITY_SELF_TEST_REVISION_LABEL_INVALID"
+  [[ ! -e "$identity/result.env" && ! -e "$identity/result.json" ]] \
+    || die "IDENTITY_PROBE_FALSE_PREFLIGHT_VERDICT_PRESENT"
+  grep -qx 'PROBE_STATUS=IDENTITY_PROBE' "$identity/identity-probe.env" \
+    || die "IDENTITY_PROBE_STATUS_INVALID"
+  grep -qx 'PROBE_CONCLUSION=NON_APPROVING' "$identity/identity-probe.env" \
+    || die "IDENTITY_PROBE_CONCLUSION_INVALID"
+  python3 - "$identity/identity-probe.json" <<'PY_PROBE_ASSERT' \
+    || die "IDENTITY_PROBE_JSON_INVALID"
+import json
+import sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+assert report["schema_version"] == "senex-h011-identity-probe-v1"
+assert report["status"] == "IDENTITY_PROBE"
+assert report["conclusion"] == "NON_APPROVING"
+assert "invariants" not in report
+PY_PROBE_ASSERT
   (cd "$identity" && sha256sum -c SHA256SUMS) \
     > "$EVIDENCE/identity-probe-checksums.log" \
     || die "IDENTITY_SELF_TEST_CHECKSUMS_INVALID"
@@ -274,6 +334,7 @@ report = {
     "result_env_written_on_every_controlled_failure": "PASS",
     "controlled_failure_artifact_checksums": "PASS",
     "pr_event_candidate_identity": "PASS",
+    "identity_probe_non_approving": "PASS",
     "harness_self_test": "PASS",
 }
 path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")

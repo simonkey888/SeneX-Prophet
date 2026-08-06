@@ -77,3 +77,13 @@ def test_event_sha_is_recorded_but_not_required_for_local_runtime_identity() -> 
     required = text.split("for identity_field in", 1)[1].split("; do", 1)[0]
     assert "EVENT_SHA" not in required
     assert "EVENT_SHA" in text.split('runtime-image-identity.env', 1)[0]
+
+def test_identity_probe_is_explicitly_non_approving() -> None:
+    text = HARNESS.read_text(encoding="utf-8")
+    probe = text.split('write_identity_probe_result() {', 1)[1].split('\ndie() {', 1)[0]
+    assert "PROBE_STATUS=IDENTITY_PROBE" in probe
+    assert "PROBE_CONCLUSION=NON_APPROVING" in probe
+    assert 'rm -f "$EVIDENCE/result.env" "$EVIDENCE/result.json"' in probe
+    mode = text.split('if [[ "$MODE" == "identity-probe" ]]', 1)[1].split('fi', 1)[0]
+    assert "write_identity_probe_result" in mode
+    assert 'write_result "PASS"' not in mode
