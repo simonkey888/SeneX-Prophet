@@ -1,0 +1,74 @@
+name: SENEX Governance Diff Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-governance-diff-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: false
+
+      - name: Compare committed and clean-tree generated governance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          self='.github/workflows/senex-governance-diff-once.yml'
+          out="$RUNNER_TEMP/governance-diff"
+          mkdir -p "$out/committed" "$out/generated"
+          cp governance/repository_manifest.json "$out/committed/"
+          cp governance/component_registry.json "$out/committed/"
+          cp governance/migration_map.json "$out/committed/"
+          cp governance/target_architecture.yaml "$out/committed/"
+          git rm --cached "$self"
+          test -z "$(git ls-files | grep 'senex-.*-once.yml' || true)"
+          python3 tools/verify_repository_contract.py --generate > "$out/generation.json"
+          cp governance/repository_manifest.json "$out/generated/"
+          cp governance/component_registry.json "$out/generated/"
+          cp governance/migration_map.json "$out/generated/"
+          cp governance/target_architecture.yaml "$out/generated/"
+          python3 - "$out" <<'PY'
+          import json, pathlib, sys
+          root=pathlib.Path(sys.argv[1])
+          old=json.loads((root/'committed/repository_manifest.json').read_text())
+          new=json.loads((root/'generated/repository_manifest.json').read_text())
+          old_files={x['path']:x for x in old['files']}
+          new_files={x['path']:x for x in new['files']}
+          report={
+            'old_total':old['files_tracked_total'],
+            'new_total':new['files_tracked_total'],
+            'added_paths':sorted(set(new_files)-set(old_files)),
+            'removed_paths':sorted(set(old_files)-set(new_files)),
+            'changed':{},
+          }
+          for path in sorted(set(old_files)&set(new_files)):
+            if old_files[path] != new_files[path]:
+              keys=sorted(set(old_files[path])|set(new_files[path]))
+              report['changed'][path]={k:{'old':old_files[path].get(k),'new':new_files[path].get(k)} for k in keys if old_files[path].get(k)!=new_files[path].get(k)}
+          (root/'semantic-diff.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
+          PY
+          diff -u "$out/committed/repository_manifest.json" "$out/generated/repository_manifest.json" > "$out/manifest.diff" || true
+          (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          (cd "$out" && sha256sum -c SHA256SUMS)
+
+      - name: Upload governance drift evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-governance-diff-${{ github.sha }}
+          path: ${{ runner.temp }}/governance-diff
+          retention-days: 30
+          if-no-files-found: error
