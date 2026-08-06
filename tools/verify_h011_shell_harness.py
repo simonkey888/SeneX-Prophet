@@ -23,6 +23,13 @@ REQUIRED_MARKERS = (
     "PRE_RESTART_RAW_SEQUENCE_MISSING",
     "POST_RESTART_RAW_SEQUENCE_MISSING",
     "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",
+    '.runtime_state=="DEGRADED"',
+    '.runtime.runtime_state=="DEGRADED"',
+    '.runtime.scanner_enabled==false',
+    '.runtime.publication_enabled==false',
+    '.runtime.blocking_reason=="diagnostic_only_mode"',
+    "DIAGNOSTIC_HEALTH_CONTRACT_FAILED",
+    "container-initial-failure.log",
 )
 OPTIONAL_CI_VARIABLES = (
     "GITHUB_RUN_ID",

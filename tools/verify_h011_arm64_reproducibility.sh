@@ -438,18 +438,28 @@ deadline=$((SECONDS + 300))
 ready="false"
 while (( SECONDS < deadline )); do
   if curl -fsS "$BASE_URL/readyz" \
-      | jq -e '.ok==true and .readiness==true and .runtime_state=="RUNNING"' \
+      | jq -e '.ok==true and .readiness==true and .runtime_state=="DEGRADED"' \
         >/dev/null 2>&1 \
     && curl -fsS "$BASE_URL/api/v3/integrity" \
       | jq -e --arg sha "$HEAD_SHA" \
-        '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true' \
+        '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
         >/dev/null 2>&1; then
     ready="true"
     break
   fi
   sleep 10
 done
-[[ "$ready" == "true" ]] || die "INITIAL_ENDPOINT_GATE_FAILED"
+if [[ "$ready" != "true" ]]; then
+  docker inspect "$CONTAINER" | jq -S '.[0].State' \
+    > "$EVIDENCE/container-initial-failure-state.json" 2>/dev/null || true
+  docker logs "$CONTAINER" \
+    > "$EVIDENCE/container-initial-failure.log" 2>&1 || true
+  curl -sS "$BASE_URL/readyz" \
+    > "$EVIDENCE/readyz-initial-failure.json" 2>/dev/null || true
+  curl -sS "$BASE_URL/api/v3/integrity" \
+    > "$EVIDENCE/integrity-initial-failure.json" 2>/dev/null || true
+  die "INITIAL_ENDPOINT_GATE_FAILED"
+fi
 
 endpoint=""
 for endpoint in livez readyz healthz api/v3/state api/v3/integrity api/v3/replay; do
@@ -457,6 +467,11 @@ for endpoint in livez readyz healthz api/v3/state api/v3/integrity api/v3/replay
   curl -fsS "$BASE_URL/$endpoint" | jq -S . \
     > "$EVIDENCE/$name.json"
 done
+jq -e \
+  '.ok==true and .status=="DEGRADED" and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
+  "$EVIDENCE/healthz.json" >/dev/null \
+  || die "DIAGNOSTIC_HEALTH_CONTRACT_FAILED"
+
 cp "$EVIDENCE/api_v3_integrity.json" "$EVIDENCE/integrity-before.json"
 cp "$EVIDENCE/api_v3_replay.json" "$EVIDENCE/replay-before.json"
 pre_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-before.json")"
@@ -490,7 +505,7 @@ restarted="false"
 while (( SECONDS < deadline )); do
   if curl -fsS "$BASE_URL/api/v3/integrity" \
       | jq -e \
-        '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true' \
+        '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
         >/dev/null 2>&1; then
     restarted="true"
     break

@@ -59,3 +59,8 @@ shared results volume before starting the service. The service then runs with
 checks do not depend on current Polymarket network state. Both pre- and
 post-restart raw-chain sequences must be decimal integers, and the committed
 baseline identity must match the fixed run and scan IDs.
+
+The expected supervisor state for this isolated diagnostic gate is explicitly
+`DEGRADED` with readiness true, scanner and publication disabled, and
+`blocking_reason=diagnostic_only_mode`. Treating this controlled state as
+`RUNNING` is forbidden.
