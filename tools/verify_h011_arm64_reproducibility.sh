@@ -14,6 +14,10 @@ case "${1:-}" in
     MODE="controlled-failure"
     EVIDENCE_ARG="${2:-}"
     ;;
+  --identity-probe)
+    MODE="identity-probe"
+    EVIDENCE_ARG="${2:-}"
+    ;;
   "")
     ;;
   *)
@@ -29,13 +33,19 @@ mkdir -p "$EVIDENCE"
 EXPECTED_BASE_INDEX="sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51c34de3f08cbb7"
 EXPECTED_BASE_ARM64="sha256:20eadabc42589e6543b24a64ab305b9895e9fcf6dbb2cadb14812f394ecdbadf"
 BASE_REFERENCE="python:3.11-slim@${EXPECTED_BASE_INDEX}"
+QEMU_BINFMT_DIGEST="sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+QEMU_BINFMT_REFERENCE="docker.io/tonistiigi/binfmt@${QEMU_BINFMT_DIGEST}"
+BUILDKIT_DIGEST="sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
+BUILDKIT_REFERENCE="docker.io/moby/buildkit@${BUILDKIT_DIGEST}"
 RUN_ID="${GITHUB_RUN_ID:-local}"
+EVENT_SHA="${GITHUB_SHA:-unknown}"
 HEAD_SHA="unknown"
 HEAD_TREE="unknown"
+CANDIDATE_HEAD_SHA="unknown"
+CANDIDATE_HEAD_TREE="unknown"
 SOURCE_DATE_EPOCH="0"
 RESULT_WRITTEN="0"
 CONTAINER="senex-h011-repro-${RUN_ID}"
-IMAGE="senex-h011-repro:${GITHUB_SHA:-local}"
 WORK="${RUNNER_TEMP:-/tmp}/senex-h011-arm64-repro-${RUN_ID}-$$"
 RESULTS="$WORK/results"
 CONTEXT="$WORK/context"
@@ -53,13 +63,23 @@ write_result() {
     printf 'FAILURE_REASON=%s\n' "$sanitized"
     printf 'HEAD_SHA=%s\n' "$HEAD_SHA"
     printf 'HEAD_TREE=%s\n' "$HEAD_TREE"
+    printf 'CANDIDATE_HEAD_SHA=%s\n' "$CANDIDATE_HEAD_SHA"
+    printf 'CANDIDATE_HEAD_TREE=%s\n' "$CANDIDATE_HEAD_TREE"
+    printf 'EVENT_SHA=%s\n' "$EVENT_SHA"
+    printf 'IMAGE_TAG=%s\n' "${IMAGE:-unassigned}"
+    printf 'QEMU_BINFMT_REFERENCE=%s\n' "$QEMU_BINFMT_REFERENCE"
+    printf 'QEMU_BINFMT_DIGEST=%s\n' "$QEMU_BINFMT_DIGEST"
+    printf 'BUILDKIT_REFERENCE=%s\n' "$BUILDKIT_REFERENCE"
+    printf 'BUILDKIT_DIGEST=%s\n' "$BUILDKIT_DIGEST"
   } > "$EVIDENCE/result.env"
-  python3 - "$EVIDENCE" "$status" "$sanitized" "$HEAD_SHA" "$HEAD_TREE" <<'PY' || true
+  python3 - "$EVIDENCE" "$status" "$sanitized" "$HEAD_SHA" "$HEAD_TREE" "$CANDIDATE_HEAD_SHA" "$CANDIDATE_HEAD_TREE" "$EVENT_SHA" "${IMAGE:-unassigned}" "$QEMU_BINFMT_REFERENCE" "$QEMU_BINFMT_DIGEST" "$BUILDKIT_REFERENCE" "$BUILDKIT_DIGEST" <<'PY' || true
 import json
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
-status, reason, head_sha, head_tree = sys.argv[2:]
+(status, reason, head_sha, head_tree, candidate_head_sha, candidate_head_tree,
+ event_sha, image_tag, qemu_reference, qemu_digest, buildkit_reference,
+ buildkit_digest) = sys.argv[2:]
 def text(name):
     path = root / name
     return path.read_text(encoding="utf-8").strip() if path.exists() else None
@@ -69,6 +89,17 @@ report = {
     "failure_reason": reason,
     "head_sha": head_sha,
     "head_tree": head_tree,
+    "candidate_head_sha": candidate_head_sha,
+    "candidate_head_tree": candidate_head_tree,
+    "event_sha": event_sha,
+    "image_tag": image_tag,
+    "image_id": text("runtime-image-id.txt"),
+    "image_revision_label": text("runtime-image-revision-label.txt"),
+    "qemu_binfmt_reference": qemu_reference,
+    "qemu_binfmt_digest": qemu_digest,
+    "buildkit_reference": buildkit_reference,
+    "buildkit_digest": buildkit_digest,
+    "buildkit_version": text("buildkit-version.txt"),
     "source_date_epoch": text("source-date-epoch.txt"),
     "base_index_digest": text("base-index-digest.txt"),
     "base_arm64_child_digest": text("base-arm64-child-digest.txt"),
@@ -151,9 +182,32 @@ if git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
   HEAD_TREE="$(git -C "$ROOT" rev-parse HEAD^{tree})"
   SOURCE_DATE_EPOCH="$(git -C "$ROOT" show -s --format=%ct HEAD)"
 fi
+CANDIDATE_HEAD_SHA="$HEAD_SHA"
+CANDIDATE_HEAD_TREE="$HEAD_TREE"
+IMAGE="senex-h011-repro:${CANDIDATE_HEAD_SHA}"
+IMAGE_REVISION_LABEL_EXPECTED="$CANDIDATE_HEAD_SHA"
 printf '%s\n' "$HEAD_SHA" > "$EVIDENCE/head-sha.txt"
 printf '%s\n' "$HEAD_TREE" > "$EVIDENCE/head-tree.txt"
+printf '%s\n' "$CANDIDATE_HEAD_SHA" > "$EVIDENCE/candidate-head-sha.txt"
+printf '%s\n' "$CANDIDATE_HEAD_TREE" > "$EVIDENCE/candidate-head-tree.txt"
+printf '%s\n' "$EVENT_SHA" > "$EVIDENCE/event-sha.txt"
+printf '%s\n' "$IMAGE" > "$EVIDENCE/image-tag.txt"
 printf '%s\n' "$SOURCE_DATE_EPOCH" > "$EVIDENCE/source-date-epoch.txt"
+{
+  printf 'CANDIDATE_HEAD_SHA=%s\n' "$CANDIDATE_HEAD_SHA"
+  printf 'CANDIDATE_HEAD_TREE=%s\n' "$CANDIDATE_HEAD_TREE"
+  printf 'EVENT_SHA=%s\n' "$EVENT_SHA"
+  printf 'IMAGE_TAG=%s\n' "$IMAGE"
+  printf 'IMAGE_REVISION_LABEL_EXPECTED=%s\n' "$IMAGE_REVISION_LABEL_EXPECTED"
+  printf 'QEMU_BINFMT_REFERENCE=%s\n' "$QEMU_BINFMT_REFERENCE"
+  printf 'QEMU_BINFMT_DIGEST=%s\n' "$QEMU_BINFMT_DIGEST"
+  printf 'BUILDKIT_REFERENCE=%s\n' "$BUILDKIT_REFERENCE"
+  printf 'BUILDKIT_DIGEST=%s\n' "$BUILDKIT_DIGEST"
+} > "$EVIDENCE/candidate-identity.env"
+
+if [[ "$MODE" == "identity-probe" ]]; then
+  exit 0
+fi
 
 if [[ "$MODE" == "controlled-failure" ]]; then
   die "CONTROLLED_SELF_TEST_FAILURE" 97
@@ -181,6 +235,30 @@ run_self_test() {
     || die "CONTROLLED_FAILURE_RESULT_ENV_INVALID"
   grep -qx 'FAILURE_REASON=CONTROLLED_SELF_TEST_FAILURE' "$nested/result.env" \
     || die "CONTROLLED_FAILURE_REASON_INVALID"
+  (cd "$nested" && sha256sum -c SHA256SUMS) \
+    > "$EVIDENCE/controlled-failure-checksums.log" \
+    || die "CONTROLLED_FAILURE_CHECKSUMS_INVALID"
+  local identity="$EVIDENCE/nested/identity-probe"
+  local simulated_event="1111111111111111111111111111111111111111"
+  env -i \
+    PATH="$PATH" \
+    HOME="${HOME:-/tmp}" \
+    GITHUB_SHA="$simulated_event" \
+    bash "$ROOT/tools/verify_h011_arm64_reproducibility.sh" \
+      --identity-probe "$identity"
+  grep -qx "CANDIDATE_HEAD_SHA=$HEAD_SHA" "$identity/candidate-identity.env" \
+    || die "IDENTITY_SELF_TEST_CANDIDATE_SHA_INVALID"
+  grep -qx "CANDIDATE_HEAD_TREE=$HEAD_TREE" "$identity/candidate-identity.env" \
+    || die "IDENTITY_SELF_TEST_CANDIDATE_TREE_INVALID"
+  grep -qx "EVENT_SHA=$simulated_event" "$identity/candidate-identity.env" \
+    || die "IDENTITY_SELF_TEST_EVENT_SHA_INVALID"
+  grep -qx "IMAGE_TAG=senex-h011-repro:$HEAD_SHA" "$identity/candidate-identity.env" \
+    || die "IDENTITY_SELF_TEST_IMAGE_TAG_INVALID"
+  grep -qx "IMAGE_REVISION_LABEL_EXPECTED=$HEAD_SHA" "$identity/candidate-identity.env" \
+    || die "IDENTITY_SELF_TEST_REVISION_LABEL_INVALID"
+  (cd "$identity" && sha256sum -c SHA256SUMS) \
+    > "$EVIDENCE/identity-probe-checksums.log" \
+    || die "IDENTITY_SELF_TEST_CHECKSUMS_INVALID"
   python3 - "$EVIDENCE/harness-self-test.json" <<'PY'
 import json
 import pathlib
@@ -193,6 +271,8 @@ report = {
     "unbound_variable_static_or_unit_check": "PASS",
     "argument_and_output_directory_initialization": "PASS",
     "result_env_written_on_every_controlled_failure": "PASS",
+    "controlled_failure_artifact_checksums": "PASS",
+    "pr_event_candidate_identity": "PASS",
     "harness_self_test": "PASS",
 }
 path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -335,6 +415,7 @@ build_once() {
   docker buildx create \
     --name "$builder" \
     --driver docker-container \
+    --driver-opt "image=$BUILDKIT_REFERENCE" \
     --use >/dev/null
   docker buildx inspect \
     --builder "$builder" \
@@ -346,7 +427,7 @@ build_once() {
     --provenance=false \
     --sbom=false \
     --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-    --build-arg SENEX_CODE_SHA="$HEAD_SHA" \
+    --build-arg SENEX_CODE_SHA="$CANDIDATE_HEAD_SHA" \
     --output "type=oci,dest=$archive,rewrite-timestamp=true" \
     -f "$CONTEXT/polymarket/Dockerfile.h011-v3" \
     "$CONTEXT" \
@@ -406,6 +487,18 @@ require_equal \
   "$EVIDENCE/build-1-runtime-lock-sha256.txt" \
   "$EVIDENCE/build-2-runtime-lock-sha256.txt" \
   "ARM64_RUNTIME_LOCK_HASHES_DIFFER"
+BUILDKIT_VERSION_1="$(awk '$1=="BuildKit:" {print $2; exit}' "$EVIDENCE/build-1-builder.txt")"
+BUILDKIT_VERSION_2="$(awk '$1=="BuildKit:" {print $2; exit}' "$EVIDENCE/build-2-builder.txt")"
+[[ -n "$BUILDKIT_VERSION_1" && "$BUILDKIT_VERSION_1" == "$BUILDKIT_VERSION_2" ]] \
+  || die "BUILDKIT_VERSION_MISSING_OR_DIFFERENT"
+printf '%s\n' "$BUILDKIT_VERSION_1" > "$EVIDENCE/buildkit-version.txt"
+{
+  printf 'QEMU_BINFMT_REFERENCE=%s\n' "$QEMU_BINFMT_REFERENCE"
+  printf 'QEMU_BINFMT_DIGEST=%s\n' "$QEMU_BINFMT_DIGEST"
+  printf 'BUILDKIT_REFERENCE=%s\n' "$BUILDKIT_REFERENCE"
+  printf 'BUILDKIT_DIGEST=%s\n' "$BUILDKIT_DIGEST"
+  printf 'BUILDKIT_VERSION=%s\n' "$BUILDKIT_VERSION_1"
+} > "$EVIDENCE/container-toolchain.env"
 
 docker buildx build \
   --no-cache \
@@ -414,7 +507,7 @@ docker buildx build \
   --sbom=false \
   --load \
   --build-arg SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-  --build-arg SENEX_CODE_SHA="$HEAD_SHA" \
+  --build-arg SENEX_CODE_SHA="$CANDIDATE_HEAD_SHA" \
   -t "$IMAGE" \
   -f "$CONTEXT/polymarket/Dockerfile.h011-v3" \
   "$CONTEXT" \
@@ -423,6 +516,29 @@ docker buildx build \
 
 docker image inspect "$IMAGE" | jq -S . \
   > "$EVIDENCE/runtime-image-inspect.json"
+IMAGE_ID="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
+IMAGE_REVISION_LABEL="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+printf '%s\n' "$IMAGE_ID" > "$EVIDENCE/runtime-image-id.txt"
+printf '%s\n' "$IMAGE_REVISION_LABEL" > "$EVIDENCE/runtime-image-revision-label.txt"
+[[ "$IMAGE" == "senex-h011-repro:${CANDIDATE_HEAD_SHA}" ]] \
+  || die "RUNTIME_IMAGE_TAG_NOT_CANDIDATE_HEAD"
+[[ "$IMAGE_REVISION_LABEL" == "$CANDIDATE_HEAD_SHA" ]] \
+  || die "RUNTIME_IMAGE_REVISION_LABEL_NOT_CANDIDATE_HEAD"
+{
+  printf 'CANDIDATE_HEAD_SHA=%s\n' "$CANDIDATE_HEAD_SHA"
+  printf 'CANDIDATE_HEAD_TREE=%s\n' "$CANDIDATE_HEAD_TREE"
+  printf 'EVENT_SHA=%s\n' "$EVENT_SHA"
+  printf 'IMAGE_TAG=%s\n' "$IMAGE"
+  printf 'IMAGE_ID=%s\n' "$IMAGE_ID"
+  printf 'IMAGE_REVISION_LABEL=%s\n' "$IMAGE_REVISION_LABEL"
+  printf 'QEMU_BINFMT_REFERENCE=%s\n' "$QEMU_BINFMT_REFERENCE"
+  printf 'QEMU_BINFMT_DIGEST=%s\n' "$QEMU_BINFMT_DIGEST"
+  printf 'BUILDKIT_REFERENCE=%s\n' "$BUILDKIT_REFERENCE"
+  printf 'BUILDKIT_DIGEST=%s\n' "$BUILDKIT_DIGEST"
+  printf 'BUILDKIT_VERSION=%s\n' "$BUILDKIT_VERSION_1"
+} > "$EVIDENCE/runtime-image-identity.env"
+[[ "$(wc -l < "$EVIDENCE/runtime-image-identity.env")" -eq 11 ]] \
+  || die "RUNTIME_IMAGE_IDENTITY_EVIDENCE_INCOMPLETE"
 [[ "$(docker image inspect "$IMAGE" --format '{{.Architecture}}/{{.Os}}')" == "arm64/linux" ]] \
   || die "RUNTIME_PLATFORM_MISMATCH"
 if docker run --rm --platform linux/arm64 "$IMAGE" \
@@ -436,7 +552,7 @@ fi
 docker run --rm \
   --platform linux/arm64 \
   -v "$RESULTS:/app/polymarket/results" \
-  -e SENECIO_CODE_SHA="$HEAD_SHA" \
+  -e SENECIO_CODE_SHA="$CANDIDATE_HEAD_SHA" \
   "$IMAGE" \
   python3 /app/polymarket/h011_v3_runtime.py \
     --synthetic-publish \
@@ -454,7 +570,7 @@ docker run -d \
   -e H011_ORDERS_ENABLED=false \
   -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
   -e H011_RESULTS_DIR=/app/polymarket/results \
-  -e SENECIO_CODE_SHA="$HEAD_SHA" \
+  -e SENECIO_CODE_SHA="$CANDIDATE_HEAD_SHA" \
   -e PORT=8080 \
   -v "$RESULTS:/app/polymarket/results" \
   "$IMAGE" > "$EVIDENCE/docker-run.txt"
@@ -473,7 +589,7 @@ while (( SECONDS < deadline )); do
       | jq -e '.ok==true and .readiness==true and .runtime_state=="DEGRADED"' \
         >/dev/null 2>&1 \
     && curl -fsS "$BASE_URL/api/v3/integrity" \
-      | jq -e --arg sha "$HEAD_SHA" \
+      | jq -e --arg sha "$CANDIDATE_HEAD_SHA" \
         '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
         >/dev/null 2>&1; then
     ready="true"

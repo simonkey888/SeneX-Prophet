@@ -16,6 +16,18 @@ REQUIRED_MARKERS = (
     "write_result()",
     "--self-test",
     "--controlled-failure",
+    "--identity-probe",
+    "controlled-failure-checksums.log",
+    "identity-probe-checksums.log",
+    "CANDIDATE_HEAD_SHA",
+    "CANDIDATE_HEAD_TREE",
+    "EVENT_SHA",
+    "runtime-image-identity.env",
+    "RUNTIME_IMAGE_TAG_NOT_CANDIDATE_HEAD",
+    "RUNTIME_IMAGE_REVISION_LABEL_NOT_CANDIDATE_HEAD",
+    "QEMU_BINFMT_DIGEST",
+    "BUILDKIT_DIGEST",
+    '--driver-opt "image=$BUILDKIT_REFERENCE"',
     "--synthetic-publish",
     "--run-id arm64-baseline-run",
     "--scan-id arm64-baseline-scan",
@@ -92,6 +104,8 @@ def audit(script: Path) -> dict[str, object]:
             errors.append(f"missing required marker: {marker}")
     errors.extend(_multi_local_assignment_errors(text))
     for marker in (
+        'IMAGE="senex-h011-repro:${GITHUB_SHA:-local}"',
+        "moby/buildkit:buildx-stable-1",
         "build-1-lock-hash-set.txt",
         "build-2-lock-hash-set.txt",
         'cp "$EVIDENCE/build-1-lock-hash-set.txt"',
