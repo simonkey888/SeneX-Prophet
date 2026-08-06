@@ -63,6 +63,7 @@ jobs:
               'result_env_written_on_every_controlled_failure':'PASS',
               'controlled_failure_artifact_checksums':'PASS',
               'pr_event_candidate_identity':'PASS',
+              'identity_probe_non_approving':'PASS',
               'harness_self_test':'PASS',
           }
           PY
