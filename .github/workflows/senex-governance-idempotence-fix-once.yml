@@ -55,7 +55,7 @@ jobs:
           python3 -m py_compile \
             tools/verify_repository_contract.py \
             tests/governance/test_repository_contract.py
-          python3 -m pytest -q tests/governance
+          python3 -m unittest tests.governance.test_repository_contract
 
       - name: Regenerate twice against clean final index
         shell: bash
