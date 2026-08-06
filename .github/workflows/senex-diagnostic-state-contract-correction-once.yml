@@ -32,25 +32,24 @@ jobs:
           script = Path('tools/verify_h011_arm64_reproducibility.sh')
           text = script.read_text()
 
-          replacements = (
-              (
-                  '.ok==true and .readiness==true and .runtime_state=="RUNNING"',
-                  '.ok==true and .readiness==true and .runtime_state=="DEGRADED"',
-              ),
-              (
-                  '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true',
-                  '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"',
-              ),
-              (
-                  '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true',
-                  '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"',
-              ),
-          )
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'unique diagnostic expression missing: count={count} expression={old}')
-              text = text.replace(old, new)
+          running = '.ok==true and .readiness==true and .runtime_state=="RUNNING"'
+          degraded = '.ok==true and .readiness==true and .runtime_state=="DEGRADED"'
+          if text.count(running) != 1:
+              raise SystemExit(f'initial ready-state count={text.count(running)}')
+          text = text.replace(running, degraded)
+
+          restart_old = '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true'
+          restart_new = restart_old + ' and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"'
+          restart_index = text.rfind(restart_old)
+          if restart_index < 0:
+              raise SystemExit('restart diagnostic expression missing')
+          text = text[:restart_index] + restart_new + text[restart_index + len(restart_old):]
+
+          initial_old = '.code_sha==$sha and ' + restart_old
+          initial_new = initial_old + ' and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"'
+          if text.count(initial_old) != 1:
+              raise SystemExit(f'initial integrity expression count={text.count(initial_old)}')
+          text = text.replace(initial_old, initial_new)
 
           old_failure = '[[ "$ready" == "true" ]] || die "INITIAL_ENDPOINT_GATE_FAILED"'
           new_failure = '''if [[ "$ready" != "true" ]]; then
