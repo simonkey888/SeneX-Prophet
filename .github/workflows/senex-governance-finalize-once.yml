@@ -1,0 +1,55 @@
+name: SENEX Governance Finalize Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-governance-finalize-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-clean-tree-governance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: true
+
+      - name: Generate governance as if temporary workflow is absent
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          self='.github/workflows/senex-governance-finalize-once.yml'
+          git rm --cached "$self"
+          test -z "$(git ls-files | grep 'senex-.*-once.yml' || true)"
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-one.json
+          cp governance/repository_manifest.json /tmp/manifest-one.json
+          cp governance/component_registry.json /tmp/registry-one.json
+          cp governance/migration_map.json /tmp/migration-one.json
+          cp governance/target_architecture.yaml /tmp/architecture-one.yaml
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-two.json
+          cmp /tmp/manifest-one.json governance/repository_manifest.json
+          cmp /tmp/registry-one.json governance/component_registry.json
+          cmp /tmp/migration-one.json governance/migration_map.json
+          cmp /tmp/architecture-one.yaml governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          git restore --staged "$self"
+          git add \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          test -z "$(git diff --cached --name-only | grep '^\.github/workflows/' || true)"
+          git diff --check --cached
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'chore(senex): regenerate governance after probe contract update'
+          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
