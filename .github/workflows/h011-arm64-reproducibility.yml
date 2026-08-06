@@ -61,6 +61,9 @@ jobs:
               'unbound_variable_static_or_unit_check':'PASS',
               'argument_and_output_directory_initialization':'PASS',
               'result_env_written_on_every_controlled_failure':'PASS',
+              'controlled_failure_artifact_checksums':'PASS',
+              'pr_event_candidate_identity':'PASS',
+              'identity_probe_non_approving':'PASS',
               'harness_self_test':'PASS',
           }
           PY
@@ -74,10 +77,15 @@ jobs:
       - name: Register ARM64 emulation
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
         with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
+          cache-image: false
 
       - name: Configure Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        with:
+          driver-opts: |
+            image=docker.io/moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
       - name: Execute exact-head reproducibility and runtime gates
         shell: bash
@@ -87,6 +95,7 @@ jobs:
             "$RUNNER_TEMP/senex-arm64-evidence"
 
       - name: Verify portable evidence checksums
+        if: always()
         shell: bash
         run: |
           set -euo pipefail

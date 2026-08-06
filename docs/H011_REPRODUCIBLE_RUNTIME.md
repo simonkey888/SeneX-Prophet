@@ -74,3 +74,29 @@ runtime lock from that OCI root filesystem and compares its bytes and SHA-256
 with the source runtime lock. Evidence for build 1 is never copied or reused as
 evidence for build 2. Tautological pre-build base or lock comparisons are
 rejected by the repository-owned shell audit.
+
+## Candidate identity and immutable build tooling
+
+The checked-out Git commit and tree are the sole candidate identity. `EVENT_SHA`
+is recorded separately because pull-request events may expose a synthetic merge
+SHA. The local runtime image tag and OCI revision label must both equal the
+checked-out candidate SHA; a permanent identity probe simulates differing event
+and candidate SHAs.
+
+QEMU is fixed as `docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`. BuildKit is fixed
+as `docker.io/moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec` for both the setup builder and
+each independent no-cache builder. The artifact records the references, digests,
+observed BuildKit version, image ID, tag and revision label. Portable checksum
+verification runs unconditionally after the runtime step, and the controlled
+failure self-test proves a nonzero result still produces a verifiable checksummed
+artifact without replacing its original failure reason.
+The runtime tag assertion is based on the actual `.RepoTags` returned by
+`docker image inspect`, not the variable used to invoke the build. Every
+identity field is individually required to be non-empty before the runtime
+evidence can pass.
+`EVENT_SHA` remains recorded for CI provenance but is not a required candidate
+identity field when the verifier runs outside GitHub Actions. Candidate SHA/tree,
+observed image tag/ID/label and immutable toolchain identity remain mandatory.
+The identity probe emits the dedicated schema `senex-h011-identity-probe-v1`
+with `conclusion=NON_APPROVING`. It never writes `ARM64_PREFLIGHT=PASS`, runtime
+invariants, or the reproducibility result schema; its files remain checksummed.
