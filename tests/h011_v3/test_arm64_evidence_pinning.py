@@ -45,6 +45,9 @@ def test_harness_proves_pr_event_identity_and_failure_checksums() -> None:
         "IDENTITY_SELF_TEST_REVISION_LABEL_INVALID",
         "CONTROLLED_FAILURE_CHECKSUMS_INVALID",
         "runtime-image-identity.env",
+        "runtime-image-observed-tag.txt",
+        "IMAGE_OBSERVED_TAG",
+        "RUNTIME_IMAGE_IDENTITY_FIELD_EMPTY_",
         "CANDIDATE_HEAD_SHA",
         "CANDIDATE_HEAD_TREE",
         "EVENT_SHA",
@@ -58,3 +61,12 @@ def test_harness_proves_pr_event_identity_and_failure_checksums() -> None:
         "BUILDKIT_VERSION",
     ):
         assert marker in text
+
+def test_runtime_tag_and_identity_completeness_are_observed_not_tautological() -> None:
+    text = HARNESS.read_text(encoding="utf-8")
+    assert "{{range .RepoTags}}{{println .}}{{end}}" in text
+    assert '[[ "$IMAGE_OBSERVED_TAG" == "$IMAGE" ]]' in text
+    assert '[[ "$IMAGE" == "senex-h011-repro:${CANDIDATE_HEAD_SHA}" ]]' not in text
+    assert 'wc -l < "$EVIDENCE/runtime-image-identity.env"' not in text
+    assert "for identity_field in" in text
+    assert '[[ -n "${!identity_field}"' in text

@@ -90,3 +90,7 @@ observed BuildKit version, image ID, tag and revision label. Portable checksum
 verification runs unconditionally after the runtime step, and the controlled
 failure self-test proves a nonzero result still produces a verifiable checksummed
 artifact without replacing its original failure reason.
+The runtime tag assertion is based on the actual `.RepoTags` returned by
+`docker image inspect`, not the variable used to invoke the build. Every
+identity field is individually required to be non-empty before the runtime
+evidence can pass.

@@ -94,6 +94,7 @@ report = {
     "event_sha": event_sha,
     "image_tag": image_tag,
     "image_id": text("runtime-image-id.txt"),
+    "image_observed_tag": text("runtime-image-observed-tag.txt"),
     "image_revision_label": text("runtime-image-revision-label.txt"),
     "qemu_binfmt_reference": qemu_reference,
     "qemu_binfmt_digest": qemu_digest,
@@ -518,17 +519,28 @@ docker image inspect "$IMAGE" | jq -S . \
   > "$EVIDENCE/runtime-image-inspect.json"
 IMAGE_ID="$(docker image inspect "$IMAGE" --format '{{.Id}}')"
 IMAGE_REVISION_LABEL="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+IMAGE_OBSERVED_TAG="$(docker image inspect "$IMAGE" --format '{{range .RepoTags}}{{println .}}{{end}}' \
+  | awk -v expected="$IMAGE" '$0==expected {print; exit}')"
 printf '%s\n' "$IMAGE_ID" > "$EVIDENCE/runtime-image-id.txt"
 printf '%s\n' "$IMAGE_REVISION_LABEL" > "$EVIDENCE/runtime-image-revision-label.txt"
-[[ "$IMAGE" == "senex-h011-repro:${CANDIDATE_HEAD_SHA}" ]] \
+printf '%s\n' "$IMAGE_OBSERVED_TAG" > "$EVIDENCE/runtime-image-observed-tag.txt"
+[[ "$IMAGE_OBSERVED_TAG" == "$IMAGE" ]] \
   || die "RUNTIME_IMAGE_TAG_NOT_CANDIDATE_HEAD"
 [[ "$IMAGE_REVISION_LABEL" == "$CANDIDATE_HEAD_SHA" ]] \
   || die "RUNTIME_IMAGE_REVISION_LABEL_NOT_CANDIDATE_HEAD"
+identity_field=""
+for identity_field in \
+  CANDIDATE_HEAD_SHA CANDIDATE_HEAD_TREE EVENT_SHA IMAGE_OBSERVED_TAG IMAGE_ID \
+  IMAGE_REVISION_LABEL QEMU_BINFMT_REFERENCE QEMU_BINFMT_DIGEST \
+  BUILDKIT_REFERENCE BUILDKIT_DIGEST BUILDKIT_VERSION_1; do
+  [[ -n "${!identity_field}" && "${!identity_field}" != "unknown" ]] \
+    || die "RUNTIME_IMAGE_IDENTITY_FIELD_EMPTY_${identity_field}"
+done
 {
   printf 'CANDIDATE_HEAD_SHA=%s\n' "$CANDIDATE_HEAD_SHA"
   printf 'CANDIDATE_HEAD_TREE=%s\n' "$CANDIDATE_HEAD_TREE"
   printf 'EVENT_SHA=%s\n' "$EVENT_SHA"
-  printf 'IMAGE_TAG=%s\n' "$IMAGE"
+  printf 'IMAGE_TAG=%s\n' "$IMAGE_OBSERVED_TAG"
   printf 'IMAGE_ID=%s\n' "$IMAGE_ID"
   printf 'IMAGE_REVISION_LABEL=%s\n' "$IMAGE_REVISION_LABEL"
   printf 'QEMU_BINFMT_REFERENCE=%s\n' "$QEMU_BINFMT_REFERENCE"
@@ -537,8 +549,6 @@ printf '%s\n' "$IMAGE_REVISION_LABEL" > "$EVIDENCE/runtime-image-revision-label.
   printf 'BUILDKIT_DIGEST=%s\n' "$BUILDKIT_DIGEST"
   printf 'BUILDKIT_VERSION=%s\n' "$BUILDKIT_VERSION_1"
 } > "$EVIDENCE/runtime-image-identity.env"
-[[ "$(wc -l < "$EVIDENCE/runtime-image-identity.env")" -eq 11 ]] \
-  || die "RUNTIME_IMAGE_IDENTITY_EVIDENCE_INCOMPLETE"
 [[ "$(docker image inspect "$IMAGE" --format '{{.Architecture}}/{{.Os}}')" == "arm64/linux" ]] \
   || die "RUNTIME_PLATFORM_MISMATCH"
 if docker run --rm --platform linux/arm64 "$IMAGE" \
