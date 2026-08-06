@@ -1,0 +1,103 @@
+name: SENEX Optional Event SHA Fix Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-optional-event-sha-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-test-regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: true
+
+      - name: Keep event SHA informative and candidate identity mandatory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          script=Path('tools/verify_h011_arm64_reproducibility.sh')
+          text=script.read_text(encoding='utf-8')
+          old='''  CANDIDATE_HEAD_SHA CANDIDATE_HEAD_TREE EVENT_SHA IMAGE_OBSERVED_TAG IMAGE_ID \\\n'''
+          new='''  CANDIDATE_HEAD_SHA CANDIDATE_HEAD_TREE IMAGE_OBSERVED_TAG IMAGE_ID \\\n'''
+          if text.count(old)!=1:
+              raise SystemExit(f'event identity requirement anchor count={text.count(old)}')
+          script.write_text(text.replace(old,new),encoding='utf-8')
+
+          test=Path('tests/h011_v3/test_arm64_evidence_pinning.py')
+          body=test.read_text(encoding='utf-8')
+          addition='''\n\ndef test_event_sha_is_recorded_but_not_required_for_local_runtime_identity() -> None:\n    text = HARNESS.read_text(encoding="utf-8")\n    assert 'EVENT_SHA="${GITHUB_SHA:-unknown}"' in text\n    required = text.split("for identity_field in", 1)[1].split("; do", 1)[0]\n    assert "EVENT_SHA" not in required\n    assert "EVENT_SHA" in text.split('runtime-image-identity.env', 1)[0]\n'''
+          if 'test_event_sha_is_recorded_but_not_required_for_local_runtime_identity' not in body:
+              test.write_text(body.rstrip()+addition+'\n',encoding='utf-8')
+
+          docs=Path('docs/H011_REPRODUCIBLE_RUNTIME.md')
+          dtext=docs.read_text(encoding='utf-8')
+          sentence='''\n`EVENT_SHA` remains recorded for CI provenance but is not a required candidate\nidentity field when the verifier runs outside GitHub Actions. Candidate SHA/tree,\nobserved image tag/ID/label and immutable toolchain identity remain mandatory.\n'''
+          if '`EVENT_SHA` remains recorded' not in dtext:
+              docs.write_text(dtext.rstrip()+sentence,encoding='utf-8')
+          PY
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python3 -m py_compile tests/h011_v3/test_arm64_evidence_pinning.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          path=Path('tests/h011_v3/test_arm64_evidence_pinning.py')
+          spec=importlib.util.spec_from_file_location('pinning_test',path)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          for name in sorted(x for x in dir(module) if x.startswith('test_')):
+              getattr(module,name)()
+          PY
+          rm -rf /tmp/local-identity-probe
+          env -i PATH="$PATH" HOME="${HOME:-/tmp}" \
+            bash tools/verify_h011_arm64_reproducibility.sh \
+            --identity-probe /tmp/local-identity-probe
+          grep -qx 'EVENT_SHA=unknown' /tmp/local-identity-probe/candidate-identity.env
+          (cd /tmp/local-identity-probe && sha256sum -c SHA256SUMS)
+
+      - name: Regenerate governance twice without temporary workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          self='.github/workflows/senex-optional-event-sha-fix-once.yml'
+          git rm --cached "$self"
+          test -z "$(git ls-files | grep 'senex-.*-once.yml' || true)"
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-one.json
+          cp governance/repository_manifest.json /tmp/manifest-one.json
+          cp governance/component_registry.json /tmp/registry-one.json
+          cp governance/migration_map.json /tmp/migration-one.json
+          cp governance/target_architecture.yaml /tmp/architecture-one.yaml
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-two.json
+          cmp /tmp/manifest-one.json governance/repository_manifest.json
+          cmp /tmp/registry-one.json governance/component_registry.json
+          cmp /tmp/migration-one.json governance/migration_map.json
+          cmp /tmp/architecture-one.yaml governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          git restore --staged "$self"
+          git add \
+            tools/verify_h011_arm64_reproducibility.sh \
+            tests/h011_v3/test_arm64_evidence_pinning.py \
+            docs/H011_REPRODUCIBLE_RUNTIME.md \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          test -z "$(git diff --cached --name-only | grep '^\.github/workflows/' || true)"
+          git diff --check --cached
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'fix(senex): keep event SHA optional outside CI'
+          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
