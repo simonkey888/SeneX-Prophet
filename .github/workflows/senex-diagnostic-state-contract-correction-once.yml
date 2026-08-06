@@ -32,27 +32,28 @@ jobs:
           script = Path('tools/verify_h011_arm64_reproducibility.sh')
           text = script.read_text()
 
-          old_ready = '''      | jq -e '.ok==true and .readiness==true and .runtime_state=="RUNNING"' \\
-                >/dev/null 2>&1 \\
-              && curl -fsS "$BASE_URL/api/v3/integrity" \\
-              | jq -e --arg sha "$HEAD_SHA" \\
-                '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true' \\
-                >/dev/null 2>&1; then
-          '''
-          new_ready = '''      | jq -e '.ok==true and .readiness==true and .runtime_state=="DEGRADED"' \\
-                >/dev/null 2>&1 \\
-              && curl -fsS "$BASE_URL/api/v3/integrity" \\
-              | jq -e --arg sha "$HEAD_SHA" \\
-                '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \\
-                >/dev/null 2>&1; then
-          '''
-          if text.count(old_ready) != 1:
-              raise SystemExit(f'initial diagnostic assertion count={text.count(old_ready)}')
-          text = text.replace(old_ready, new_ready)
+          replacements = (
+              (
+                  '.ok==true and .readiness==true and .runtime_state=="RUNNING"',
+                  '.ok==true and .readiness==true and .runtime_state=="DEGRADED"',
+              ),
+              (
+                  '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true',
+                  '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"',
+              ),
+              (
+                  '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true',
+                  '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"',
+              ),
+          )
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'unique diagnostic expression missing: count={count} expression={old}')
+              text = text.replace(old, new)
 
-          old_initial_fail = '''[[ "$ready" == "true" ]] || die "INITIAL_ENDPOINT_GATE_FAILED"
-          '''
-          new_initial_fail = '''if [[ "$ready" != "true" ]]; then
+          old_failure = '[[ "$ready" == "true" ]] || die "INITIAL_ENDPOINT_GATE_FAILED"'
+          new_failure = '''if [[ "$ready" != "true" ]]; then
             docker inspect "$CONTAINER" | jq -S '.[0].State' \\
               > "$EVIDENCE/container-initial-failure-state.json" 2>/dev/null || true
             docker logs "$CONTAINER" \\
@@ -62,43 +63,26 @@ jobs:
             curl -sS "$BASE_URL/api/v3/integrity" \\
               > "$EVIDENCE/integrity-initial-failure.json" 2>/dev/null || true
             die "INITIAL_ENDPOINT_GATE_FAILED"
-          fi
-          '''
-          if text.count(old_initial_fail) != 1:
-              raise SystemExit(f'initial failure diagnostic count={text.count(old_initial_fail)}')
-          text = text.replace(old_initial_fail, new_initial_fail)
+          fi'''
+          if text.count(old_failure) != 1:
+              raise SystemExit(f'initial failure assertion count={text.count(old_failure)}')
+          text = text.replace(old_failure, new_failure)
 
-          endpoint_loop = '''for endpoint in livez readyz healthz api/v3/state api/v3/integrity api/v3/replay; do
-            name="${endpoint//\\//_}"
-            curl -fsS "$BASE_URL/$endpoint" | jq -S . \\
-              > "$EVIDENCE/$name.json"
-          done
-          '''
-          endpoint_loop_new = endpoint_loop + '''jq -e \\
+          anchor = 'cp "$EVIDENCE/api_v3_integrity.json" "$EVIDENCE/integrity-before.json"'
+          health_contract = '''jq -e \\
             '.ok==true and .status=="DEGRADED" and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \\
             "$EVIDENCE/healthz.json" >/dev/null \\
             || die "DIAGNOSTIC_HEALTH_CONTRACT_FAILED"
-          '''
-          if text.count(endpoint_loop) != 1:
-              raise SystemExit(f'endpoint loop count={text.count(endpoint_loop)}')
-          text = text.replace(endpoint_loop, endpoint_loop_new)
 
-          old_restart = '''        '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true' \\
-                >/dev/null 2>&1; then
           '''
-          new_restart = '''        '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \\
-                >/dev/null 2>&1; then
-          '''
-          if text.count(old_restart) != 1:
-              raise SystemExit(f'restart diagnostic assertion count={text.count(old_restart)}')
-          text = text.replace(old_restart, new_restart)
+          if text.count(anchor) != 1:
+              raise SystemExit(f'health contract anchor count={text.count(anchor)}')
+          text = text.replace(anchor, health_contract + anchor)
           script.write_text(text)
 
           checker = Path('tools/verify_h011_shell_harness.py')
           ctext = checker.read_text()
-          marker = '''    "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",
-          )
-          '''
+          marker = '    "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",\n)'
           replacement = '''    "SYNTHETIC_BASELINE_IDENTITY_MISMATCH",
               '.runtime_state=="DEGRADED"',
               '.runtime.runtime_state=="DEGRADED"',
@@ -107,28 +91,22 @@ jobs:
               '.runtime.blocking_reason=="diagnostic_only_mode"',
               "DIAGNOSTIC_HEALTH_CONTRACT_FAILED",
               "container-initial-failure.log",
-          )
-          '''
+          )'''
           if ctext.count(marker) != 1:
               raise SystemExit(f'harness diagnostic marker count={ctext.count(marker)}')
           checker.write_text(ctext.replace(marker, replacement))
 
           docs = Path('docs/H011_REPRODUCIBLE_RUNTIME.md')
           dtext = docs.read_text()
-          old_doc = '''checks do not depend on current Polymarket network state. Both pre- and
-          post-restart raw-chain sequences must be decimal integers, and the committed
-          baseline identity must match the fixed run and scan IDs.
+          addition = '''
+
+          The expected supervisor state for this isolated diagnostic gate is explicitly
+          `DEGRADED` with readiness true, scanner and publication disabled, and
+          `blocking_reason=diagnostic_only_mode`. Treating this controlled state as
+          `RUNNING` is forbidden.
           '''
-          new_doc = '''checks do not depend on current Polymarket network state. The expected
-          supervisor state is explicitly `DEGRADED` with readiness true, scanner and
-          publication disabled, and `blocking_reason=diagnostic_only_mode`; treating this
-          controlled state as `RUNNING` is forbidden. Both pre- and post-restart raw-chain
-          sequences must be decimal integers, and the committed baseline identity must
-          match the fixed run and scan IDs.
-          '''
-          if dtext.count(old_doc) != 1:
-              raise SystemExit(f'documentation diagnostic contract count={dtext.count(old_doc)}')
-          docs.write_text(dtext.replace(old_doc, new_doc))
+          if 'Treating this controlled state as' not in dtext:
+              docs.write_text(dtext.rstrip() + addition)
           PY
 
           bash -n tools/verify_h011_arm64_reproducibility.sh
