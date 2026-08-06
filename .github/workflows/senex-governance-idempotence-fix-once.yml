@@ -1,0 +1,93 @@
+name: SENEX Governance Idempotence Fix Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-governance-idempotence-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-test-regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: true
+
+      - name: Correct reference corpus and add regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tool=Path('tools/verify_repository_contract.py')
+          text=tool.read_text(encoding='utf-8')
+          old='''    texts = _read_all_text(root, files)\n    joined = "\\n".join(texts.values())\n'''
+          new='''    texts = _read_all_text(root, files)\n    workflow_text = "\\n".join(\n        value for key, value in texts.items()\n        if key.startswith(".github/workflows/")\n    )\n'''
+          if text.count(old)!=1:
+              raise SystemExit(f'joined corpus anchor count={text.count(old)}')
+          text=text.replace(old,new)
+          old_ref='''            "workflow_referenced": rel in joined and not rel.startswith(".github/workflows/"),\n'''
+          new_ref='''            "workflow_referenced": rel in workflow_text and not rel.startswith(".github/workflows/"),\n'''
+          if text.count(old_ref)!=1:
+              raise SystemExit(f'workflow reference anchor count={text.count(old_ref)}')
+          tool.write_text(text.replace(old_ref,new_ref),encoding='utf-8')
+
+          test=Path('tests/governance/test_repository_contract.py')
+          body=test.read_text(encoding='utf-8')
+          marker='''\nif __name__ == "__main__": unittest.main()\n'''
+          addition='''\n    def test_27_generated_manifest_does_not_create_workflow_reference(self):\n        with tempfile.TemporaryDirectory() as d:\n            root = Path(d)\n            (root / ".github/workflows").mkdir(parents=True)\n            (root / "governance").mkdir(parents=True)\n            (root / "sample.py").write_text("VALUE = 1\\n")\n            (root / ".github/workflows/check.yml").write_text(\n                "name: check\\non: push\\njobs: {}\\n"\n            )\n            (root / "governance/repository_manifest.json").write_text(\n                json.dumps({"historical_path": "sample.py"}) + "\\n"\n            )\n            import subprocess\n            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)\n            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)\n            manifest = mod.build_repository_manifest(\n                root, {"repository": "fixture", "do_not_touch_hashes": {}}\n            )\n            record = next(item for item in manifest["files"] if item["path"] == "sample.py")\n            self.assertFalse(record["workflow_referenced"])\n\n'''
+          if 'test_27_generated_manifest_does_not_create_workflow_reference' not in body:
+              if body.count(marker)!=1:
+                  raise SystemExit('test insertion marker missing')
+              body=body.replace(marker,addition+marker)
+              test.write_text(body,encoding='utf-8')
+          PY
+          python3 -m py_compile \
+            tools/verify_repository_contract.py \
+            tests/governance/test_repository_contract.py
+          python3 -m pytest -q tests/governance
+
+      - name: Regenerate twice against clean final index
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          self='.github/workflows/senex-governance-idempotence-fix-once.yml'
+          diagnostic='.github/workflows/senex-governance-diff-once.yml'
+          git rm --cached "$self" "$diagnostic"
+          test -z "$(git ls-files | grep 'senex-.*-once.yml' || true)"
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-one.json
+          cp governance/repository_manifest.json /tmp/manifest-one.json
+          cp governance/component_registry.json /tmp/registry-one.json
+          cp governance/migration_map.json /tmp/migration-one.json
+          cp governance/target_architecture.yaml /tmp/architecture-one.yaml
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-two.json
+          cmp /tmp/manifest-one.json governance/repository_manifest.json
+          cmp /tmp/registry-one.json governance/component_registry.json
+          cmp /tmp/migration-one.json governance/migration_map.json
+          cmp /tmp/architecture-one.yaml governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          git restore --staged "$self" "$diagnostic"
+          git add \
+            tools/verify_repository_contract.py \
+            tests/governance/test_repository_contract.py \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          test -z "$(git diff --cached --name-only | grep '^\.github/workflows/' || true)"
+          git diff --check --cached
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'fix(senex): make repository governance generation idempotent'
+          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
