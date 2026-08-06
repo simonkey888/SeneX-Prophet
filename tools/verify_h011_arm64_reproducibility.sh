@@ -487,8 +487,8 @@ require_equal \
   "$EVIDENCE/build-1-runtime-lock-sha256.txt" \
   "$EVIDENCE/build-2-runtime-lock-sha256.txt" \
   "ARM64_RUNTIME_LOCK_HASHES_DIFFER"
-BUILDKIT_VERSION_1="$(awk '$1=="BuildKit:" {print $2; exit}' "$EVIDENCE/build-1-builder.txt")"
-BUILDKIT_VERSION_2="$(awk '$1=="BuildKit:" {print $2; exit}' "$EVIDENCE/build-2-builder.txt")"
+BUILDKIT_VERSION_1="$(awk '$1=="BuildKit" && $2=="version:" {print $3; exit}' "$EVIDENCE/build-1-builder.txt")"
+BUILDKIT_VERSION_2="$(awk '$1=="BuildKit" && $2=="version:" {print $3; exit}' "$EVIDENCE/build-2-builder.txt")"
 [[ -n "$BUILDKIT_VERSION_1" && "$BUILDKIT_VERSION_1" == "$BUILDKIT_VERSION_2" ]] \
   || die "BUILDKIT_VERSION_MISSING_OR_DIFFERENT"
 printf '%s\n' "$BUILDKIT_VERSION_1" > "$EVIDENCE/buildkit-version.txt"

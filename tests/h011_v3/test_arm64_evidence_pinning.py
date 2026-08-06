@@ -32,6 +32,8 @@ def test_harness_uses_candidate_identity_and_pinned_internal_builders() -> None:
     assert f'BUILDKIT_DIGEST="{BUILDKIT_DIGEST}"' in text
     assert '--driver-opt "image=$BUILDKIT_REFERENCE"' in text
     assert "moby/buildkit:buildx-stable-1" not in text
+    assert '$1=="BuildKit" && $2=="version:" {print $3; exit}' in text
+    assert '$1=="BuildKit:" {print $2; exit}' not in text
 
 
 def test_harness_proves_pr_event_identity_and_failure_checksums() -> None:
