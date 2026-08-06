@@ -31,6 +31,10 @@ jobs:
           path = Path('tools/apply_round10_arm64_pinning.py')
           text = path.read_text(encoding='utf-8')
           text = text.replace('HEAD^{{tree}}', 'HEAD^{tree}')
+          text = text.replace(
+              '    "--driver-opt \\"image=$BUILDKIT_REFERENCE\\"",\\n',
+              '    \'--driver-opt "image=$BUILDKIT_REFERENCE"\',\\n',
+          )
           path.write_text(text, encoding='utf-8')
           PY
           python3 -m py_compile tools/apply_round10_arm64_pinning.py
