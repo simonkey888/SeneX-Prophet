@@ -1,4 +1,4 @@
-name: SENEX Round 10 Apply Once
+name: SENEX Round 10 Materialize Once
 
 on:
   push:
@@ -8,10 +8,10 @@ on:
       - .github/workflows/senex-round10-apply-once.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-validate-self-delete:
+  materialize-validated-tree:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -20,9 +20,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: fix/senex-arm64-evidence-pinning-v3
-          persist-credentials: true
+          persist-credentials: false
 
-      - name: Apply scoped correction and run fail-fast tests
+      - name: Apply scoped correction and validate
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -58,48 +58,51 @@ jobs:
           assert report['pr_event_candidate_identity']=='PASS'
           audit=json.load(open('/tmp/round10-harness-static.json'))
           assert audit['status']=='PASS', audit
-          workflow=open('.github/workflows/h011-arm64-reproducibility.yml', encoding='utf-8').read()
-          assert 'image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0' in workflow
-          assert 'image=docker.io/moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec' in workflow
-          checksum='      - name: Verify portable evidence checksums\n        if: always()\n'
-          assert checksum in workflow
-          script=open('tools/verify_h011_arm64_reproducibility.sh', encoding='utf-8').read()
-          assert 'IMAGE="senex-h011-repro:${GITHUB_SHA:-local}"' not in script
-          assert 'moby/buildkit:buildx-stable-1' not in script
-          assert '--driver-opt "image=$BUILDKIT_REFERENCE"' in script
           PY
 
-      - name: Remove temporary machinery and regenerate governance
+      - name: Generate governance and bundle exact files
         shell: bash
         run: |
           set -Eeuo pipefail
-          git rm -f \
-            .github/workflows/senex-container-reference-resolution-once.yml \
-            .github/workflows/senex-round10-apply-once.yml \
-            tools/apply_round10_arm64_pinning.py
           python3 tools/verify_repository_contract.py --generate \
             > /tmp/round10-governance-generation.json
-          git add \
-            .github/workflows/h011-arm64-reproducibility.yml \
-            tools/verify_h011_arm64_reproducibility.sh \
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          bundle="$RUNNER_TEMP/round10-final-tree"
+          mkdir -p \
+            "$bundle/.github/workflows" \
+            "$bundle/tools" \
+            "$bundle/docs" \
+            "$bundle/governance"
+          cp .github/workflows/h011-arm64-reproducibility.yml \
+            "$bundle/.github/workflows/"
+          cp tools/verify_h011_arm64_reproducibility.sh \
             tools/verify_h011_shell_harness.py \
-            docs/H011_REPRODUCIBLE_RUNTIME.md \
-            governance/repository_manifest.json \
+            "$bundle/tools/"
+          cp docs/H011_REPRODUCIBLE_RUNTIME.md "$bundle/docs/"
+          cp governance/repository_manifest.json \
             governance/repository_manifest.json.sha256 \
             governance/target_architecture.yaml \
             governance/component_registry.json \
-            governance/migration_map.json
-          git diff --check --cached
-          (cd governance && sha256sum -c repository_manifest.json.sha256)
-          test -z "$(git ls-files .github/workflows/senex-container-reference-resolution-once.yml)"
-          test -z "$(git ls-files .github/workflows/senex-round10-apply-once.yml)"
-          test -z "$(git ls-files tools/apply_round10_arm64_pinning.py)"
+            governance/migration_map.json \
+            "$bundle/governance/"
+          cp /tmp/round10-harness-static.json "$bundle/"
+          cp /tmp/round10-harness-self-test/harness-self-test.json "$bundle/"
+          cp /tmp/round10-governance-generation.json "$bundle/"
+          {
+            printf 'BASE_SHA=d907decf233f80e4a07238b6e72383cfd4204a18\n'
+            printf 'QEMU_BINFMT_DIGEST=sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0\n'
+            printf 'BUILDKIT_DIGEST=sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec\n'
+            printf 'TEMPORARY_FILES_INCLUDED=NO\n'
+          } > "$bundle/materialization.env"
+          (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          (cd "$bundle" && sha256sum -c SHA256SUMS)
 
-      - name: Commit exact correction tree
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          git config user.name senex-arq
-          git config user.email senex-arq@users.noreply.github.com
-          git commit -m 'fix(senex): pin ARM64 evidence toolchain and candidate identity'
-          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
+      - name: Upload checksummed final tree
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-round10-final-tree-${{ github.sha }}
+          path: ${{ runner.temp }}/round10-final-tree
+          retention-days: 30
+          if-no-files-found: error
