@@ -73,7 +73,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          git rm \
+          git rm -f \
             .github/workflows/senex-container-reference-resolution-once.yml \
             .github/workflows/senex-round10-apply-once.yml \
             tools/apply_round10_arm64_pinning.py
