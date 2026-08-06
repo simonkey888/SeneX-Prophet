@@ -138,4 +138,26 @@ class ContractTests(unittest.TestCase):
                 ["research/design.md"],
             )
 
+    def test_27_generated_manifest_does_not_create_workflow_reference(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / "governance").mkdir(parents=True)
+            (root / "sample.py").write_text("VALUE = 1\n")
+            (root / ".github/workflows/check.yml").write_text(
+                "name: check\non: push\njobs: {}\n"
+            )
+            (root / "governance/repository_manifest.json").write_text(
+                json.dumps({"historical_path": "sample.py"}) + "\n"
+            )
+            import subprocess
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            manifest = mod.build_repository_manifest(
+                root, {"repository": "fixture", "do_not_touch_hashes": {}}
+            )
+            record = next(item for item in manifest["files"] if item["path"] == "sample.py")
+            self.assertFalse(record["workflow_referenced"])
+
+
 if __name__ == "__main__": unittest.main()

@@ -408,7 +408,10 @@ def _resolve_local_import(name: str, known: Mapping[str, str]) -> str | None:
 def build_repository_manifest(root: Path, contract: Mapping[str, Any]) -> dict[str, Any]:
     files = tracked_files(root)
     texts = _read_all_text(root, files)
-    joined = "\n".join(texts.values())
+    workflow_text = "\n".join(
+        value for key, value in texts.items()
+        if key.startswith(".github/workflows/")
+    )
     module_map: dict[str, str] = {}
     for rel in files:
         if not rel.endswith(".py"):
@@ -477,7 +480,7 @@ def build_repository_manifest(root: Path, contract: Mapping[str, Any]) -> dict[s
             "runtime_imported": rel in imported,
             "active_entrypoint": active,
             "docker_included": rel.startswith("polymarket/"),
-            "workflow_referenced": rel in joined and not rel.startswith(".github/workflows/"),
+            "workflow_referenced": rel in workflow_text and not rel.startswith(".github/workflows/"),
             "shell_referenced": rel in "\n".join(value for key, value in texts.items() if key.endswith(".sh")),
             "test_referenced": rel in "\n".join(value for key, value in texts.items() if key.startswith("tests/")),
             "northflank_referenced": "DOCUMENTED_NOT_VERIFIED" if "northflank" in text.lower() or rel.endswith("Dockerfile.h011-v3") else "NO_EVIDENCE",
