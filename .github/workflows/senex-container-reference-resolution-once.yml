@@ -1,0 +1,50 @@
+name: SENEX Container Reference Resolution Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-container-reference-resolution-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Resolve registry references
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          evidence="$RUNNER_TEMP/senex-container-reference-resolution"
+          mkdir -p "$evidence"
+          qemu_ref='docker.io/tonistiigi/binfmt:latest'
+          buildkit_ref='docker.io/moby/buildkit:buildx-stable-1'
+          docker buildx imagetools inspect "$qemu_ref" --raw > "$evidence/qemu-manifest.json"
+          docker buildx imagetools inspect "$buildkit_ref" --raw > "$evidence/buildkit-manifest.json"
+          qemu_digest="sha256:$(sha256sum "$evidence/qemu-manifest.json" | awk '{print $1}')"
+          buildkit_digest="sha256:$(sha256sum "$evidence/buildkit-manifest.json" | awk '{print $1}')"
+          test "$qemu_digest" = 'sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0'
+          {
+            printf 'QEMU_BINFMT_SOURCE_REFERENCE=%s\n' "$qemu_ref"
+            printf 'QEMU_BINFMT_DIGEST=%s\n' "$qemu_digest"
+            printf 'QEMU_BINFMT_PINNED_REFERENCE=docker.io/tonistiigi/binfmt@%s\n' "$qemu_digest"
+            printf 'BUILDKIT_SOURCE_REFERENCE=%s\n' "$buildkit_ref"
+            printf 'BUILDKIT_DIGEST=%s\n' "$buildkit_digest"
+            printf 'BUILDKIT_PINNED_REFERENCE=docker.io/moby/buildkit@%s\n' "$buildkit_digest"
+            printf 'BUILDX_VERSION=%s\n' "$(docker buildx version | tr '\n' ' ')"
+          } > "$evidence/resolution.env"
+          (cd "$evidence" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          (cd "$evidence" && sha256sum -c SHA256SUMS)
+
+      - name: Upload checksummed resolution
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-container-reference-resolution-${{ github.sha }}
+          path: ${{ runner.temp }}/senex-container-reference-resolution
+          retention-days: 30
+          if-no-files-found: error
