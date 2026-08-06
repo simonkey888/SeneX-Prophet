@@ -1,0 +1,92 @@
+name: SENEX Observed Image Identity Fix V2 Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-observed-image-identity-fix-v2-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: true
+
+      - name: Reuse validated transform and normalize EOF
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path('.github/workflows/senex-observed-image-identity-fix-once.yml').read_text(encoding='utf-8')
+          start=source.index("          python3 - <<'PY'\n") + len("          python3 - <<'PY'\n")
+          end=source.index("\n          PY\n", start)
+          lines=[]
+          for line in source[start:end].splitlines():
+              if not line.startswith('          '):
+                  raise SystemExit(f'unexpected transform indentation: {line!r}')
+              lines.append(line[10:])
+          exec(compile('\n'.join(lines)+'\n', '<observed-image-transform>', 'exec'), {})
+          test=Path('tests/h011_v3/test_arm64_evidence_pinning.py')
+          test.write_text(test.read_text(encoding='utf-8').rstrip()+'\n', encoding='utf-8')
+          docs=Path('docs/H011_REPRODUCIBLE_RUNTIME.md')
+          docs.write_text(docs.read_text(encoding='utf-8').rstrip()+'\n', encoding='utf-8')
+          PY
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python3 -m py_compile tests/h011_v3/test_arm64_evidence_pinning.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          path=Path('tests/h011_v3/test_arm64_evidence_pinning.py')
+          spec=importlib.util.spec_from_file_location('pinning_test',path)
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          for name in sorted(x for x in dir(module) if x.startswith('test_')):
+              getattr(module,name)()
+          PY
+
+      - name: Regenerate twice against clean final index
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          first='.github/workflows/senex-observed-image-identity-fix-once.yml'
+          second='.github/workflows/senex-observed-image-identity-fix-v2-once.yml'
+          git rm --cached "$first" "$second"
+          test -z "$(git ls-files | grep 'senex-.*-once.yml' || true)"
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-one.json
+          cp governance/repository_manifest.json /tmp/manifest-one.json
+          cp governance/component_registry.json /tmp/registry-one.json
+          cp governance/migration_map.json /tmp/migration-one.json
+          cp governance/target_architecture.yaml /tmp/architecture-one.yaml
+          python3 tools/verify_repository_contract.py --generate > /tmp/generate-two.json
+          cmp /tmp/manifest-one.json governance/repository_manifest.json
+          cmp /tmp/registry-one.json governance/component_registry.json
+          cmp /tmp/migration-one.json governance/migration_map.json
+          cmp /tmp/architecture-one.yaml governance/target_architecture.yaml
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          git restore --staged "$first" "$second"
+          git add \
+            tools/verify_h011_arm64_reproducibility.sh \
+            tests/h011_v3/test_arm64_evidence_pinning.py \
+            docs/H011_REPRODUCIBLE_RUNTIME.md \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          test -z "$(git diff --cached --name-only | grep '^\.github/workflows/' || true)"
+          git diff --check --cached
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'fix(senex): validate observed runtime image identity'
+          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
