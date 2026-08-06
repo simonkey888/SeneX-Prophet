@@ -106,3 +106,4 @@ jobs:
           path: ${{ runner.temp }}/round10-final-tree
           retention-days: 30
           if-no-files-found: error
+          include-hidden-files: true
