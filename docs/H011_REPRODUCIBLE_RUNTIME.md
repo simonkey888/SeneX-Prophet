@@ -64,3 +64,13 @@ The expected supervisor state for this isolated diagnostic gate is explicitly
 `DEGRADED` with readiness true, scanner and publication disabled, and
 `blocking_reason=diagnostic_only_mode`. Treating this controlled state as
 `RUNNING` is forbidden.
+
+## Independent per-build evidence
+
+Each OCI archive is inspected independently after its builder completes. The
+verifier checks that the image layer list begins with the exact ARM64 child
+manifest layer sequence of the pinned Python base, then reconstructs the final
+runtime lock from that OCI root filesystem and compares its bytes and SHA-256
+with the source runtime lock. Evidence for build 1 is never copied or reused as
+evidence for build 2. Tautological pre-build base or lock comparisons are
+rejected by the repository-owned shell audit.

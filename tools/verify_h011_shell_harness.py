@@ -30,6 +30,19 @@ REQUIRED_MARKERS = (
     '.runtime.blocking_reason=="diagnostic_only_mode"',
     "DIAGNOSTIC_HEALTH_CONTRACT_FAILED",
     "container-initial-failure.log",
+    "verify_h011_oci_build_evidence.py",
+    "base-arm64-manifest.json",
+    "base-arm64-layer-digests.txt",
+    "build-1-base-layer-digests.txt",
+    "build-2-base-layer-digests.txt",
+    "source-runtime-lock-sha256.txt",
+    "build-1-runtime-lock-sha256.txt",
+    "build-2-runtime-lock-sha256.txt",
+    "BUILD_1_BASE_LAYER_PREFIX_DIFFERS",
+    "BUILD_2_BASE_LAYER_PREFIX_DIFFERS",
+    "BUILD_1_RUNTIME_LOCK_DIFFERS_FROM_SOURCE",
+    "BUILD_2_RUNTIME_LOCK_DIFFERS_FROM_SOURCE",
+    "ARM64_RUNTIME_LOCK_HASHES_DIFFER",
 )
 OPTIONAL_CI_VARIABLES = (
     "GITHUB_RUN_ID",
@@ -78,6 +91,18 @@ def audit(script: Path) -> dict[str, object]:
         if marker not in text:
             errors.append(f"missing required marker: {marker}")
     errors.extend(_multi_local_assignment_errors(text))
+    for marker in (
+        "build-1-lock-hash-set.txt",
+        "build-2-lock-hash-set.txt",
+        'cp "$EVIDENCE/build-1-lock-hash-set.txt"',
+    ):
+        if marker in text:
+            errors.append(f"tautological build evidence is forbidden: {marker}")
+    if re.search(
+        r"printf[^\n]*\$BASE_ARM64[^\n]*build-[12]-base-digest\.txt",
+        text,
+    ):
+        errors.append("base digest evidence must be derived from each OCI build")
     required_download_guards = (
         "if ! python3 -m pip download",
         "xargs -0 -r sha256sum",

@@ -78,6 +78,10 @@ report = {
     "build_2_config_digest": text("build-2-config-digest.txt"),
     "build_1_rootfs_hash": text("build-1-rootfs-hash.txt"),
     "build_2_rootfs_hash": text("build-2-rootfs-hash.txt"),
+    "build_1_base_digest": text("build-1-base-digest.txt"),
+    "build_2_base_digest": text("build-2-base-digest.txt"),
+    "build_1_runtime_lock_sha256": text("build-1-runtime-lock-sha256.txt"),
+    "build_2_runtime_lock_sha256": text("build-2-runtime-lock-sha256.txt"),
     "invariants": {
         "paper_only": True,
         "orders_enabled": False,
@@ -214,12 +218,9 @@ python3 "$ROOT/tools/verify_paper_only_repository.py" \
   --output "$EVIDENCE/paper-only-repository.json" \
   > "$EVIDENCE/paper-only.stdout"
 
-sha256sum \
-  "$ROOT/polymarket/requirements-h011-v3-runtime.txt" \
-  "$ROOT/polymarket/requirements-h011-v3-test.txt" \
-  "$ROOT/polymarket/requirements-h011-v3.txt" \
-  | sort > "$EVIDENCE/build-1-lock-hash-set.txt"
-cp "$EVIDENCE/build-1-lock-hash-set.txt" "$EVIDENCE/build-2-lock-hash-set.txt"
+sha256sum "$ROOT/polymarket/requirements-h011-v3-runtime.txt" \
+  | awk '{print $1"  /app/polymarket/requirements-h011-v3-runtime.txt"}' \
+  > "$EVIDENCE/source-runtime-lock-sha256.txt"
 
 docker buildx imagetools inspect "$BASE_REFERENCE" --raw \
   > "$EVIDENCE/base-index.json"
@@ -227,12 +228,19 @@ BASE_INDEX="sha256:$(sha256sum "$EVIDENCE/base-index.json" | awk '{print $1}')"
 BASE_ARM64="$(jq -r '[.manifests[] | select(.platform.os=="linux" and .platform.architecture=="arm64") | .digest][0]' "$EVIDENCE/base-index.json")"
 printf '%s\n' "$BASE_INDEX" > "$EVIDENCE/base-index-digest.txt"
 printf '%s\n' "$BASE_ARM64" > "$EVIDENCE/base-arm64-child-digest.txt"
-printf '%s\n' "$BASE_ARM64" > "$EVIDENCE/build-1-base-digest.txt"
-printf '%s\n' "$BASE_ARM64" > "$EVIDENCE/build-2-base-digest.txt"
 [[ "$BASE_INDEX" == "$EXPECTED_BASE_INDEX" ]] \
   || die "BASE_INDEX_DIGEST_CONTRADICTION"
 [[ "$BASE_ARM64" == "$EXPECTED_BASE_ARM64" ]] \
   || die "BASE_ARM64_CHILD_DIGEST_CONTRADICTION"
+docker buildx imagetools inspect "python:3.11-slim@${BASE_ARM64}" --raw \
+  > "$EVIDENCE/base-arm64-manifest.json"
+OBSERVED_BASE_ARM64="sha256:$(sha256sum "$EVIDENCE/base-arm64-manifest.json" | awk '{print $1}')"
+[[ "$OBSERVED_BASE_ARM64" == "$EXPECTED_BASE_ARM64" ]] \
+  || die "BASE_ARM64_MANIFEST_DIGEST_CONTRADICTION"
+jq -r '.layers[].digest' "$EVIDENCE/base-arm64-manifest.json" \
+  > "$EVIDENCE/base-arm64-layer-digests.txt"
+[[ -s "$EVIDENCE/base-arm64-layer-digests.txt" ]] \
+  || die "BASE_ARM64_LAYER_SET_MISSING"
 
 download_lock() {
   local lock="${1:?lock required}"
@@ -309,6 +317,14 @@ inspect_oci() {
     | awk '{print "sha256:"$1}' > "$EVIDENCE/$prefix-rootfs-hash.txt"
   printf '%s\n' "$manifest" > "$EVIDENCE/$prefix-manifest-digest.txt"
   printf '%s\n' "$config" > "$EVIDENCE/$prefix-config-digest.txt"
+  python3 "$ROOT/tools/verify_h011_oci_build_evidence.py" \
+    --oci-dir "$dir" \
+    --base-manifest "$EVIDENCE/base-arm64-manifest.json" \
+    --expected-base-digest "$EXPECTED_BASE_ARM64" \
+    --runtime-lock-source "$ROOT/polymarket/requirements-h011-v3-runtime.txt" \
+    --output-dir "$EVIDENCE" \
+    --prefix "$prefix" \
+    > "$EVIDENCE/$prefix-derived-build-evidence.stdout"
 }
 
 build_once() {
@@ -367,13 +383,29 @@ require_equal \
   "$EVIDENCE/build-2-rootfs-hash.txt" \
   "ARM64_ROOTFS_HASHES_DIFFER"
 require_equal \
+  "$EVIDENCE/base-arm64-layer-digests.txt" \
+  "$EVIDENCE/build-1-base-layer-digests.txt" \
+  "BUILD_1_BASE_LAYER_PREFIX_DIFFERS"
+require_equal \
+  "$EVIDENCE/base-arm64-layer-digests.txt" \
+  "$EVIDENCE/build-2-base-layer-digests.txt" \
+  "BUILD_2_BASE_LAYER_PREFIX_DIFFERS"
+require_equal \
+  "$EVIDENCE/source-runtime-lock-sha256.txt" \
+  "$EVIDENCE/build-1-runtime-lock-sha256.txt" \
+  "BUILD_1_RUNTIME_LOCK_DIFFERS_FROM_SOURCE"
+require_equal \
+  "$EVIDENCE/source-runtime-lock-sha256.txt" \
+  "$EVIDENCE/build-2-runtime-lock-sha256.txt" \
+  "BUILD_2_RUNTIME_LOCK_DIFFERS_FROM_SOURCE"
+require_equal \
   "$EVIDENCE/build-1-base-digest.txt" \
   "$EVIDENCE/build-2-base-digest.txt" \
   "ARM64_BASE_DIGESTS_DIFFER"
 require_equal \
-  "$EVIDENCE/build-1-lock-hash-set.txt" \
-  "$EVIDENCE/build-2-lock-hash-set.txt" \
-  "ARM64_LOCK_HASH_SETS_DIFFER"
+  "$EVIDENCE/build-1-runtime-lock-sha256.txt" \
+  "$EVIDENCE/build-2-runtime-lock-sha256.txt" \
+  "ARM64_RUNTIME_LOCK_HASHES_DIFFER"
 
 docker buildx build \
   --no-cache \
