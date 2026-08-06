@@ -94,3 +94,6 @@ The runtime tag assertion is based on the actual `.RepoTags` returned by
 `docker image inspect`, not the variable used to invoke the build. Every
 identity field is individually required to be non-empty before the runtime
 evidence can pass.
+`EVENT_SHA` remains recorded for CI provenance but is not a required candidate
+identity field when the verifier runs outside GitHub Actions. Candidate SHA/tree,
+observed image tag/ID/label and immutable toolchain identity remain mandatory.

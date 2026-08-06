@@ -70,3 +70,10 @@ def test_runtime_tag_and_identity_completeness_are_observed_not_tautological() -
     assert 'wc -l < "$EVIDENCE/runtime-image-identity.env"' not in text
     assert "for identity_field in" in text
     assert '[[ -n "${!identity_field}"' in text
+
+def test_event_sha_is_recorded_but_not_required_for_local_runtime_identity() -> None:
+    text = HARNESS.read_text(encoding="utf-8")
+    assert 'EVENT_SHA="${GITHUB_SHA:-unknown}"' in text
+    required = text.split("for identity_field in", 1)[1].split("; do", 1)[0]
+    assert "EVENT_SHA" not in required
+    assert "EVENT_SHA" in text.split('runtime-image-identity.env', 1)[0]
