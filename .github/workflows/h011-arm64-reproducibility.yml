@@ -39,6 +39,11 @@ jobs:
           evidence="$RUNNER_TEMP/senex-arm64-evidence"
           mkdir -p "$evidence"
           bash -n tools/verify_h011_arm64_reproducibility.sh
+          python -m py_compile \
+            tools/verify_h011_shell_harness.py \
+            tools/verify_h011_oci_build_evidence.py
+          python tools/verify_h011_oci_build_evidence.py --self-test \
+            > "$evidence/oci-build-evidence-self-test.json"
           python tools/verify_h011_shell_harness.py \
             --script tools/verify_h011_arm64_reproducibility.sh \
             --output "$evidence/harness-static-audit.json"
@@ -58,6 +63,11 @@ jobs:
               'result_env_written_on_every_controlled_failure':'PASS',
               'harness_self_test':'PASS',
           }
+          PY
+          python - "$evidence/oci-build-evidence-self-test.json" <<'PY'
+          import json,sys
+          report=json.load(open(sys.argv[1]))
+          assert report == {'self_test': True, 'status': 'PASS'}
           PY
           (cd "$evidence/harness-self-test" && sha256sum -c SHA256SUMS)
 
