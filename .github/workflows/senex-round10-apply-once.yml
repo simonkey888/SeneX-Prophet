@@ -1,0 +1,101 @@
+name: SENEX Round 10 Apply Once
+
+on:
+  push:
+    branches:
+      - fix/senex-arm64-evidence-pinning-v3
+    paths:
+      - .github/workflows/senex-round10-apply-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-validate-self-delete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: fix/senex-arm64-evidence-pinning-v3
+          persist-credentials: true
+
+      - name: Apply scoped correction and run fail-fast tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_round10_arm64_pinning.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('HEAD^{{tree}}', 'HEAD^{tree}')
+          path.write_text(text, encoding='utf-8')
+          PY
+          python3 -m py_compile tools/apply_round10_arm64_pinning.py
+          python3 tools/apply_round10_arm64_pinning.py
+          bash -n tools/verify_h011_arm64_reproducibility.sh
+          python3 -m py_compile \
+            tools/verify_h011_shell_harness.py \
+            tools/verify_h011_oci_build_evidence.py
+          python3 tools/verify_h011_shell_harness.py \
+            --script tools/verify_h011_arm64_reproducibility.sh \
+            --output /tmp/round10-harness-static.json
+          rm -rf /tmp/round10-harness-self-test
+          bash tools/verify_h011_arm64_reproducibility.sh \
+            --self-test /tmp/round10-harness-self-test
+          (cd /tmp/round10-harness-self-test && sha256sum -c SHA256SUMS)
+          python3 - <<'PY'
+          import json
+          report=json.load(open('/tmp/round10-harness-self-test/harness-self-test.json'))
+          assert report['status']=='PASS'
+          assert report['controlled_failure_artifact_checksums']=='PASS'
+          assert report['pr_event_candidate_identity']=='PASS'
+          audit=json.load(open('/tmp/round10-harness-static.json'))
+          assert audit['status']=='PASS', audit
+          workflow=open('.github/workflows/h011-arm64-reproducibility.yml', encoding='utf-8').read()
+          assert 'image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0' in workflow
+          assert 'image=docker.io/moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec' in workflow
+          checksum='      - name: Verify portable evidence checksums\n        if: always()\n'
+          assert checksum in workflow
+          script=open('tools/verify_h011_arm64_reproducibility.sh', encoding='utf-8').read()
+          assert 'IMAGE="senex-h011-repro:${GITHUB_SHA:-local}"' not in script
+          assert 'moby/buildkit:buildx-stable-1' not in script
+          assert '--driver-opt "image=$BUILDKIT_REFERENCE"' in script
+          PY
+
+      - name: Remove temporary machinery and regenerate governance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git rm \
+            .github/workflows/senex-container-reference-resolution-once.yml \
+            .github/workflows/senex-round10-apply-once.yml \
+            tools/apply_round10_arm64_pinning.py
+          python3 tools/verify_repository_contract.py --generate \
+            > /tmp/round10-governance-generation.json
+          git add \
+            .github/workflows/h011-arm64-reproducibility.yml \
+            tools/verify_h011_arm64_reproducibility.sh \
+            tools/verify_h011_shell_harness.py \
+            docs/H011_REPRODUCIBLE_RUNTIME.md \
+            governance/repository_manifest.json \
+            governance/repository_manifest.json.sha256 \
+            governance/target_architecture.yaml \
+            governance/component_registry.json \
+            governance/migration_map.json
+          git diff --check --cached
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+          test -z "$(git ls-files .github/workflows/senex-container-reference-resolution-once.yml)"
+          test -z "$(git ls-files .github/workflows/senex-round10-apply-once.yml)"
+          test -z "$(git ls-files tools/apply_round10_arm64_pinning.py)"
+
+      - name: Commit exact correction tree
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name senex-arq
+          git config user.email senex-arq@users.noreply.github.com
+          git commit -m 'fix(senex): pin ARM64 evidence toolchain and candidate identity'
+          git push origin HEAD:fix/senex-arm64-evidence-pinning-v3
