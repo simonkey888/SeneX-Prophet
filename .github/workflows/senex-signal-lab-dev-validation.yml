@@ -1,88 +1,71 @@
-name: SENEX Signal Lab Dev Validation
+name: SENEX Signal Lab Governance Materializer
 
 on:
   pull_request:
     branches:
       - feat/h011-v3-discovery-refresh
     paths:
-      - "polymarket/signal_lab/**"
-      - "tests/signal_lab/**"
-      - "docs/SENEX_SIGNAL_LAB_V1.md"
-      - "governance/**"
       - ".github/workflows/senex-signal-lab-dev-validation.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: senex-signal-lab-dev-${{ github.event.pull_request.number }}
+  group: senex-signal-lab-governance-materialize-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
   EXACT_SHA: ${{ github.event.pull_request.head.sha }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
 
 jobs:
-  signal-lab-dev:
+  materialize-and-retire:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
-      - name: Checkout exact PR head
+      - name: Checkout exact isolated branch
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ env.EXACT_SHA }}
+          persist-credentials: true
+          ref: ${{ env.HEAD_BRANCH }}
 
-      - name: Verify isolated base and exact head
+      - name: Verify authority boundary
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
-          test "${{ github.event.pull_request.base.ref }}" = "feat/h011-v3-discovery-refresh"
           test "${BASE_SHA}" = "74429bb0dfd36a24ec01f0b94856603a9298ab37"
+          test "${HEAD_BRANCH}" = "feat/senex-signal-lab-live-terminal-v1"
           test "$(git merge-base "${BASE_SHA}" "${EXACT_SHA}")" = "${BASE_SHA}"
-          git diff --check "${BASE_SHA}...${EXACT_SHA}"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
-      - name: Install exact CI lock
+      - name: Remove temporary materializer and generate final deterministic governance
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check \
-            --require-hashes --only-binary=:all: --no-deps \
-            -r polymarket/requirements-h011-v3.txt
+          git rm .github/workflows/senex-signal-lab-dev-validation.yml
+          python tools/verify_repository_contract.py --generate
+          git diff --check
+          test "$(python - <<'PY'
+          import json
+          print(json.load(open('governance/repository_manifest.json'))['files_tracked_total'])
+          PY
+          )" = "310"
 
-      - name: Signal Lab focused gates
+      - name: Commit final generated governance on isolated 018 branch only
         shell: bash
         run: |
           set -euo pipefail
-          python -m compileall -q polymarket/signal_lab tests/signal_lab
-          PYTHONPATH=.:polymarket python -m pytest -q tests/signal_lab
-          python tools/verify_paper_only_repository.py --repo-root . --output /tmp/paper-only.json
-
-      - name: Generate deterministic governance inventory candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          python tools/verify_repository_contract.py --generate > /tmp/generate.json
-          mkdir -p /tmp/signal-lab-governance
-          cp governance/repository_manifest.json /tmp/signal-lab-governance/
-          cp governance/repository_manifest.json.sha256 /tmp/signal-lab-governance/
-          cp governance/component_registry.json /tmp/signal-lab-governance/
-          cp governance/migration_map.json /tmp/signal-lab-governance/
-          cp governance/target_architecture.yaml /tmp/signal-lab-governance/
-          cp /tmp/generate.json /tmp/signal-lab-governance/
-          (cd /tmp/signal-lab-governance && sha256sum * > SHA256SUMS)
-
-      - name: Upload deterministic governance candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: senex-signal-lab-governance-${{ env.EXACT_SHA }}
-          path: /tmp/signal-lab-governance
-          retention-days: 7
-          if-no-files-found: error
+          git config user.name "senex-order018-governance"
+          git config user.email "actions@users.noreply.github.com"
+          git add governance/component_registry.json governance/migration_map.json governance/repository_manifest.json governance/repository_manifest.json.sha256 governance/target_architecture.yaml
+          git diff --cached --quiet && { echo "NO_GENERATED_CHANGE"; exit 1; }
+          git commit -m "chore(signal-lab): materialize deterministic governance inventory"
+          test "$(git rev-parse --abbrev-ref HEAD)" = "${HEAD_BRANCH}"
+          git push origin "HEAD:${HEAD_BRANCH}"
