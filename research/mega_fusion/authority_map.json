@@ -1,0 +1,34 @@
+{
+  "aud_order_id": "AUD-SENEX-MEGA-RESEARCH-FUSION-STATISTICAL-VALIDATION-LIVE-TERMINAL-V2-020",
+  "authorities": {
+    "CONTRADICTION_LEDGER": "MEGA_RESEARCH_020_APPEND_ONLY_CONTRADICTION_LEDGER",
+    "EXPERIMENT_REGISTRY": "MEGA_RESEARCH_020_APPEND_ONLY_CONSTITUTION",
+    "FEATURE_ENGINE": "SIGNAL_LAB_018_FEATURE_ENGINE_F01_F15",
+    "PAPER_FILL_ENGINE": "RESEARCH_PACK_019_AGGREGATE_L2_FILL_MODEL",
+    "POINT_IN_TIME_STATE": "SIGNAL_LAB_018_POINT_IN_TIME_STORE",
+    "PUBLIC_SOURCE_ADAPTERS": "018_OFFICIAL_POLYMARKET_READ_ONLY_PLUS_019_DISABLED_CROSS_MARKET",
+    "RAW_EVIDENCE": "H011_V3_RAW_CHAIN_V1_EXISTING_AUTHORITATIVE_WRITER",
+    "REPLAY_V1": "H011_V3_STRICT_COMMITTED_RAW_CHAIN_V1",
+    "REPLAY_V2_RESEARCH_CONTRACT": "RESEARCH_PACK_019_POINT_IN_TIME_REPLAY_V2",
+    "SIGNAL_ENGINE": "SIGNAL_LAB_018_RESEARCH_ONLY_FAIR_VALUE",
+    "TERMINAL_PROJECTION": "MEGA_RESEARCH_020_READ_ONLY_TERMINAL_V2",
+    "VALIDATION_ENGINE": "MEGA_RESEARCH_020_OOS_STATISTICAL_ENGINE"
+  },
+  "invariants": {
+    "duplicate_signal_authority": false,
+    "external_live_adapters_enabled": false,
+    "live_capital_locked": true,
+    "one_authoritative_raw_writer_max": 1,
+    "orders_enabled": false,
+    "paper_only": true,
+    "real_capital_actions": 0,
+    "real_order_network_calls": 0,
+    "replay_v1_replaced": false,
+    "schema_break_without_version": false,
+    "unknown_collapsed_to_zero_or_false": false,
+    "wallet_or_private_key_access": 0
+  },
+  "parent_020_sha": "7e26425c5036b8281731e23c9016577c780d95dc",
+  "parent_020_tree": "e22db014f366e44e8e31d0a3b0429095dc63614e",
+  "schema_version": "senex-mega-research-authority-map-v2"
+}

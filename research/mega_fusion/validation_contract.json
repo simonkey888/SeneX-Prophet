@@ -1,0 +1,82 @@
+{
+  "aud_order_id": "AUD-SENEX-MEGA-RESEARCH-FUSION-STATISTICAL-VALIDATION-LIVE-TERMINAL-V2-020",
+  "experiment_constitution": {
+    "append_only": true,
+    "corrections_require_supersedes_experiment_id": true,
+    "outcome_affecting_fields_immutable_after_evaluation_start": true
+  },
+  "failure_fixtures": [
+    "CLOCK_SKEW",
+    "DUPLICATE_EVENT",
+    "MARKET_IDENTITY_MISMATCH",
+    "OUT_OF_ORDER_EVENT",
+    "RAW_HASH_CORRUPTION",
+    "SEQUENCE_GAP",
+    "SOURCE_HEARTBEAT_LOSS",
+    "STALE_BOOK",
+    "TOKEN_IDENTITY_MISMATCH",
+    "WEBSOCKET_DISCONNECT"
+  ],
+  "feature_families": [
+    "BOOK_IMBALANCE",
+    "BOOK_SLOPE",
+    "BOOK_STALENESS",
+    "CROSS_MARKET_INTERFACE_FIXTURE_ONLY",
+    "DEPTH_COLLAPSE",
+    "DEPTH_WEIGHTED_IMBALANCE",
+    "LIQUIDITY_SHOCK",
+    "MICROPRICE_DIVERGENCE",
+    "NEG_RISK_RESIDUAL_IF_OFFICIALLY_OBSERVABLE",
+    "QUOTE_VELOCITY",
+    "REGIME_SCORE",
+    "SIGNED_OR_INFERABLE_TRADE_FLOW",
+    "SPREAD_AND_SPREAD_QUALITY",
+    "TIME_TO_CLOSE",
+    "VISIBLE_DEPTH"
+  ],
+  "metrics": {
+    "primary": ["brier", "log_loss", "ece", "calibration_slope_intercept"],
+    "secondary": ["rank_ic", "directional_accuracy", "horizon_error", "cost_adjusted_expected_edge", "no_trade_rate"]
+  },
+  "paper_execution": {
+    "adverse_selection_window": true,
+    "aggregate_l2_only": true,
+    "latency_buffer": true,
+    "no_fill": true,
+    "partial_fill": true,
+    "queue_position_exact": false,
+    "spread_crossing": true,
+    "stale_book_rejection": true,
+    "visible_depth_consumption": true
+  },
+  "public_runtime_network": {
+    "authenticated_execution": false,
+    "external_live_venues_enabled": false,
+    "official_polymarket_public_reads_only": true
+  },
+  "schema_version": "senex-mega-research-validation-contract-v2",
+  "statistical_gates": {
+    "ci_includes_zero": "INCONCLUSIVE_NO_PROMOTION",
+    "cluster_aware_bootstrap": true,
+    "deterministic_seed": 20020,
+    "embargo": true,
+    "insample_only": "INVALID_OR_INCONCLUSIVE",
+    "insufficient_sample": "INSUFFICIENT_SAMPLE",
+    "leakage_gate_fail": "INVALID",
+    "multiple_testing_ledger": true,
+    "one_regime_only": "INCONCLUSIVE",
+    "out_of_time_holdout": true,
+    "permutation_null": true,
+    "purge_overlapping_labels": true,
+    "walk_forward": true
+  },
+  "terminal_surfaces": [
+    "SYSTEM_TRUTH",
+    "MARKET_RADAR",
+    "MICROSTRUCTURE_ANOMALIES",
+    "FAIR_VALUE_AND_SIGNAL_DESK",
+    "PAPER_EXECUTION_TRUTH",
+    "EVIDENCE_AND_GOVERNANCE"
+  ],
+  "validated_edge_reserved_for_future_aud": true
+}
