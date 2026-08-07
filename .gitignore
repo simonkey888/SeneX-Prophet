@@ -51,3 +51,6 @@ senecio_polymarket/data/proposed_patches/
 # Kept in working tree for history; do NOT commit changes to these.
 /institutional_core.py
 /predict_only.py
+
+# Test/runtime lifecycle journal (generated, never source)
+polymarket/results/v3/lifecycle.jsonl
