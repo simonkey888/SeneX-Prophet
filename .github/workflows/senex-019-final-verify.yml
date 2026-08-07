@@ -76,8 +76,10 @@ jobs:
               for node in ast.walk(tree):
                   if isinstance(node, ast.Import):
                       names=[x.name.split('.')[0] for x in node.names]
-                  elif isinstance(node, ast.ImportFrom) and node.module:
-                      names=[node.module.split('.')[0]]
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level > 0:
+                          continue
+                      names=[node.module.split('.')[0]] if node.module else []
                   else:
                       continue
                   for name in names:
