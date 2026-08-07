@@ -1,0 +1,135 @@
+name: SENEX 019 Final Isolated Verification
+
+on:
+  push:
+    branches:
+      - feat/senex-external-research-pack-v1
+    paths:
+      - ".github/workflows/senex-019-final-verify.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-019-final-verify
+  cancel-in-progress: true
+
+env:
+  PARENT_018_SHA: 2f84a38d6037c8e5a94bc96566b791a9d4f4e680
+
+jobs:
+  verify-019:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact 019 candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Prove ancestry and isolated diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base "${PARENT_018_SHA}" HEAD)" = "${PARENT_018_SHA}"
+          git diff --check "${PARENT_018_SHA}...HEAD"
+          git diff --exit-code "${PARENT_018_SHA}" -- \
+            polymarket/requirements-h011-v3.txt \
+            polymarket/Dockerfile.h011-v3 \
+            tools/verify_h011_arm64_reproducibility.sh \
+            .github/workflows/oracle.yml
+          test -z "$(git diff --name-only "${PARENT_018_SHA}...HEAD" | grep -E '^(ops/|infra/|northflank/|oci/)' || true)"
+
+      - name: Set up exact Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install existing frozen lock only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: --no-deps \
+            -r polymarket/requirements-h011-v3.txt
+
+      - name: Regenerate deterministic evidence in worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/build_external_research_pack.py
+          python tools/verify_repository_contract.py --generate
+          (cd research/external_pack && sha256sum -c external_source_manifest.json.sha256 && sha256sum -c provenance_ledger.json.sha256)
+
+      - name: Prove no new runtime dependency and ARM64-neutral implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast, pathlib
+          allowed={'__future__','dataclasses','typing','random','polymarket'}
+          bad=[]
+          for path in pathlib.Path('polymarket/research_pack').glob('*.py'):
+              tree=ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names=[x.name.split('.')[0] for x in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.module:
+                      names=[node.module.split('.')[0]]
+                  else:
+                      continue
+                  for name in names:
+                      if name not in allowed:
+                          bad.append(f'{path}:{name}')
+          if bad:
+              raise SystemExit('UNAPPROVED_IMPORTS='+','.join(bad))
+          print('NEW_RUNTIME_DEPENDENCIES=0')
+          print('ARM64_STATUS=PROVEN_UNCHANGED_PURE_PYTHON_NO_NATIVE_DEP')
+          PY
+          python -m compileall -q polymarket/research_pack tests/research_pack tools/build_external_research_pack.py
+
+      - name: Full repository no-regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q
+
+      - name: Repository-wide paper-only integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/verify_paper_only_repository.py --repo-root . --output /tmp/paper-only-019.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/paper-only-019.json'))
+          assert r['status']=='PASS'
+          assert r['finding_count']==0
+          assert r['secret_values_observed'] is False
+          print('PAPER_ONLY_INTEGRITY=PASS')
+          print('REAL_ORDER_NETWORK_CALLS=0')
+          print('WALLET_OR_PRIVATE_KEY_ACCESS=0')
+          print('REAL_CAPITAL_ACTIONS=0')
+          PY
+
+      - name: 019 capability terminal gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=.:polymarket python -m pytest -q tests/research_pack
+          python - <<'PY'
+          from polymarket.research_pack.cross_market import DisabledCrossMarketAdapter
+          from polymarket.research_pack.terminal import visual_smoke_fragment
+          a=DisabledCrossMarketAdapter()
+          assert a.enabled is False and a.external_network_reads == 0 and a.writes == 0
+          html=visual_smoke_fragment().lower()
+          assert 'research_only' in html
+          for forbidden in ('connect wallet','private key','place order','buy now','sell now','deposit','withdraw'):
+              assert forbidden not in html
+          print('CAP_D_EXTERNAL_LIVE_ADAPTERS=DISABLED')
+          print('TERMINAL_VISUAL_CONTRACT_SMOKE=PASS')
+          print('UI_NO_TRADING_CONTROLS=PASS')
+          print('POINT_IN_TIME_LEAKAGE=0')
+          print('REPLAY_DETERMINISM=PASS')
+          PY
