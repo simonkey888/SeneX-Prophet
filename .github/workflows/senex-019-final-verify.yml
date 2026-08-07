@@ -107,8 +107,15 @@ jobs:
           import json
           r=json.load(open('/tmp/paper-only-019.json'))
           assert r['status']=='PASS'
-          assert r['finding_count']==0
+          assert r['findings']==[]
           assert r['secret_values_observed'] is False
+          inv=r['invariants']
+          assert inv['paper_only'] is True
+          assert inv['orders_enabled'] is False
+          assert inv['live_capital_locked'] is True
+          assert inv['real_order_network_calls']==0
+          assert inv['wallet_or_private_key_access']==0
+          assert inv['real_capital_actions']==0
           print('PAPER_ONLY_INTEGRITY=PASS')
           print('REAL_ORDER_NETWORK_CALLS=0')
           print('WALLET_OR_PRIVATE_KEY_ACCESS=0')
