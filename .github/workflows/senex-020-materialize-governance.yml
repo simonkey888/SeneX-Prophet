@@ -8,7 +8,7 @@ on:
       - ".github/workflows/senex-020-materialize-governance.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   materialize:
@@ -19,14 +19,16 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
           ref: ${{ github.sha }}
-      - name: Materialize eventual tree without temporary workflow
+      - name: Regenerate governance and self-retire atomically
         shell: bash
         run: |
           set -euo pipefail
-          git rm --cached --quiet .github/workflows/senex-020-materialize-governance.yml
-          rm -f .github/workflows/senex-020-materialize-governance.yml
+          test "${GITHUB_REF_NAME}" = "feat/senex-mega-research-fusion-v2"
+          git config user.name "senex-arq-020"
+          git config user.email "senex-arq-020@users.noreply.github.com"
+          git rm --quiet .github/workflows/senex-020-materialize-governance.yml
           python tools/verify_repository_contract.py --generate
           test "$(python - <<'PY'
           import json
@@ -34,15 +36,19 @@ jobs:
           PY
           )" = "331"
           (cd governance && sha256sum -c repository_manifest.json.sha256)
-      - name: Upload exact generated governance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: senex-020-governance-generated
-          path: |
-            governance/repository_manifest.json
-            governance/repository_manifest.json.sha256
+          git add governance/repository_manifest.json governance/repository_manifest.json.sha256 \
+            governance/component_registry.json governance/migration_map.json governance/target_architecture.yaml
+          mapfile -t changed < <(git diff --cached --name-only | sort)
+          expected=(
+            .github/workflows/senex-020-materialize-governance.yml
             governance/component_registry.json
             governance/migration_map.json
+            governance/repository_manifest.json
+            governance/repository_manifest.json.sha256
             governance/target_architecture.yaml
-          if-no-files-found: error
-          retention-days: 1
+          )
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
+          test "$(printf '%s\n' "${changed[@]}")" = "$(printf '%s\n' "${expected_sorted[@]}")"
+          git diff --cached --check
+          git commit -m "chore(mega-research): materialize deterministic 020 governance"
+          git push origin HEAD:refs/heads/feat/senex-mega-research-fusion-v2
