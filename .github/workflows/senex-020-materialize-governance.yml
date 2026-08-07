@@ -1,0 +1,48 @@
+name: SENEX 020 Materialize Governance
+
+on:
+  push:
+    branches:
+      - feat/senex-mega-research-fusion-v2
+    paths:
+      - ".github/workflows/senex-020-materialize-governance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact 020 head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Materialize eventual tree without temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm --cached --quiet .github/workflows/senex-020-materialize-governance.yml
+          rm -f .github/workflows/senex-020-materialize-governance.yml
+          python tools/verify_repository_contract.py --generate
+          test "$(python - <<'PY'
+          import json
+          print(json.load(open('governance/repository_manifest.json'))['files_tracked_total'])
+          PY
+          )" = "331"
+          (cd governance && sha256sum -c repository_manifest.json.sha256)
+      - name: Upload exact generated governance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-020-governance-generated
+          path: |
+            governance/repository_manifest.json
+            governance/repository_manifest.json.sha256
+            governance/component_registry.json
+            governance/migration_map.json
+            governance/target_architecture.yaml
+          if-no-files-found: error
+          retention-days: 1
