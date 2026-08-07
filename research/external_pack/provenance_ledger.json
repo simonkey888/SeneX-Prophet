@@ -1,0 +1,64 @@
+{
+  "aud_order_id": "AUD-SENEX-EXTERNAL-RESEARCH-EXTRACTION-PACK-019",
+  "capabilities": {
+    "CAP_A": {
+      "claim": "public schema cross-check only",
+      "module": "polymarket/research_pack/external_schema.py",
+      "sources": [
+        "Polymarket/py-clob-client-v2@215fc63a8fd6ec3a10c7edb73997c9772d8686d3",
+        "Polymarket/clob-client-v2@f3e1a05f868a1fd0c34ef85dfc45c6ce78f5bb69",
+        "warproxxx/poly_data@cab11bd5a2fc41a67c4c643835a4766907208b55"
+      ],
+      "status": "IMPLEMENTED_ISOLATED"
+    },
+    "CAP_B": {
+      "claim": "aggregate-L2 paper fill; exact queue position disabled",
+      "module": "polymarket/research_pack/fill_model.py",
+      "sources": [
+        "nkaz001/hftbacktest@5f3ec40b2afb764e0fea112f941ed85523ef4e88",
+        "evan-kolberg/prediction-market-backtesting@c76e77af00ef53472a9da8f66dae7fdd2d3e5928",
+        "nkaz001/market-making-backtest@a7355e42ad9019413dea422499336554a5c92a2c"
+      ],
+      "status": "IMPLEMENTED_ISOLATED"
+    },
+    "CAP_C": {
+      "claim": "finite captured deterministic replay; no live reads",
+      "module": "polymarket/research_pack/replay_v2.py",
+      "sources": [
+        "nkaz001/hftbacktest@5f3ec40b2afb764e0fea112f941ed85523ef4e88",
+        "nautechsystems/nautilus_trader@570d4d796dee347dd5d6445c16780847b883757a"
+      ],
+      "status": "IMPLEMENTED_ISOLATED"
+    },
+    "CAP_D": {
+      "claim": "fixture/synthetic interface only; external adapter hard disabled",
+      "module": "polymarket/research_pack/cross_market.py",
+      "sources": [
+        "humanplane/cross-market-state-fusion@3e35d8d8f737273256bbb07a1f4575e2beeb8357"
+      ],
+      "status": "IMPLEMENTED_DISABLED"
+    },
+    "CAP_E": {
+      "claim": "read-only microstructure diagnostics; no trading controls",
+      "module": "polymarket/research_pack/terminal.py",
+      "sources": [
+        "visualHFT/VisualHFT@d4ad9b609af6382894c453db95e4bf8801ebcb04",
+        "Oddpool/PredictionMarketBench@611d66941717310858683278940df21c33c406f2"
+      ],
+      "status": "IMPLEMENTED_ISOLATED"
+    }
+  },
+  "external_dependencies_added": [],
+  "implementation_mode": "INDEPENDENT_REIMPLEMENTATION_NO_EXTERNAL_CODE_EXECUTED",
+  "literal_external_code_copied": false,
+  "parent_018_sha": "2f84a38d6037c8e5a94bc96566b791a9d4f4e680",
+  "safety": {
+    "live_capital_locked": true,
+    "orders_enabled": false,
+    "paper_only": true,
+    "real_capital_actions": 0,
+    "real_order_network_calls": 0,
+    "wallet_or_private_key_access": 0
+  },
+  "schema_version": "senex-external-provenance-ledger-v1"
+}

@@ -187,11 +187,28 @@
   "classified_duplicate_basenames": {
     "__init__.py": {
       "paths": [
-        "polymarket/monitoring/__init__.py",
-        "polymarket/paper/__init__.py"
+        "polymarket/mega_research/__init__.py",
+        "polymarket/research_pack/__init__.py",
+        "polymarket/signal_lab/__init__.py"
       ],
-      "classification": "DISTINCT_PACKAGE_MARKERS",
-      "reason": "These empty package markers establish separate monitoring and paper domains; they do not duplicate a subsystem or authority."
+      "classification": "DISTINCT_VERSIONED_RESEARCH_PACKAGE_MARKERS",
+      "reason": "Accepted 018 Signal Lab, accepted 019 Research Pack, and isolated 020 Mega Research are separate versioned research package boundaries; package markers create no duplicate writer, signal, replay, or execution authority."
+    },
+    "api.py": {
+      "paths": [
+        "polymarket/mega_research/api.py",
+        "polymarket/signal_lab/api.py"
+      ],
+      "classification": "DISTINCT_VERSIONED_READ_ONLY_RESEARCH_APIS",
+      "reason": "018 exposes the accepted Signal Lab read-only API while 020 exposes an isolated read-only composition over accepted authorities; neither API has state-write or execution authority."
+    },
+    "app.py": {
+      "paths": [
+        "polymarket/mega_research/app.py",
+        "polymarket/signal_lab/app.py"
+      ],
+      "classification": "DISTINCT_VERSIONED_READ_ONLY_RESEARCH_APP_SHELLS",
+      "reason": "018 and 020 FastAPI app shells are separate development read-only terminal entrypoints; 020 composes 018/019 and does not replace or duplicate canonical authorities."
     }
   },
   "research_authoritative_root_reference_allowlist": {
