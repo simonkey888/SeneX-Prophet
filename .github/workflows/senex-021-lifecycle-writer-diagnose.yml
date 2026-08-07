@@ -1,0 +1,63 @@
+name: SENEX 021 Lifecycle Writer Diagnose
+
+on:
+  push:
+    branches:
+      - feat/senex-real-data-evidence-campaign-v1
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install exact lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r polymarket/requirements-h011-v3.txt
+      - name: Isolate writer by test file and node
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=polymarket/results/v3/lifecycle.jsonl
+          git rm .github/workflows/senex-021-lifecycle-writer-diagnose.yml >/dev/null
+          base=$(git show HEAD:"$target" | sha256sum | awk '{print $1}')
+          echo "BASE=$base"
+          for f in tests/governance/test_repository_contract.py tests/governance/test_paper_only_repository.py tests/governance/test_target_architecture.py; do
+            git checkout HEAD -- "$target"
+            before=$(sha256sum "$target"|awk '{print $1}')
+            python -m pytest -q "$f" >/tmp/pytest-file.log 2>&1 || { cat /tmp/pytest-file.log; exit 90; }
+            after=$(sha256sum "$target"|awk '{print $1}')
+            echo "FILE=$f BEFORE=$before AFTER=$after MUTATED=$([ "$before" = "$after" ] && echo NO || echo YES)"
+          done
+          offender=""
+          for f in tests/governance/test_repository_contract.py tests/governance/test_paper_only_repository.py tests/governance/test_target_architecture.py; do
+            git checkout HEAD -- "$target"
+            before=$(sha256sum "$target"|awk '{print $1}')
+            python -m pytest -q "$f" >/dev/null
+            after=$(sha256sum "$target"|awk '{print $1}')
+            if [ "$before" != "$after" ]; then offender="$f"; break; fi
+          done
+          test -n "$offender"
+          echo "OFFENDING_FILE=$offender"
+          python -m pytest --collect-only -q "$offender" | grep '::' > /tmp/nodes.txt
+          while IFS= read -r node; do
+            git checkout HEAD -- "$target"
+            before=$(sha256sum "$target"|awk '{print $1}')
+            python -m pytest -q "$node" >/tmp/one.log 2>&1 || { echo "NODE_FAIL=$node"; cat /tmp/one.log; exit 91; }
+            after=$(sha256sum "$target"|awk '{print $1}')
+            if [ "$before" != "$after" ]; then
+              echo "MUTATING_NODE=$node BEFORE=$before AFTER=$after"
+            fi
+          done < /tmp/nodes.txt
