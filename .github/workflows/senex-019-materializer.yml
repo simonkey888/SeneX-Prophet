@@ -71,7 +71,6 @@ jobs:
           git config user.name "senex-order019-materializer"
           git config user.email "actions@users.noreply.github.com"
           git add research/external_pack governance
-          git add -u .github/workflows/senex-019-materializer.yml
           git status --short
           test -n "$(git status --porcelain)"
           git commit -m "chore(research-pack): materialize deterministic external evidence"
