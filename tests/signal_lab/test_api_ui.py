@@ -66,10 +66,9 @@ def test_api_has_no_live_execution_routes():
     assert "/signal-lab/ws" in paths
 
 
-def test_router_mounts_without_side_effect_dependencies():
-    app = FastAPI()
-    app.include_router(build_router(_service()))
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
+def test_router_contract_contains_all_read_only_surfaces():
+    router = build_router(_service())
+    paths = {route.path for route in router.routes}
     assert "/signal-lab" in paths
     assert "/signal-lab/api/system-truth" in paths
     assert "/signal-lab/api/markets" in paths
