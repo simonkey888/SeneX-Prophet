@@ -1,0 +1,124 @@
+name: SENEX 021 Clean Governance Manifest
+
+on:
+  push:
+    branches:
+      - feat/senex-real-data-evidence-campaign-v1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: senex-021-governance-clean-manifest
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact trigger head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Prove lane, remove diagnostics, and reject ghost path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "feat/senex-real-data-evidence-campaign-v1"
+          git merge-base --is-ancestor d00d9f7a97209cc0eca8ac327c830a919e027f67 HEAD
+          test "$(git rev-parse d00d9f7a97209cc0eca8ac327c830a919e027f67^{tree})" = "7fe5ad20f4f7b4964492775d0d2ebf85510250c8"
+          test -f research/real_data_021/materialized/dataset_manifest.json
+          test -f research/real_data_021/first_holdout_observed.json
+          git rm -f .github/workflows/senex-021-governance-clean-manifest.yml
+          if git ls-files --error-unmatch .github/workflows/senex-021-governance-diagnose.yml >/dev/null 2>&1; then
+            git rm -f .github/workflows/senex-021-governance-diagnose.yml
+          fi
+          if git ls-files --error-unmatch __nonexistent__ >/dev/null 2>&1; then
+            echo 'GHOST_PATH_STILL_TRACKED'
+            exit 91
+          fi
+          test ! -e __nonexistent__
+          git add -A
+          echo 'GHOST_PATH_ABSENT=YES'
+
+      - name: Install exact hashed CI lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: --no-deps \
+            -r polymarket/requirements-h011-v3.txt
+
+      - name: Regenerate clean governance and prove one-pass determinism
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/verify_repository_contract.py --root . --generate > /tmp/generate-1.json
+          files=(governance/target_architecture.yaml governance/component_registry.json governance/migration_map.json governance/repository_manifest.json governance/repository_manifest.json.sha256)
+          sha256sum "${files[@]}" > /tmp/first.hashes
+          cp governance/repository_manifest.json /tmp/manifest.first
+          python tools/verify_repository_contract.py --root . --generate > /tmp/generate-2.json
+          sha256sum "${files[@]}" > /tmp/second.hashes
+          cmp /tmp/first.hashes /tmp/second.hashes
+          cmp /tmp/manifest.first governance/repository_manifest.json
+          if grep -Fq '"path": "__nonexistent__"' governance/repository_manifest.json; then
+            echo 'GHOST_MANIFEST_ENTRY_PRESENT'
+            exit 92
+          fi
+          git add -A
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          manifest=json.loads(Path('governance/repository_manifest.json').read_text())
+          tracked=[x for x in subprocess.check_output(['git','ls-files'], text=True).splitlines() if x]
+          assert manifest['files_tracked_total']==len(tracked), (manifest['files_tracked_total'],len(tracked))
+          assert {x['path'] for x in manifest['files']}==set(tracked)
+          assert '__nonexistent__' not in tracked
+          assert '.github/workflows/senex-021-governance-clean-manifest.yml' not in tracked
+          assert '.github/workflows/senex-021-governance-diagnose.yml' not in tracked
+          print(f"GOVERNANCE_TRACKED_TOTAL={len(tracked)}")
+          print('GOVERNANCE_ONE_PASS_DETERMINISTIC=YES')
+          PY
+
+      - name: Verify 021 evidence and repository safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd research/real_data_021/materialized && sha256sum -c dataset_manifest.json.sha256)
+          python -m pytest -q tests/governance tests/mega_research/test_real_data_021.py tests/mega_research/test_mega_research_v2.py
+          python tools/verify_paper_only_repository.py --repo-root . --output /tmp/paper.json
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/paper.json'))
+          assert r['status']=='PASS'
+          assert len(r.get('findings',[]))==0
+          assert r.get('secret_values_observed') is False
+          print('PAPER_ONLY_REPOSITORY=PASS')
+          PY
+
+      - name: Full regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q
+
+      - name: Commit clean fixed point and retire workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "SENEX ARQ 021"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "chore(021): remove stale governance ghost entry"
+          git push origin HEAD:${GITHUB_REF_NAME}
+          echo "CLEAN_HEAD=$(git rev-parse HEAD)"
+          echo "CLEAN_TREE=$(git rev-parse HEAD^{tree})"
