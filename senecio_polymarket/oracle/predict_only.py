@@ -355,10 +355,9 @@ def run_prediction(market_data: dict) -> dict:
     # which is clamped to 0.5 (within [0.2, 1.0]) → reasonable conservative scaling.
     # No need to disable anymore.
 
-    # Legacy JSONL outcomes were settled with a later current price and do not
-    # carry the dual-window proof required by score_truth. Feeding them back
-    # would contaminate new predictions, so adaptive calibration stays off.
-    calibration_input_status = "DISABLED_UNPROVEN_LEGACY_OUTCOMES"
+    # ── Action 4: Feed calibration from verified predictions ──
+    # Read last 50 verified directional outcomes and feed to SDC calibration.
+    _feed_calibration_from_predictions(sdc)
 
     # ── Risk state — fresh state for each prediction ──
     # Oracle mode: always start from clean state (no accumulated drawdown/streaks)
@@ -420,13 +419,6 @@ def run_prediction(market_data: dict) -> dict:
         "symbol": symbol_raw,
         "prediction": prediction,
         "confidence": round(confidence, 4),
-        "confidence_semantics": "raw model conviction; not a calibrated probability",
-        "publication_status": "RAW_UNCALIBRATED" if prediction in ("LONG", "SHORT") else "ABSTAIN",
-        "authoritative_score_pct": None,
-        "horizon_s": 3600,
-        "mode": "PAPER_ONLY",
-        "orders_enabled": False,
-        "live_capital_locked": True,
         "ev": round(ev, 8),
         "price_now": round(price_now, 2),
         "price_15m_later": None,
@@ -448,7 +440,6 @@ def run_prediction(market_data: dict) -> dict:
             },
             "execution_state": execution_state,
             "candle_ts": market_data.get("candle_ts", 0),
-            "calibration_input_status": calibration_input_status,
         },
     }
 
