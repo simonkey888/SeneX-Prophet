@@ -93,7 +93,6 @@ jobs:
           set -euo pipefail
           docker run -d \
             --name senecio-h011-pr5 \
-            -p 18080:8080 \
             -v "${RUNNER_TEMP}/h011-results:/app/polymarket/results" \
             -e SENECIO_CODE_SHA="${{ github.event.pull_request.head.sha }}" \
             -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
@@ -106,8 +105,9 @@ jobs:
           set -euo pipefail
           ready=0
           for _ in $(seq 1 90); do
-            if curl --fail --silent http://127.0.0.1:18080/readyz \
-              -o /tmp/h011-pr5-ready.json; then
+            if docker exec senecio-h011-pr5 python3 -c \
+              'import sys; from urllib.request import ProxyHandler, build_opener; sys.stdout.buffer.write(build_opener(ProxyHandler({})).open("http://127.0.0.1:8080/readyz", timeout=2).read())' \
+              > /tmp/h011-pr5-ready.json 2>/dev/null; then
               ready=1
               break
             fi
@@ -123,10 +123,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent http://127.0.0.1:18080/healthz -o /tmp/h011-pr5-health.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/state -o /tmp/h011-pr5-state.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/integrity -o /tmp/h011-pr5-integrity.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/replay -o /tmp/h011-pr5-replay.json
+          probe_json() {
+            docker exec senecio-h011-pr5 python3 -c \
+              'import sys; from urllib.request import ProxyHandler, build_opener; sys.stdout.buffer.write(build_opener(ProxyHandler({})).open("http://127.0.0.1:8080" + sys.argv[1], timeout=5).read())' \
+              "$1" > "$2"
+          }
+          test -z "$(docker port senecio-h011-pr5 8080/tcp 2>/dev/null || true)"
+          test "$(docker inspect -f '{{json .HostConfig.PortBindings}}' senecio-h011-pr5)" = "{}"
+          docker exec senecio-h011-pr5 python3 -c \
+            'import dashboard_v3; assert dashboard_v3.UVICORN_HOST == "127.0.0.1"'
+          probe_json /healthz /tmp/h011-pr5-health.json
+          probe_json /api/v3/state /tmp/h011-pr5-state.json
+          probe_json /api/v3/integrity /tmp/h011-pr5-integrity.json
+          probe_json /api/v3/replay /tmp/h011-pr5-replay.json
           python - <<'PY'
           import json
           from pathlib import Path

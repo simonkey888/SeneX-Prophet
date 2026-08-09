@@ -11,6 +11,7 @@ import pytest
 
 import polymarket.h011_v3_raw_transaction as rt
 from polymarket.h011_v3_committed_snapshot import validate_committed_chain
+import polymarket.h011_v3_runtime as runtime
 from polymarket.h011_v3_runtime import startup_recovery
 
 RUNTIME = Path(__file__).parents[2] / "polymarket" / "h011_v3_runtime.py"
@@ -96,3 +97,60 @@ def test_same_volume_process_crash_then_startup_recovery(tmp_path, fault_point):
     assert not list(raw.glob("*.marker.tmp.*"))
     pending = raw / ".pending"
     assert not pending.exists() or not list(pending.iterdir())
+
+
+class _TimeoutThenKillProcess:
+    def __init__(self):
+        self.calls = []
+        self.returncode = None
+        self._wait_count = 0
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.calls.append(("wait", timeout))
+        self._wait_count += 1
+        if self._wait_count <= 2:
+            raise subprocess.TimeoutExpired("scanner", timeout)
+        self.returncode = -9
+        return self.returncode
+
+    def terminate(self):
+        self.calls.append(("terminate", None))
+
+    def kill(self):
+        self.calls.append(("kill", None))
+
+
+def test_scanner_timeout_terminates_kills_reaps_and_disables_readiness(tmp_path, monkeypatch):
+    monkeypatch.setenv("H011_SCANNER_TIMEOUT_S", "1")
+    supervisor = runtime.RuntimeSupervisor(tmp_path)
+    process = _TimeoutThenKillProcess()
+    supervisor.scanner = process  # type: ignore[assignment]
+
+    return_code, timed_out = supervisor._wait_for_scanner()
+
+    assert (return_code, timed_out) == (runtime.SCANNER_TIMEOUT_EXIT_CODE, True)
+    assert process.calls == [
+        ("wait", 1.0),
+        ("terminate", None),
+        ("wait", runtime.CHILD_TERMINATE_TIMEOUT_S),
+        ("kill", None),
+        ("wait", runtime.CHILD_KILL_TIMEOUT_S),
+    ]
+    assert supervisor.scanner is None
+    state = json.loads(runtime.runtime_state_path(tmp_path).read_text(encoding="utf-8"))
+    assert state["runtime_state"] == "SCANNER_FAILED"
+    assert state["readiness"] is False
+    assert state["scanner_enabled"] is False
+    assert state["publication_enabled"] is False
+    assert state["blocking_reason"] == "scanner_timeout"
+    assert state["scanner_last_failure"]
+
+
+@pytest.mark.parametrize("value", ["bad", "0", "-1", "nan", "inf"])
+def test_malformed_scanner_timeout_configuration_fails_closed(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("H011_SCANNER_TIMEOUT_S", value)
+    supervisor = runtime.RuntimeSupervisor(tmp_path)
+    assert supervisor.scanner_timeout_s is None
