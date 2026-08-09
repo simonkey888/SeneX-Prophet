@@ -1,0 +1,24 @@
+name: SENEX 046 Cancel Obsolete V2
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-046-cancel-obsolete-v2.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel obsolete V2 run only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/cancel.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/repos/simonkey888/SeneX-Prophet/actions/runs/31340934679/cancel)"
+          test "$code" = 202 -o "$code" = 409
+          echo "cancel_status=$code"
