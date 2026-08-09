@@ -186,9 +186,11 @@ class ResearchCoordinator:
         y_vals: list[float] = []
         confs: list[float] = []
         ts_vals: list[Any] = []
+        from ..score_truth import validate_1h_outcome
+
         for rec in self.predictions:
-            outcome = (rec.get("outcome") or "").upper()
-            if outcome not in ("WIN", "LOSS"):
+            clean, _ = validate_1h_outcome(rec)
+            if clean is None:
                 continue
             row: list[float] = []
             for fname in self.feature_names:
@@ -201,9 +203,9 @@ class ResearchCoordinator:
                     except (TypeError, ValueError):
                         row.append(0.0)
             X_rows.append(row)
-            y_vals.append(1.0 if outcome == "WIN" else 0.0)
-            confs.append(float(rec.get("confidence") or 0.5))
-            ts_vals.append(rec.get("ts") or rec.get("created_at") or rec.get("timestamp"))
+            y_vals.append(1.0 if clean["outcome"] == "WIN" else 0.0)
+            confs.append(clean["confidence"])
+            ts_vals.append(clean["ts"])
         if not X_rows:
             return (
                 np.zeros((0, len(self.feature_names)), dtype=float),

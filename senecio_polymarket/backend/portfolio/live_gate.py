@@ -6,12 +6,13 @@ Hard unlock gate that must be satisfied before the ExecutionEngine is
 allowed to place real (non-paper) orders. Per ACT-XXV spec, all 6 of the
 following conditions must be met simultaneously:
 
-  1. global_win_rate >= 52%            (from /api/oracle/score)
-  2. verified >= 300                   (sample-size floor)
-  3. profit_factor > 1.20              (from PortfolioAnalytics)
-  4. max_drawdown < 10%                (from PortfolioAnalytics)
-  5. shadow_live_passed                (from ShadowLive.generate_report())
-  6. execution_engine_verified         (from ExecutionEngine self-test)
+  1. score is proof-qualified and calibrated
+  2. global_win_rate >= 52%            (from /api/oracle/score)
+  3. verified >= 300                   (sample-size floor)
+  4. profit_factor > 1.20              (from PortfolioAnalytics)
+  5. max_drawdown < 10%                (from PortfolioAnalytics)
+  6. shadow_live_passed                (from ShadowLive.generate_report())
+  7. execution_engine_verified         (from ExecutionEngine self-test)
 
 Until ALL 6 pass, the system stays in PAPER mode with
 live_capital_locked=True. The gate is RE-EVALUATED on every call to
@@ -45,6 +46,7 @@ log = logging.getLogger("senecio.live_gate")
 
 # Per ACT-XXV spec
 UNLOCK_CONDITIONS = {
+    "score_calibrated":       {"op": "==", "value": True},
     "global_win_rate_pct": {"op": ">=", "value": 52.0},
     "verified":            {"op": ">=", "value": 300},
     "profit_factor":       {"op": ">",  "value": 1.20},
@@ -112,11 +114,13 @@ class LiveGate:
         exec_self_test = exec_self_test or {}
 
         # Extract values from upstream reports
-        # Use 1h-window global win rate (the ACT-XXIII gating window)
-        by_window = oracle_score.get("by_window") or {}
-        global_1h = (by_window.get("1h") or {}).get("global") or {}
-        global_win_rate = float(global_1h.get("win_rate_pct") or oracle_score.get("win_rate_pct") or 0)
-        verified = int(global_1h.get("verified") or oracle_score.get("verified") or 0)
+        selected_score = oracle_score.get("selected") or {}
+        score_calibrated = bool(
+            oracle_score.get("score_status") == "CALIBRATED"
+            and oracle_score.get("authoritative_score_pct") is not None
+        )
+        global_win_rate = float(oracle_score.get("authoritative_score_pct") or 0)
+        verified = int(selected_score.get("verified") or 0)
 
         profit_factor = float(analytics_report.get("profit_factor") or 0)
         # Handle inf PF (all wins, no losses) — convert to large finite number
@@ -128,6 +132,7 @@ class LiveGate:
         exec_verified = bool(exec_self_test.get("verified") or False)
 
         values = {
+            "score_calibrated": score_calibrated,
             "global_win_rate_pct": global_win_rate,
             "verified": verified,
             "profit_factor": profit_factor,
@@ -155,7 +160,16 @@ class LiveGate:
                     f"{name}: {actual} {op} {threshold} → FAIL"
                 )
 
-        unlocked = len(failed) == 0
+        # This deployed product is permanently paper-only. Even a future fully
+        # calibrated report cannot unlock real capital through this class.
+        conditions_result["permanent_paper_only_policy"] = {
+            "value": True,
+            "threshold": False,
+            "op": "==",
+            "pass": False,
+        }
+        failed.append("PERMANENT_PAPER_ONLY_POLICY")
+        unlocked = False
         status = GateStatus(
             unlocked=unlocked,
             trade_mode="LIVE" if unlocked else "PAPER",
@@ -169,7 +183,8 @@ class LiveGate:
         else:
             log.info(
                 "LIVE_GATE LOCKED — %d/%d conditions pass, failures: %s",
-                len(self.conditions) - len(failed), len(self.conditions),
+                sum(bool(item.get("pass")) for item in conditions_result.values()),
+                len(conditions_result),
                 "; ".join(failed) if failed else "none",
             )
         return status

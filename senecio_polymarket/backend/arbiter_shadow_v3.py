@@ -53,17 +53,25 @@ def arbitrate(oracle: dict[str, Any], h011_state: dict[str, Any], operations: li
     result["h011"]["btc_operations"] = len(btc_operations)
 
     reasons: list[str] = []
-    if oracle.get("gate_status") != "PASS" or oracle.get("shadow_action") not in {"LONG", "SHORT"}:
+    if (
+        alpha.validation_state != "PASS"
+        or alpha.direction not in {"LONG", "SHORT"}
+        or alpha.confidence_calibrated is None
+    ):
         reasons.append("ORACLE_DIRECTION_NOT_CALIBRATION_CONFIRMED")
+    if alpha.horizon_s != execution.horizon_s:
+        reasons.append("HORIZON_MISMATCH")
     if not btc_records:
         reasons.append("H011_MARKET_SCOPE_MISMATCH_NO_BTC")
-    invariants = (h011_state.get("invariants") or {}).get("summary") or {}
-    if int(invariants.get("unknown") or 0) > 0:
+    if not execution.discovery_verified:
+        reasons.append("H011_DISCOVERY_NOT_VERIFIED")
+    if not execution.invariants_verified:
         reasons.append("H011_VALIDATION_UNKNOWN")
-    source_health = h011_state.get("source_health") or {}
-    if not source_health or any((entry or {}).get("level") != "HEALTHY" for entry in source_health.values()):
+    if not execution.source_health_verified:
         reasons.append("H011_SOURCE_HEALTH_NOT_PROVEN")
-    if not btc_operations:
+    if not execution.freshness_verified:
+        reasons.append("H011_SNAPSHOT_STALE_OR_INVALID")
+    if not btc_operations or not execution.executable:
         reasons.append("NO_EXECUTABLE_BTC_CLOB_OPERATION")
 
     if reasons:
@@ -71,18 +79,17 @@ def arbitrate(oracle: dict[str, Any], h011_state: dict[str, Any], operations: li
         return result
 
     # A future compatible H-011 record must explicitly map its executable side.
-    side = str(btc_operations[0].get("direction") or btc_operations[0].get("side") or "").upper()
-    if side not in {"LONG", "SHORT", "UP", "DOWN"}:
+    side = execution.side
+    if side not in {"LONG", "SHORT"}:
         result["decision"] = "UNKNOWN"
         result["reasons"] = ["H011_EXECUTABLE_SIDE_UNMAPPED"]
         return result
-    normalized_side = "LONG" if side in {"LONG", "UP"} else "SHORT"
-    if normalized_side != oracle["shadow_action"]:
+    if side != alpha.direction:
         result["decision"] = "CONFLICT"
         result["reasons"] = ["ENGINES_DISAGREE"]
         return result
 
     result["decision"] = "CONFIRM"
-    result["action"] = normalized_side
+    result["action"] = side
     result["reasons"] = ["CALIBRATED_ORACLE_AND_EXECUTABLE_CLOB_AGREE"]
     return result

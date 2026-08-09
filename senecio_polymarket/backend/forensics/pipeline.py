@@ -198,10 +198,13 @@ async def _fetch_verified(limit: int = 1000) -> list:
         from backend import supabase_client  # type: ignore
     try:
         rows = await supabase_client.fetch_predictions(limit=limit)
-        # Filter to verified rows
+        from ..score_truth import validate_1h_outcome
+
+        # Filter to outcomes whose 1h label and settlement prices agree.
         out = []
         for r in rows:
-            if r.get("outcome") in ("WIN", "LOSS"):
+            clean, _ = validate_1h_outcome(r)
+            if clean is not None:
                 out.append(r)
         return out
     except Exception as e:
