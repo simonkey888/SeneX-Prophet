@@ -1,0 +1,405 @@
+name: SENEX 043 Invoice and Plan GET-Only Audit
+
+on:
+  push:
+    branches:
+      - ops/senex-zero-cost-audit-20260809
+    paths:
+      - .github/workflows/senex-zero-cost-invoice-plan-audit-043.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senex-043-invoice-plan-readonly
+  cancel-in-progress: false
+
+jobs:
+  audit-043:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: northflank-readonly-audit
+    env:
+      TEAM_ID: 6a32fd953f19ee4079ccf395
+      PROJECT_ID: seneciobot
+      SERVICE_ID: senecio-h011
+      VOLUME_ID: h011-results-vol
+    steps:
+      - name: Probe invoices plans and current inventory with GET only
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          from __future__ import annotations
+
+          import datetime as dt
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from typing import Any
+
+          BASE = "https://api.northflank.com/v1"
+          TOKEN = os.environ["NORTHFLANK_SENEX_MAINTENANCE_TOKEN"]
+          TEAM_ID = os.environ["TEAM_ID"]
+          PROJECT_ID = os.environ["PROJECT_ID"]
+          SERVICE_ID = os.environ["SERVICE_ID"]
+          VOLUME_ID = os.environ["VOLUME_ID"]
+          TARGET_PLANS = {"nf-compute-20", "nf-compute-400-16"}
+          ledger: list[dict[str, Any]] = []
+
+          def safe_error(body: Any) -> dict[str, Any]:
+              if not isinstance(body, dict):
+                  return {}
+              allowed = {"code", "message", "status", "success", "error"}
+              return {str(k): v for k, v in body.items() if str(k).lower() in allowed and isinstance(v, (str, int, float, bool, type(None)))}
+
+          def get(label: str, path: str, query: dict[str, Any] | None = None) -> tuple[int, Any, bytes]:
+              url = BASE + path
+              if query:
+                  url += "?" + urllib.parse.urlencode(query, doseq=True)
+              req = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {TOKEN}",
+                      "Accept": "application/json",
+                      "User-Agent": "senex-aud-043-readonly/1",
+                  },
+                  method="GET",
+              )
+              raw = b""
+              status = 0
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      status = response.status
+                      raw = response.read()
+              except urllib.error.HTTPError as exc:
+                  status = exc.code
+                  raw = exc.read()
+              except Exception as exc:
+                  raw = json.dumps({"error": type(exc).__name__, "message": str(exc)[:300]}).encode()
+              try:
+                  body = json.loads(raw.decode("utf-8", "replace") or "{}")
+              except Exception:
+                  body = {}
+              ledger.append({
+                  "label": label,
+                  "method": "GET",
+                  "path": path,
+                  "query_keys": sorted((query or {}).keys()),
+                  "status": status,
+                  "bytes": len(raw),
+                  "body_sha256": hashlib.sha256(raw).hexdigest(),
+                  "safe_error": safe_error(body) if status != 200 else {},
+              })
+              return status, body, raw
+
+          def data(body: Any) -> dict[str, Any]:
+              if not isinstance(body, dict):
+                  return {}
+              value = body.get("data")
+              return value if isinstance(value, dict) else {}
+
+          def price(value: Any) -> dict[str, float]:
+              obj = value if isinstance(value, dict) else {}
+              result: dict[str, float] = {}
+              for key in ("total", "cpu", "memory", "storage", "gpu", "vcpu", "gpuMemory", "cluster"):
+                  raw = obj.get(key)
+                  if isinstance(raw, (int, float)):
+                      result[key] = float(raw)
+              return result
+
+          def invoice_summary(value: Any) -> dict[str, Any]:
+              inv = value if isinstance(value, dict) else {}
+              period = inv.get("period") if isinstance(inv.get("period"), dict) else {}
+              paas = inv.get("paasUsage") if isinstance(inv.get("paasUsage"), dict) else {}
+              byoc = inv.get("byocUsage") if isinstance(inv.get("byocUsage"), dict) else {}
+              discounts = inv.get("discounts") if isinstance(inv.get("discounts"), dict) else {}
+              tax = inv.get("tax") if isinstance(inv.get("tax"), dict) else {}
+              lines = []
+              for item in inv.get("lineItems", []) if isinstance(inv.get("lineItems"), list) else []:
+                  if isinstance(item, dict):
+                      lines.append({
+                          "title": str(item.get("title") or "")[:160],
+                          "total": item.get("total") if isinstance(item.get("total"), (int, float)) else None,
+                          "base": item.get("base") if isinstance(item.get("base"), (int, float)) else None,
+                          "proration": item.get("proration") if isinstance(item.get("proration"), (int, float)) else None,
+                      })
+              return {
+                  "id": str(inv.get("id") or ""),
+                  "period": {
+                      "start": period.get("start") if isinstance(period.get("start"), (int, float)) else None,
+                      "end": period.get("end") if isinstance(period.get("end"), (int, float)) else None,
+                  },
+                  "currency": inv.get("currency"),
+                  "paas_price_cents": price(paas.get("price")),
+                  "byoc_price_cents": price(byoc.get("price")),
+                  "subTotal_cents": inv.get("subTotal") if isinstance(inv.get("subTotal"), (int, float)) else None,
+                  "discount_total_cents": discounts.get("total") if isinstance(discounts.get("total"), (int, float)) else None,
+                  "tax_percent": tax.get("percent") if isinstance(tax.get("percent"), (int, float)) else None,
+                  "tax_amount_cents": tax.get("amount") if isinstance(tax.get("amount"), (int, float)) else None,
+                  "total_cents": inv.get("total") if isinstance(inv.get("total"), (int, float)) else None,
+                  "paid": inv.get("paid") if isinstance(inv.get("paid"), bool) else None,
+                  "line_items": lines,
+              }
+
+          def list_invoices(label: str, base_path: str) -> tuple[list[dict[str, Any]], list[int]]:
+              items: list[dict[str, Any]] = []
+              statuses: list[int] = []
+              cursor = None
+              for page_number in range(1, 11):
+                  query: dict[str, Any] = {"per_page": 100}
+                  if cursor:
+                      query["cursor"] = cursor
+                  status, body, _ = get(f"{label}_page_{page_number}", base_path, query)
+                  statuses.append(status)
+                  if status != 200:
+                      break
+                  payload = data(body)
+                  page = payload.get("invoices")
+                  if isinstance(page, list):
+                      items.extend(x for x in page if isinstance(x, dict))
+                  pagination = body.get("pagination") if isinstance(body, dict) else None
+                  if not isinstance(pagination, dict) or not pagination.get("hasNextPage"):
+                      break
+                  cursor = pagination.get("cursor")
+                  if not cursor:
+                      break
+              return items, statuses
+
+          now = dt.datetime.now(dt.timezone.utc)
+          month_start = int(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+
+          auth_status, _, _ = get("auth", "/auth")
+          account_invoices, account_statuses = list_invoices("account_invoices", "/billing/invoices")
+          team_invoices, team_statuses = list_invoices("team_invoices", f"/teams/{TEAM_ID}/billing/invoices")
+
+          # Public pricing cross-check. Catalog rate is never treated as actual billed cost.
+          plans_status, plans_body, _ = get("plans", "/plans")
+          plans = data(plans_body).get("plans") if plans_status == 200 else []
+          target_plans = []
+          for item in plans if isinstance(plans, list) else []:
+              if isinstance(item, dict) and str(item.get("id")) in TARGET_PLANS:
+                  target_plans.append({
+                      "id": item.get("id"),
+                      "name": item.get("name"),
+                      "currency": item.get("currency"),
+                      "amountPerMonth": item.get("amountPerMonth"),
+                      "amountPerHour": item.get("amountPerHour"),
+                      "cpuResource": item.get("cpuResource"),
+                      "ramResource": item.get("ramResource"),
+                  })
+
+          # Current inventory: GET only, enough to bind invoice evidence to the live proposal surface.
+          inventory_paths = {
+              "project": f"/projects/{PROJECT_ID}",
+              "services": f"/projects/{PROJECT_ID}/services",
+              "jobs": f"/projects/{PROJECT_ID}/jobs",
+              "addons": f"/projects/{PROJECT_ID}/addons",
+              "volumes": f"/projects/{PROJECT_ID}/volumes",
+              "service": f"/projects/{PROJECT_ID}/services/{SERVICE_ID}",
+              "deployment": f"/projects/{PROJECT_ID}/services/{SERVICE_ID}/deployment",
+              "volume": f"/projects/{PROJECT_ID}/volumes/{VOLUME_ID}",
+          }
+          inventory_raw: dict[str, Any] = {}
+          inventory_statuses: dict[str, int] = {}
+          for label, path in inventory_paths.items():
+              query = {"per_page": 100} if label in {"services", "jobs", "addons", "volumes"} else None
+              status, body, _ = get(f"inventory_{label}", path, query)
+              inventory_statuses[label] = status
+              inventory_raw[label] = data(body)
+
+          def list_count(payload: Any, keys: tuple[str, ...]) -> int | None:
+              if isinstance(payload, list):
+                  return len(payload)
+              if isinstance(payload, dict):
+                  for key in keys:
+                      value = payload.get(key)
+                      if isinstance(value, list):
+                          return len(value)
+              return None
+
+          service_obj = inventory_raw.get("service") if isinstance(inventory_raw.get("service"), dict) else {}
+          deployment_obj = inventory_raw.get("deployment") if isinstance(inventory_raw.get("deployment"), dict) else {}
+          volume_obj = inventory_raw.get("volume") if isinstance(inventory_raw.get("volume"), dict) else {}
+          billing_obj = service_obj.get("billing") if isinstance(service_obj.get("billing"), dict) else {}
+          deployment_billing = deployment_obj.get("billing") if isinstance(deployment_obj.get("billing"), dict) else {}
+          service_deployment_plan = billing_obj.get("deploymentPlan") or deployment_billing.get("deploymentPlan")
+          service_build_plan = billing_obj.get("buildPlan") or deployment_billing.get("buildPlan")
+          replicas = deployment_obj.get("instances")
+          if not isinstance(replicas, (int, float)):
+              replicas = deployment_obj.get("replicas")
+          volume_spec = volume_obj.get("spec") if isinstance(volume_obj.get("spec"), dict) else {}
+
+          current_inventory = {
+              "request_statuses": inventory_statuses,
+              "service_count": list_count(inventory_raw.get("services"), ("services",)),
+              "job_count": list_count(inventory_raw.get("jobs"), ("jobs",)),
+              "addon_count": list_count(inventory_raw.get("addons"), ("addons",)),
+              "volume_count": list_count(inventory_raw.get("volumes"), ("volumes",)),
+              "target_service": SERVICE_ID,
+              "current_replicas": replicas,
+              "deployment_plan": service_deployment_plan,
+              "build_plan": service_build_plan,
+              "target_volume": VOLUME_ID,
+              "volume_storage_size": volume_spec.get("storageSize") or volume_obj.get("storageSize"),
+              "volume_storage_class": volume_spec.get("storageClassName") or volume_obj.get("storageClassName"),
+          }
+
+          # Prefer team route if it is authorized; otherwise account route. Deduplicate invoice IDs.
+          source_route = None
+          invoice_items: list[dict[str, Any]] = []
+          if team_statuses and all(x == 200 for x in team_statuses):
+              source_route = f"/teams/{TEAM_ID}/billing/invoices"
+              invoice_items = team_invoices
+          elif account_statuses and all(x == 200 for x in account_statuses):
+              source_route = "/billing/invoices"
+              invoice_items = account_invoices
+
+          dedup: dict[str, dict[str, Any]] = {}
+          for inv in invoice_items:
+              inv_id = str(inv.get("id") or "")
+              if inv_id:
+                  dedup[inv_id] = inv
+          ordered = sorted(
+              dedup.values(),
+              key=lambda x: ((x.get("period") or {}).get("end") or 0) if isinstance(x.get("period"), dict) else 0,
+              reverse=True,
+          )
+
+          listed_summaries = [invoice_summary(x) for x in ordered[:10]]
+          detailed: list[dict[str, Any]] = []
+          if source_route:
+              for inv in ordered[:3]:
+                  inv_id = str(inv.get("id") or "")
+                  if not inv_id:
+                      continue
+                  base_detail_path = f"{source_route}/{urllib.parse.quote(inv_id)}"
+                  status, body, _ = get(f"invoice_{inv_id}_detail", base_detail_path, {"per_page": 100, "page": 1})
+                  entry: dict[str, Any] = {"invoice_id": inv_id, "detail_status": status}
+                  if status == 200:
+                      entry["summary"] = invoice_summary(data(body))
+                  scoped = {}
+                  for resource_type in (None, "service", "volume"):
+                      query = {"projectId": PROJECT_ID, "per_page": 100, "page": 1}
+                      label_suffix = "project" if resource_type is None else resource_type
+                      if resource_type:
+                          query["resourceType"] = resource_type
+                      s, scoped_body, _ = get(f"invoice_{inv_id}_{label_suffix}", base_detail_path, query)
+                      payload = data(scoped_body)
+                      paas = payload.get("paasUsage") if isinstance(payload.get("paasUsage"), dict) else {}
+                      scoped[label_suffix] = {
+                          "status": s,
+                          "paas_price_cents": price(paas.get("price")) if s == 200 else {},
+                          "total_cents": payload.get("total") if s == 200 and isinstance(payload.get("total"), (int, float)) else None,
+                          "subTotal_cents": payload.get("subTotal") if s == 200 and isinstance(payload.get("subTotal"), (int, float)) else None,
+                      }
+                  entry["scoped"] = scoped
+                  detailed.append(entry)
+
+          latest_period_end = None
+          if listed_summaries:
+              latest_period_end = listed_summaries[0].get("period", {}).get("end")
+          current_month_finalized = bool(isinstance(latest_period_end, (int, float)) and latest_period_end >= month_start)
+
+          invoice_403 = (
+              account_statuses and account_statuses[0] == 403
+              and team_statuses and team_statuses[0] == 403
+          )
+          if invoice_403:
+              classification = "TEAM_TOKEN_BILLING_SURFACE_UNAVAILABLE"
+          elif source_route and not ordered:
+              classification = "INVOICE_SURFACE_AUTHORIZED_NO_FINALIZED_INVOICES"
+          elif source_route and not current_month_finalized:
+              classification = "HISTORICAL_FINALIZED_INVOICE_ONLY_CURRENT_MONTH_UNPROVEN"
+          elif source_route:
+              classification = "CURRENT_MONTH_FINALIZED_INVOICE_PARTIAL_CURRENT_USAGE_TAIL_UNPROVEN"
+          else:
+              classification = "INVOICE_SURFACE_UNRESOLVED"
+
+          report = {
+              "captured_at": now.isoformat(),
+              "audit_order": "043",
+              "mode": "GET_ONLY",
+              "auth_status": auth_status,
+              "team_id": TEAM_ID,
+              "project_id": PROJECT_ID,
+              "account_invoice_statuses": account_statuses,
+              "team_invoice_statuses": team_statuses,
+              "invoice_source_route": source_route,
+              "invoice_classification": classification,
+              "invoice_count": len(ordered),
+              "current_month_finalized_invoice_present": current_month_finalized,
+              "latest_finalized_period_end": latest_period_end,
+              "invoices": listed_summaries,
+              "invoice_details": detailed,
+              "plans_status": plans_status,
+              "target_plan_catalog_crosscheck": target_plans,
+              "catalog_rate_is_actual_billed_cost": False,
+              "current_inventory": current_inventory,
+              "proposed_delta": {
+                  "proposed_plan_change": False,
+                  "new_service_creation": False,
+                  "new_addon_creation": False,
+                  "new_volume_creation": False,
+                  "proposed_replicas": replicas,
+                  "byoc_or_external_cloud_charge_introduced": False,
+              },
+              "zero_cost_proven": False,
+              "zero_cost_reason": "FINALIZED_INVOICES_DO_NOT_BY_THEMSELVES_PROVE_CURRENT_UNBILLED_USAGE_OR_CURRENT_FREE_ENTITLEMENT",
+              "mutating_requests": sum(1 for x in ledger if x.get("method") != "GET"),
+              "secret_values_exported": False,
+              "request_ledger": ledger,
+          }
+          assert report["mutating_requests"] == 0
+          serialized = json.dumps(report, sort_keys=True, indent=2) + "\n"
+          assert TOKEN not in serialized
+          with open("evidence/senex-043-invoice-plan-audit.json", "w", encoding="utf-8") as handle:
+              handle.write(serialized)
+          digest = hashlib.sha256(serialized.encode()).hexdigest()
+          with open("evidence/SHA256SUMS", "w", encoding="utf-8") as handle:
+              handle.write(f"{digest}  senex-043-invoice-plan-audit.json\n")
+          print(json.dumps({
+              "invoice_classification": classification,
+              "account_invoice_statuses": account_statuses,
+              "team_invoice_statuses": team_statuses,
+              "invoice_count": len(ordered),
+              "current_month_finalized_invoice_present": current_month_finalized,
+              "plans_status": plans_status,
+              "target_plans": target_plans,
+              "current_inventory": current_inventory,
+              "zero_cost_proven": False,
+              "mutating_requests": 0,
+              "secret_values_exported": False,
+              "artifact_payload_sha256": digest,
+          }, sort_keys=True))
+          PY
+
+      - name: Verify GET-only evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd evidence && sha256sum -c SHA256SUMS)
+          python - <<'PY'
+          import json
+          p=json.load(open('evidence/senex-043-invoice-plan-audit.json'))
+          assert p['mode']=='GET_ONLY'
+          assert p['mutating_requests']==0
+          assert p['secret_values_exported'] is False
+          assert all(x['method']=='GET' for x in p['request_ledger'])
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-043-invoice-plan-audit-${{ github.sha }}
+          path: evidence
+          retention-days: 14
+          if-no-files-found: error
