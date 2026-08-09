@@ -51,9 +51,9 @@ jobs:
           test "${pr5_remote}" = "${EXPECTED_PR5_HEAD}"
           test "${pr21_remote}" = "${EXPECTED_PR21_HEAD}"
 
-          changed="$(git diff --name-only "${EXPECTED_PR5_HEAD}...HEAD")"
-          expected="$(printf '%s\n' '.github/workflows/h011-northflank-readonly-inspection.yml' '.github/workflows/senex-zero-cost-northflank-audit.yml')"
-          test "${changed}" = "${expected}"
+          git merge-base --is-ancestor "origin/audit/h011-northflank-readonly-inspection" HEAD
+          changed="$(git diff --name-only "origin/audit/h011-northflank-readonly-inspection...HEAD")"
+          test "${changed}" = ".github/workflows/senex-zero-cost-northflank-audit.yml"
 
       - name: Verify environment token exists without disclosure
         shell: bash
