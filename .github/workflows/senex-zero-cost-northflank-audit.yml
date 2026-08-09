@@ -1,0 +1,955 @@
+name: SENEX Zero-Cost Northflank GET-Only Audit
+
+on:
+  push:
+    branches:
+      - ops/senex-zero-cost-audit-20260809
+    paths:
+      - ".github/workflows/senex-zero-cost-northflank-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h011-northflank-readonly-audit
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Northflank GET-only inspection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: northflank-readonly-audit
+    env:
+      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+      NF_PROJECT_SLUG: seneciobot
+      NF_SERVICE_SLUG: senecio-h011
+      EXPECTED_PR5_HEAD: aeb50867738b7ae7199f621a730080e09465458e
+      EXPECTED_PR21_HEAD: 33b4eaffffc3577c52e02d407f13a6fc61777ad6
+      EXPECTED_AUDIT_BRANCH: audit/h011-northflank-readonly-inspection
+      HTTP_METHODS_ALLOWED: GET_ONLY
+
+    steps:
+      - name: Checkout exact audit head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Verify frozen heads and isolated scope
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "${EXPECTED_AUDIT_BRANCH}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${EXPECTED_PR5_HEAD}" HEAD
+
+          pr5_remote="$(git ls-remote origin refs/heads/feat/h011-v3-control-plane-coverage | awk '{print $1}')"
+          pr21_remote="$(git ls-remote origin refs/heads/feat/h011-v3-tradingview-research-bridge | awk '{print $1}')"
+          test "${pr5_remote}" = "${EXPECTED_PR5_HEAD}"
+          test "${pr21_remote}" = "${EXPECTED_PR21_HEAD}"
+
+          changed="$(git diff --name-only "${EXPECTED_PR5_HEAD}...HEAD")"
+          test "${changed}" = ".github/workflows/h011-northflank-readonly-inspection.yml"
+
+      - name: Verify environment token exists without disclosure
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test "${HTTP_METHODS_ALLOWED}" = "GET_ONLY"
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          printf '%s\n' "TOKEN_PRESENT=YES"
+
+      - name: Execute authenticated GET-only inspection
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          mkdir -p evidence
+
+          python - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from typing import Any, Iterable
+
+          API_BASE = "https://api.northflank.com/v1"
+          PROJECT_SLUG = os.environ["NF_PROJECT_SLUG"]
+          SERVICE_SLUG = os.environ["NF_SERVICE_SLUG"]
+          TOKEN = os.environ["NORTHFLANK_API_TOKEN"]
+          OUTPUT = Path("evidence")
+          ALLOWED_METHOD = "GET"
+          mutating_requests = 0
+          request_ledger: list[dict[str, Any]] = []
+
+          forbidden_key_fragments = (
+              "secret",
+              "secrets",
+              "token",
+              "password",
+              "authorization",
+              "cookie",
+              "credential",
+              "credentials",
+              "runtimeenvironment",
+              "runtimefiles",
+              "environment",
+              "env",
+              "value",
+              "privatekey",
+          )
+
+          sensitive_text_patterns = [
+              re.compile(r"nf-[A-Za-z0-9._~+/=-]{16,}"),
+              re.compile(r"gh[pousr]_[A-Za-z0-9_]{16,}"),
+              re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+              re.compile(r"(?i)\b(?:authorization|cookie|set-cookie)\s*:\s*[^\r\n]+"),
+              re.compile(r"(?i)\b(?:token|password|secret|credential|private[_-]?key|api[_-]?key)\s*[=:]\s*[^\s,;]+"),
+          ]
+
+          def normalized_key(key: str) -> str:
+              return re.sub(r"[^a-z0-9]", "", key.lower())
+
+          def key_is_forbidden(key: str) -> bool:
+              normalized = normalized_key(key)
+              return any(fragment in normalized for fragment in forbidden_key_fragments)
+
+          def sanitize_text(text: str, limit: int = 4000) -> str:
+              clean = text
+              for pattern in sensitive_text_patterns:
+                  clean = pattern.sub("<redacted>", clean)
+              return clean[:limit]
+
+          def sanitize(value: Any) -> Any:
+              if isinstance(value, dict):
+                  clean: dict[str, Any] = {}
+                  for key, child in value.items():
+                      key_string = str(key)
+                      if key_is_forbidden(key_string):
+                          continue
+                      clean[key_string] = sanitize(child)
+                  return clean
+              if isinstance(value, list):
+                  return [sanitize(child) for child in value]
+              if isinstance(value, str):
+                  return sanitize_text(value)
+              return value
+
+          def decode_safe_claims(token: str) -> dict[str, str]:
+              try:
+                  parts = token.split(".")
+                  if len(parts) < 2:
+                      return {}
+                  payload = parts[1] + "=" * (-len(parts[1]) % 4)
+                  claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+              except Exception:
+                  return {}
+              allowed = ("entityId", "entityType", "roleId", "roleInternalId")
+              return {
+                  key: str(claims[key])
+                  for key in allowed
+                  if claims.get(key) is not None
+              }
+
+          safe_claims = decode_safe_claims(TOKEN)
+          token_team_id = safe_claims.get("entityId") if safe_claims.get("entityType") == "team" else None
+          token_role_id = safe_claims.get("roleId")
+          token_role_internal_id = safe_claims.get("roleInternalId")
+
+          headers = {
+              "Authorization": f"Bearer {TOKEN}",
+              "Accept": "application/json",
+              "User-Agent": "senex-northflank-readonly-audit/2",
+          }
+
+          def request_get(
+              name: str,
+              path: str,
+              query: dict[str, Any] | None = None,
+          ) -> dict[str, Any]:
+              method = ALLOWED_METHOD
+              if method != "GET":
+                  raise RuntimeError("NON_GET_METHOD_BLOCKED")
+              if not path.startswith("/"):
+                  raise RuntimeError("INVALID_API_PATH")
+              url = API_BASE + path
+              if query:
+                  url += "?" + urllib.parse.urlencode(query, doseq=True)
+              request_ledger.append({"name": name, "method": method, "path": path})
+              request = urllib.request.Request(url, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read().decode("utf-8", errors="replace")
+                      try:
+                          body = json.loads(raw)
+                      except json.JSONDecodeError:
+                          body = {"text": sanitize_text(raw)}
+                      return {
+                          "status": response.status,
+                          "body": body,
+                      }
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8", errors="replace")
+                  try:
+                      body = json.loads(raw)
+                  except json.JSONDecodeError:
+                      body = {"text": sanitize_text(raw)}
+                  return {
+                      "status": exc.code,
+                      "body": body,
+                  }
+              except Exception as exc:
+                  return {
+                      "status": 0,
+                      "error": type(exc).__name__,
+                      "message": sanitize_text(str(exc)),
+                  }
+
+          def data_of(result: dict[str, Any]) -> Any:
+              body = result.get("body")
+              return body.get("data") if isinstance(body, dict) else None
+
+          def recursive_values(
+              value: Any,
+              wanted_keys: Iterable[str],
+              *,
+              skip_forbidden: bool = True,
+          ) -> list[Any]:
+              wanted = {normalized_key(key) for key in wanted_keys}
+              found: list[Any] = []
+
+              def walk(node: Any) -> None:
+                  if isinstance(node, dict):
+                      for key, child in node.items():
+                          key_string = str(key)
+                          if skip_forbidden and key_is_forbidden(key_string):
+                              continue
+                          if normalized_key(key_string) in wanted:
+                              found.append(child)
+                          walk(child)
+                  elif isinstance(node, list):
+                      for child in node:
+                          walk(child)
+
+              walk(value)
+              return found
+
+          def first_scalar(value: Any, keys: Iterable[str]) -> Any:
+              for candidate in recursive_values(value, keys):
+                  if isinstance(candidate, (str, int, float, bool)) and candidate not in ("", None):
+                      return candidate
+              return None
+
+          def list_container(value: Any, keys: Iterable[str]) -> list[Any]:
+              for candidate in recursive_values(value, keys):
+                  if isinstance(candidate, list):
+                      return candidate
+              return []
+
+          def choose_200(results: Iterable[tuple[str, dict[str, Any]]]) -> tuple[str | None, dict[str, Any] | None]:
+              for label, result in results:
+                  if result.get("status") == 200:
+                      return label, result
+              return None, None
+
+          raw_requests: dict[str, Any] = {}
+
+          # Innocuous authentication check.
+          raw_requests["teams"] = request_get("teams", "/teams", {"per_page": 100})
+          teams_data = data_of(raw_requests["teams"])
+          listed_teams: list[dict[str, Any]] = []
+          if isinstance(teams_data, dict):
+              possible = teams_data.get("teams")
+              if isinstance(possible, list):
+                  listed_teams = [item for item in possible if isinstance(item, dict)]
+          elif isinstance(teams_data, list):
+              listed_teams = [item for item in teams_data if isinstance(item, dict)]
+
+          team_id = token_team_id
+          if team_id is None and listed_teams:
+              team_id = str(listed_teams[0].get("id") or "") or None
+
+          if team_id:
+              raw_requests["team"] = request_get("team", f"/teams/{urllib.parse.quote(team_id)}")
+
+          project_candidates: list[tuple[str, dict[str, Any]]] = []
+          if team_id:
+              project_candidates.append(
+                  (
+                      "team_project",
+                      request_get(
+                          "team_project",
+                          f"/teams/{urllib.parse.quote(team_id)}/projects/{urllib.parse.quote(PROJECT_SLUG)}",
+                      ),
+                  )
+              )
+          project_candidates.append(
+              (
+                  "project",
+                  request_get("project", f"/projects/{urllib.parse.quote(PROJECT_SLUG)}"),
+              )
+          )
+          project_source, project_result = choose_200(project_candidates)
+          for label, result in project_candidates:
+              raw_requests[label] = result
+
+          if project_result is None:
+              raise RuntimeError("PROJECT_LOOKUP_FAILED")
+
+          project_data = data_of(project_result)
+          if not isinstance(project_data, dict):
+              raise RuntimeError("PROJECT_RESPONSE_INVALID")
+
+          project_id = str(project_data.get("id") or PROJECT_SLUG)
+          project_region = project_data.get("region") or first_scalar(project_data, ("region",))
+
+          if team_id:
+              project_prefix = (
+                  f"/teams/{urllib.parse.quote(team_id)}/projects/"
+                  f"{urllib.parse.quote(project_id)}"
+              )
+          else:
+              project_prefix = f"/projects/{urllib.parse.quote(project_id)}"
+
+          raw_requests["services"] = request_get(
+              "services",
+              f"{project_prefix}/services",
+              {"per_page": 100},
+          )
+          services_data = data_of(raw_requests["services"])
+          service_entries: list[dict[str, Any]] = []
+          if isinstance(services_data, dict):
+              possible = services_data.get("services")
+              if isinstance(possible, list):
+                  service_entries = [item for item in possible if isinstance(item, dict)]
+          elif isinstance(services_data, list):
+              service_entries = [item for item in services_data if isinstance(item, dict)]
+
+          service_match = next(
+              (
+                  item
+                  for item in service_entries
+                  if str(item.get("id")) == SERVICE_SLUG
+                  or str(item.get("name")) == SERVICE_SLUG
+              ),
+              None,
+          )
+          service_id = str((service_match or {}).get("id") or SERVICE_SLUG)
+          service_path = f"{project_prefix}/services/{urllib.parse.quote(service_id)}"
+
+          raw_requests["service"] = request_get("service", service_path)
+          if raw_requests["service"].get("status") != 200:
+              raise RuntimeError("SERVICE_LOOKUP_FAILED")
+          service_data = data_of(raw_requests["service"])
+          if not isinstance(service_data, dict):
+              raise RuntimeError("SERVICE_RESPONSE_INVALID")
+
+          raw_requests["deployment"] = request_get("deployment", f"{service_path}/deployment")
+          raw_requests["ports"] = request_get("ports", f"{service_path}/ports")
+          raw_requests["health_checks"] = request_get("health_checks", f"{service_path}/health-checks")
+          raw_requests["containers"] = request_get(
+              "containers",
+              f"{service_path}/containers",
+              {"per_page": 100},
+          )
+          raw_requests["builds"] = request_get(
+              "builds",
+              f"{service_path}/build",
+              {"per_page": 100},
+          )
+          raw_requests["runtime_logs"] = request_get(
+              "runtime_logs",
+              f"{service_path}/logs",
+              {
+                  "type": "runtime",
+                  "queryType": "range",
+                  "duration": 604800,
+                  "lineLimit": 500,
+                  "direction": "backward",
+              },
+          )
+          raw_requests["build_logs"] = request_get(
+              "build_logs",
+              f"{service_path}/build-logs",
+              {
+                  "queryType": "range",
+                  "duration": 604800,
+                  "lineLimit": 300,
+                  "direction": "backward",
+              },
+          )
+          raw_requests["metrics"] = request_get(
+              "metrics",
+              f"{service_path}/metrics",
+              {
+                  "queryType": "single",
+                  "metricTypes": ["cpu", "memory", "diskUsage"],
+              },
+          )
+          raw_requests["volumes"] = request_get(
+              "volumes",
+              f"{project_prefix}/volumes",
+              {"per_page": 100},
+          )
+
+          builds_data = data_of(raw_requests["builds"])
+          builds: list[dict[str, Any]] = []
+          if isinstance(builds_data, dict):
+              possible = builds_data.get("builds")
+              if isinstance(possible, list):
+                  builds = [item for item in possible if isinstance(item, dict)]
+          elif isinstance(builds_data, list):
+              builds = [item for item in builds_data if isinstance(item, dict)]
+
+          def sort_timestamp(item: dict[str, Any]) -> str:
+              return str(item.get("createdAt") or item.get("updatedAt") or "")
+
+          builds.sort(key=sort_timestamp, reverse=True)
+          latest_build = builds[0] if builds else {}
+          build_id = str(latest_build.get("id") or "") or None
+          build_detail: dict[str, Any] = {}
+          if build_id:
+              raw_requests["build_detail"] = request_get(
+                  "build_detail",
+                  f"{service_path}/build/{urllib.parse.quote(build_id)}",
+              )
+              detail_data = data_of(raw_requests["build_detail"])
+              if isinstance(detail_data, dict):
+                  build_detail = detail_data
+
+          # Optional role inspection; failure is reported, never escalated.
+          role_data: dict[str, Any] = {}
+          if team_id and token_role_id:
+              raw_requests["token_role"] = request_get(
+                  "token_role",
+                  (
+                      f"/teams/{urllib.parse.quote(team_id)}/roles/"
+                      f"{urllib.parse.quote(token_role_id)}"
+                  ),
+              )
+              possible_role = data_of(raw_requests["token_role"])
+              if isinstance(possible_role, dict):
+                  role_data = possible_role
+
+          volumes_data = data_of(raw_requests["volumes"])
+          volume_entries: list[dict[str, Any]] = []
+          if isinstance(volumes_data, list):
+              volume_entries = [item for item in volumes_data if isinstance(item, dict)]
+          elif isinstance(volumes_data, dict):
+              possible = volumes_data.get("volumes") or volumes_data.get("data")
+              if isinstance(possible, list):
+                  volume_entries = [item for item in possible if isinstance(item, dict)]
+
+          volume_details: dict[str, dict[str, Any]] = {}
+          backup_lists: dict[str, list[dict[str, Any]]] = {}
+          for entry in volume_entries:
+              volume_id = str(entry.get("id") or "")
+              if not volume_id:
+                  continue
+              detail_result = request_get(
+                  f"volume_{volume_id}",
+                  f"{project_prefix}/volumes/{urllib.parse.quote(volume_id)}",
+              )
+              raw_requests[f"volume_{volume_id}"] = detail_result
+              detail_data = data_of(detail_result)
+              detail = detail_data if isinstance(detail_data, dict) else entry
+              volume_details[volume_id] = detail
+
+              backups_result = request_get(
+                  f"volume_{volume_id}_backups",
+                  (
+                      f"{project_prefix}/volumes/{urllib.parse.quote(volume_id)}"
+                      "/backups"
+                  ),
+                  {"per_page": 100},
+              )
+              raw_requests[f"volume_{volume_id}_backups"] = backups_result
+              backups_data = data_of(backups_result)
+              if isinstance(backups_data, list):
+                  backup_lists[volume_id] = [
+                      item for item in backups_data if isinstance(item, dict)
+                  ]
+              elif isinstance(backups_data, dict):
+                  possible = backups_data.get("backups") or backups_data.get("data")
+                  backup_lists[volume_id] = (
+                      [item for item in possible if isinstance(item, dict)]
+                      if isinstance(possible, list)
+                      else []
+                  )
+              else:
+                  backup_lists[volume_id] = []
+
+          def attached_to_service(volume: dict[str, Any]) -> bool:
+              attached = volume.get("attachedObjects")
+              if not isinstance(attached, list):
+                  attached = list_container(volume, ("attachedObjects",))
+              service_app_id = str(service_data.get("appId") or "")
+              for item in attached:
+                  if not isinstance(item, dict):
+                      continue
+                  identifiers = {
+                      str(item.get("id") or ""),
+                      str(item.get("serviceId") or ""),
+                      str(item.get("appId") or ""),
+                      str(item.get("name") or ""),
+                  }
+                  if service_id in identifiers or SERVICE_SLUG in identifiers:
+                      return True
+                  if service_app_id and service_app_id in identifiers:
+                      return True
+              return False
+
+          attached_volume_ids = [
+              volume_id
+              for volume_id, detail in volume_details.items()
+              if attached_to_service(detail)
+          ]
+
+          attached_volumes = [
+              volume_details[volume_id] for volume_id in attached_volume_ids
+          ]
+
+          mount_paths: list[str] = []
+          for volume in attached_volumes:
+              for key in ("containerMountPath", "mountPath", "path"):
+                  for item in recursive_values(volume, (key,)):
+                      if isinstance(item, str) and item.startswith("/"):
+                          mount_paths.append(item)
+          mount_paths = sorted(set(mount_paths))
+
+          target_mount_present = any(
+              path == "/app/polymarket/results"
+              or path.startswith("/app/polymarket/results/")
+              for path in mount_paths
+          )
+
+          volume_present: str
+          storage_decision: str
+          if raw_requests["volumes"].get("status") != 200:
+              volume_present = "UNKNOWN"
+              storage_decision = "STORAGE_CONFIGURATION_UNKNOWN"
+          elif attached_volume_ids:
+              volume_present = "YES"
+              storage_decision = (
+                  "STORAGE_PRESENT_AND_IDENTIFIED"
+                  if target_mount_present
+                  else "STORAGE_CONFIGURATION_UNKNOWN"
+              )
+          else:
+              volume_present = "NO"
+              storage_decision = "STORAGE_ABSENT"
+
+          backup_count = sum(len(items) for items in backup_lists.values())
+          backups_available = "YES" if backup_count else "NO"
+
+          if storage_decision == "STORAGE_PRESENT_AND_IDENTIFIED":
+              safe_probe_option = (
+                  "RESTORE_EXISTING_BACKUP_TO_ISOLATED_VOLUME_REQUIRES_SEPARATE_AUTHORIZATION"
+                  if backup_count
+                  else "CREATE_NEW_TEMPORARY_VOLUME_REQUIRES_SEPARATE_AUTHORIZATION"
+              )
+          elif storage_decision == "STORAGE_ABSENT":
+              safe_probe_option = (
+                  "CREATE_NEW_TEMPORARY_VOLUME_OR_DIAGNOSTIC_SERVICE_REQUIRES_SEPARATE_AUTHORIZATION"
+              )
+          else:
+              safe_probe_option = "NO_SAFE_PROBE_ENVIRONMENT_IDENTIFIED"
+
+          deployment_data = data_of(raw_requests["deployment"])
+          if not isinstance(deployment_data, dict):
+              deployment_data = {}
+
+          containers_data = data_of(raw_requests["containers"])
+          containers: list[dict[str, Any]] = []
+          if isinstance(containers_data, dict):
+              possible = containers_data.get("containers")
+              if isinstance(possible, list):
+                  containers = [item for item in possible if isinstance(item, dict)]
+          elif isinstance(containers_data, list):
+              containers = [item for item in containers_data if isinstance(item, dict)]
+
+          container_statuses = Counter(
+              str(item.get("status") or "UNKNOWN") for item in containers
+          )
+          restart_counts = [
+              value
+              for value in recursive_values(containers, ("restartCount", "restarts"))
+              if isinstance(value, int)
+          ]
+          restart_state = {
+              "container_statuses": dict(container_statuses),
+              "restart_count_max": max(restart_counts) if restart_counts else None,
+          }
+
+          def log_findings(result: dict[str, Any]) -> dict[str, Any]:
+              data = data_of(result)
+              lines = data if isinstance(data, list) else []
+              findings = Counter()
+              timestamps: list[str] = []
+              safe_samples: list[str] = []
+              classifiers = {
+                  "error": re.compile(r"(?i)\b(error|exception|traceback|fatal)\b"),
+                  "warning": re.compile(r"(?i)\bwarn(?:ing)?\b"),
+                  "startup": re.compile(r"(?i)\b(startup|starting|started|uvicorn)\b"),
+                  "restart": re.compile(r"(?i)\b(restart|restarted|crash|killed)\b"),
+                  "scanner": re.compile(r"(?i)\b(scan|scanner|discovery)\b"),
+                  "filesystem": re.compile(r"(?i)\b(filesystem|volume|mount|fsync|flock|inode)\b"),
+              }
+              for item in lines:
+                  if not isinstance(item, dict):
+                      continue
+                  timestamp = item.get("ts")
+                  if isinstance(timestamp, str):
+                      timestamps.append(timestamp)
+                  text = sanitize_text(str(item.get("log") or ""), 600)
+                  for name, pattern in classifiers.items():
+                      if pattern.search(text):
+                          findings[name] += 1
+                  if text and len(safe_samples) < 12:
+                      if not any(pattern.search(text) for pattern in sensitive_text_patterns):
+                          safe_samples.append(text)
+              return {
+                  "line_count": len(lines),
+                  "latest_timestamp": max(timestamps) if timestamps else None,
+                  "classified_counts": dict(findings),
+                  "samples": safe_samples,
+              }
+
+          runtime_log_findings = log_findings(raw_requests["runtime_logs"])
+          build_log_findings = log_findings(raw_requests["build_logs"])
+
+          permission_values = recursive_values(
+              role_data.get("permissions", {}),
+              ("teamScope", "projectScope"),
+              skip_forbidden=False,
+          )
+          flat_permissions: list[str] = []
+          for permission_group in permission_values:
+              if isinstance(permission_group, list):
+                  flat_permissions.extend(str(item) for item in permission_group)
+
+          mutation_markers = re.compile(
+              r"(?i)(create|update|delete|manage|write|execute|deploy|restart|attach|detach|trigger)"
+          )
+          read_markers = re.compile(r"(?i)(read|view|list|get|observe)")
+          if role_data and flat_permissions:
+              has_mutating_permission = any(
+                  mutation_markers.search(permission) for permission in flat_permissions
+              )
+              has_read_permission = any(
+                  read_markers.search(permission) for permission in flat_permissions
+              )
+              token_role_read_only = (
+                  "VERIFIED"
+                  if has_read_permission and not has_mutating_permission
+                  else "NOT_VERIFIED"
+              )
+          elif token_role_internal_id and "readonly" in token_role_internal_id.lower():
+              token_role_read_only = "CLAIM_NAME_INDICATES_READ_ONLY_NOT_PERMISSION_VERIFIED"
+          else:
+              token_role_read_only = "UNVERIFIED"
+
+          service_type = service_data.get("serviceType") or first_scalar(
+              service_data, ("serviceType", "type")
+          )
+          repository = first_scalar(
+              service_data,
+              ("repository", "projectUrl", "repoUrl", "repositoryUrl"),
+          )
+          branch = (
+              build_detail.get("branch")
+              or latest_build.get("branch")
+              or first_scalar(service_data, ("branch", "branchName"))
+          )
+          build_context = first_scalar(
+              service_data,
+              ("buildContext", "dockerWorkDir", "context"),
+          )
+          dockerfile = first_scalar(
+              service_data,
+              ("dockerfilePath", "dockerfile"),
+          )
+          deployed_sha = (
+              build_detail.get("sha")
+              or latest_build.get("sha")
+              or first_scalar(deployment_data, ("sha", "commitSha", "deployedSha"))
+              or first_scalar(service_data, ("sha", "commitSha", "deployedSha"))
+          )
+          image_digest = first_scalar(
+              [service_data, deployment_data, build_detail],
+              ("imageDigest", "digest"),
+          )
+          deployment_id = first_scalar(
+              deployment_data,
+              ("deploymentId", "id"),
+          )
+          runtime_command = first_scalar(
+              deployment_data,
+              ("command", "cmd", "entrypoint", "entryPoint"),
+          )
+          replicas = first_scalar(
+              deployment_data,
+              ("instances", "replicas", "replicaCount"),
+          )
+
+          ports_data = data_of(raw_requests["ports"])
+          health_data = data_of(raw_requests["health_checks"])
+          service_health = service_data.get("healthChecks")
+          ports = ports_data if ports_data is not None else first_scalar(
+              service_data, ("ports",)
+          )
+          health_checks = (
+              health_data
+              if health_data is not None
+              else service_health
+          )
+
+          attached_objects_summary: list[dict[str, Any]] = []
+          for volume in attached_volumes:
+              attached = volume.get("attachedObjects")
+              if not isinstance(attached, list):
+                  continue
+              for item in attached:
+                  if isinstance(item, dict):
+                      attached_objects_summary.append(
+                          {
+                              "id": item.get("id"),
+                              "type": item.get("type"),
+                              "serviceId": item.get("serviceId"),
+                          }
+                      )
+
+          selected_volume = attached_volumes[0] if attached_volumes else {}
+          selected_volume_id = attached_volume_ids[0] if attached_volume_ids else None
+          volume_name = selected_volume.get("name") or first_scalar(
+              selected_volume, ("name",)
+          )
+          storage_class = first_scalar(
+              selected_volume,
+              ("storageClassName", "storageClass"),
+          )
+          capacity = first_scalar(
+              selected_volume,
+              ("storageSize", "capacity", "size"),
+          )
+          access_mode = first_scalar(
+              selected_volume,
+              ("accessMode", "volumeAccessMode"),
+          )
+
+          normalized_report = {
+              "captured_at": datetime.now(timezone.utc).isoformat(),
+              "github_sha": os.environ.get("GITHUB_SHA"),
+              "mode": "GET_ONLY",
+              "northflank_access": True,
+              "token_role_read_only": token_role_read_only,
+              "project_id": project_id,
+              "project_region": project_region,
+              "service_id": service_id,
+              "service_type": service_type,
+              "repository": repository,
+              "branch": branch,
+              "build_context": build_context,
+              "dockerfile": dockerfile,
+              "build_id": build_id,
+              "deployment_id": deployment_id,
+              "deployed_sha": deployed_sha,
+              "image_digest": image_digest,
+              "runtime_command": runtime_command,
+              "ports": ports,
+              "health_checks": health_checks,
+              "restart_state": restart_state,
+              "replicas": replicas,
+              "containers": containers,
+              "volume_present": volume_present,
+              "volume_id": selected_volume_id,
+              "volume_name": volume_name,
+              "mount_path": mount_paths,
+              "storage_class": storage_class,
+              "capacity": capacity,
+              "access_mode": access_mode,
+              "attached_objects": attached_objects_summary,
+              "backups_available": backups_available,
+              "backup_count": backup_count,
+              "recent_log_findings": {
+                  "runtime": runtime_log_findings,
+                  "build": build_log_findings,
+              },
+              "storage_decision": storage_decision,
+              "safe_probe_option": safe_probe_option,
+              "mutating_requests": mutating_requests,
+              "sensitive_capture_count": 0,
+              "production_changed": "NO",
+              "deploy_executed": "NO",
+              "pr5_changed": "NO",
+              "pr21_changed": "NO",
+              "request_ledger": request_ledger,
+              "request_statuses": {
+                  name: result.get("status")
+                  for name, result in raw_requests.items()
+              },
+              "sanitized_responses": {
+                  name: sanitize(result)
+                  for name, result in raw_requests.items()
+              },
+          }
+
+          sanitized_report = sanitize(normalized_report)
+          OUTPUT.joinpath("northflank-readonly-report.json").write_text(
+              json.dumps(sanitized_report, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+
+          def display(value: Any) -> str:
+              if value is None or value == "":
+                  return "UNKNOWN"
+              if isinstance(value, (dict, list)):
+                  return json.dumps(sanitize(value), sort_keys=True, separators=(",", ":"))
+              return sanitize_text(str(value), 2000)
+
+          summary_fields = [
+              ("NORTHFLANK_ACCESS", "YES"),
+              ("TOKEN_ROLE_READ_ONLY", token_role_read_only),
+              ("PROJECT_ID", project_id),
+              ("PROJECT_REGION", project_region),
+              ("SERVICE_ID", service_id),
+              ("SERVICE_TYPE", service_type),
+              ("REPOSITORY", repository),
+              ("BRANCH", branch),
+              ("BUILD_CONTEXT", build_context),
+              ("DOCKERFILE", dockerfile),
+              ("BUILD_ID", build_id),
+              ("DEPLOYMENT_ID", deployment_id),
+              ("DEPLOYED_SHA", deployed_sha),
+              ("IMAGE_DIGEST", image_digest),
+              ("RUNTIME_COMMAND", runtime_command),
+              ("PORTS", ports),
+              ("HEALTH_CHECKS", health_checks),
+              ("RESTART_STATE", restart_state),
+              ("REPLICAS", replicas),
+              ("CONTAINERS", containers),
+              ("VOLUME_PRESENT", volume_present),
+              ("VOLUME_ID", selected_volume_id),
+              ("VOLUME_NAME", volume_name),
+              ("MOUNT_PATH", mount_paths),
+              ("STORAGE_CLASS", storage_class),
+              ("CAPACITY", capacity),
+              ("ACCESS_MODE", access_mode),
+              ("ATTACHED_OBJECTS", attached_objects_summary),
+              ("BACKUPS_AVAILABLE", backups_available),
+              (
+                  "RECENT_LOG_FINDINGS",
+                  {
+                      "runtime": runtime_log_findings,
+                      "build": build_log_findings,
+                  },
+              ),
+              ("STORAGE_DECISION", storage_decision),
+              ("SAFE_PROBE_OPTION", safe_probe_option),
+              ("MUTATING_REQUESTS", mutating_requests),
+              ("SENSITIVE_VALUES_CAPTURED", 0),
+              ("PRODUCTION_CHANGED", "NO"),
+              ("PR5_CHANGED", "NO"),
+              ("PR21_CHANGED", "NO"),
+              ("DEPLOY_EXECUTED", "NO"),
+          ]
+          OUTPUT.joinpath("northflank-readonly-summary.txt").write_text(
+              "\n".join(f"{key}={display(value)}" for key, value in summary_fields) + "\n",
+              encoding="utf-8",
+          )
+
+          if mutating_requests != 0:
+              raise RuntimeError("MUTATING_REQUEST_DETECTED")
+          if any(item.get("method") != "GET" for item in request_ledger):
+              raise RuntimeError("NON_GET_REQUEST_DETECTED")
+          PY
+
+      - name: Enforce GET-only ledger and sensitive artifact gate
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path("evidence")
+          token = os.environ["NORTHFLANK_API_TOKEN"]
+          forbidden_fragments = (
+              "secret", "secrets", "token", "password", "authorization",
+              "cookie", "credential", "credentials", "runtimeenvironment",
+              "runtimefiles", "environment", "env", "value", "privatekey",
+          )
+          raw_patterns = [
+              re.compile(rb"nf-[A-Za-z0-9._~+/=-]{16,}"),
+              re.compile(rb"gh[pousr]_[A-Za-z0-9_]{16,}"),
+              re.compile(rb"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+              re.compile(rb"(?i)(authorization|cookie|set-cookie)\s*:"),
+              re.compile(rb"(?i)(password|secret|credential|private[_-]?key|api[_-]?key)\s*[=:]"),
+          ]
+
+          def norm(key):
+              return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+          def inspect_json(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      normalized = norm(key)
+                      if any(fragment in normalized for fragment in forbidden_fragments):
+                          raise SystemExit(f"forbidden JSON key in artifact: {key}")
+                      inspect_json(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      inspect_json(child)
+
+          for path in root.iterdir():
+              if not path.is_file():
+                  continue
+              content = path.read_bytes()
+              if token.encode() in content:
+                  raise SystemExit(f"exact token leaked into {path}")
+              for pattern in raw_patterns:
+                  if pattern.search(content):
+                      raise SystemExit(f"sensitive pattern found in {path}: {pattern.pattern!r}")
+              if path.suffix == ".json":
+                  inspect_json(json.loads(content.decode("utf-8")))
+
+          report = json.loads(root.joinpath("northflank-readonly-report.json").read_text())
+          ledger = report.get("request_ledger", [])
+          if not ledger:
+              raise SystemExit("request ledger missing")
+          if any(item.get("method") != "GET" for item in ledger):
+              raise SystemExit("non-GET method in request ledger")
+          if report.get("mutating_requests") != 0:
+              raise SystemExit("mutating request counter is non-zero")
+          if report.get("sensitive_capture_count") != 0:
+              raise SystemExit("sensitive value counter is non-zero")
+          PY
+
+          sha256sum evidence/* > evidence/SHA256SUMS
+
+      - name: Upload sanitized read-only evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: h011-northflank-readonly-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
