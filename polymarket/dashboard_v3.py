@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -35,6 +36,10 @@ app = FastAPI(title="SENEX / SENECIO H-011 V3 Control Plane", docs_url=None, red
 RESULTS_DIR = Path(os.environ.get("H011_RESULTS_DIR", "/app/polymarket/results"))
 RAW_CHAIN_DIR = RESULTS_DIR / "h011_v3" / "raw_chain_v1"
 RUNTIME_STATE_FILE = RESULTS_DIR / "h011_v3" / "runtime_state.json"
+UVICORN_HOST: Final[str] = "127.0.0.1"
+READYZ_STATE_MAX_AGE_S_DEFAULT: Final[float] = 1500.0
+READYZ_SCANNER_SUCCESS_MAX_AGE_S_DEFAULT: Final[float] = 1800.0
+READYZ_STARTUP_GRACE_S_DEFAULT: Final[float] = 1500.0
 
 
 def _runtime_state() -> dict[str, Any]:
@@ -60,6 +65,84 @@ def _runtime_state() -> dict[str, Any]:
 
 def _committed() -> tuple[dict[str, Any], Any]:
     return load_committed_snapshot(results_root=RESULTS_DIR, raw_directory=RAW_CHAIN_DIR)
+
+
+def _positive_seconds_from_env(name: str, default: float) -> float | None:
+    """Return a positive finite duration, or ``None`` to fail readiness closed."""
+    raw = os.environ.get(name)
+    try:
+        value = default if raw is None else float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not (0 < value < float("inf")):
+        return None
+    return value
+
+
+def _timestamp_age_s(value: Any, *, now: datetime) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    age_s = (now - parsed.astimezone(timezone.utc)).total_seconds()
+    return age_s if age_s >= 0 else None
+
+
+def _readiness(runtime: dict[str, Any], *, now: datetime | None = None) -> tuple[bool, str | None]:
+    """Evaluate cheap, state-file-only readiness with fail-closed freshness."""
+    limits = {
+        "state": _positive_seconds_from_env(
+            "H011_READYZ_STATE_MAX_AGE_S", READYZ_STATE_MAX_AGE_S_DEFAULT
+        ),
+        "scanner": _positive_seconds_from_env(
+            "H011_READYZ_SCANNER_SUCCESS_MAX_AGE_S",
+            READYZ_SCANNER_SUCCESS_MAX_AGE_S_DEFAULT,
+        ),
+        "startup": _positive_seconds_from_env(
+            "H011_READYZ_STARTUP_GRACE_S", READYZ_STARTUP_GRACE_S_DEFAULT
+        ),
+    }
+    if any(value is None for value in limits.values()):
+        return False, "readiness_config_invalid"
+    if not bool(runtime.get("readiness")):
+        return False, "runtime_not_ready"
+    if not bool(runtime.get("chain_verified")):
+        return False, "chain_not_verified"
+    diagnostic_only = (
+        os.environ.get("H011_RUNTIME_DIAGNOSTIC_ONLY", "false").lower() == "true"
+        and runtime.get("runtime_state") == "DEGRADED"
+        and runtime.get("blocking_reason") == "diagnostic_only_mode"
+        and not bool(runtime.get("scanner_enabled"))
+        and not bool(runtime.get("publication_enabled"))
+    )
+    if runtime.get("runtime_state") != "RUNNING" and not diagnostic_only:
+        return False, "runtime_state_not_running"
+
+    observed_at = now or datetime.now(timezone.utc)
+    state_age = _timestamp_age_s(runtime.get("updated_at"), now=observed_at)
+    if state_age is None or state_age > limits["state"]:  # type: ignore[operator]
+        return False, "runtime_state_stale_or_invalid"
+
+    # Preserve the isolated reproducibility harness without weakening the real
+    # runtime path: this exception is reachable only in explicit diagnostic mode.
+    if diagnostic_only:
+        return True, None
+
+    if runtime.get("scanner_last_success") is not None:
+        scanner_age = _timestamp_age_s(runtime.get("scanner_last_success"), now=observed_at)
+        if scanner_age is None or scanner_age > limits["scanner"]:  # type: ignore[operator]
+            return False, "scanner_success_stale_or_invalid"
+    else:
+        startup_age = _timestamp_age_s(runtime.get("started_at"), now=observed_at)
+        if not bool(runtime.get("scanner_enabled")):
+            return False, "scanner_not_enabled_during_startup"
+        if startup_age is None or startup_age > limits["startup"]:  # type: ignore[operator]
+            return False, "startup_grace_expired_or_invalid"
+    return True, None
 
 
 def _diagnostic_error(exc: Exception) -> dict[str, Any]:
@@ -217,8 +300,16 @@ def livez():
 @app.get("/readyz")
 def readyz():
     runtime = _runtime_state()
-    ready = bool(runtime.get("readiness"))
-    return JSONResponse({"ok": ready, "readiness": ready, "runtime_state": runtime.get("runtime_state")}, status_code=200 if ready else 503)
+    ready, reason = _readiness(runtime)
+    return JSONResponse(
+        {
+            "ok": ready,
+            "readiness": ready,
+            "runtime_state": runtime.get("runtime_state"),
+            "reason": reason,
+        },
+        status_code=200 if ready else 503,
+    )
 
 
 @app.get("/healthz")
@@ -396,6 +487,10 @@ load();setInterval(load,10000);
 </html>"""
 
 
-if __name__ == "__main__":
+def main() -> None:
     port = int(os.environ.get("PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    uvicorn.run(app, host=UVICORN_HOST, port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

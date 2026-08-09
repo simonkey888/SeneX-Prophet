@@ -49,7 +49,6 @@ CONTAINER="senex-h011-repro-${RUN_ID}"
 WORK="${RUNNER_TEMP:-/tmp}/senex-h011-arm64-repro-${RUN_ID}-$$"
 RESULTS="$WORK/results"
 CONTEXT="$WORK/context"
-BASE_URL="http://127.0.0.1:18080"
 BUILDERS=()
 
 write_result() {
@@ -220,6 +219,13 @@ on_exit() {
 
 trap on_err ERR
 trap on_exit EXIT
+
+container_http_get() {
+  local endpoint="${1:?endpoint required}"
+  docker exec "$CONTAINER" python3 -c \
+    'import sys; from urllib.request import ProxyHandler, build_opener; sys.stdout.buffer.write(build_opener(ProxyHandler({})).open("http://127.0.0.1:8080" + sys.argv[1], timeout=5).read())' \
+    "$endpoint"
+}
 
 if git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
   HEAD_SHA="$(git -C "$ROOT" rev-parse HEAD)"
@@ -637,7 +643,6 @@ docker run --rm \
 docker run -d \
   --platform linux/arm64 \
   --name "$CONTAINER" \
-  -p 127.0.0.1:18080:8080 \
   -e H011_ORDERS_ENABLED=false \
   -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
   -e H011_RESULTS_DIR=/app/polymarket/results \
@@ -646,20 +651,21 @@ docker run -d \
   -v "$RESULTS:/app/polymarket/results" \
   "$IMAGE" > "$EVIDENCE/docker-run.txt"
 docker port "$CONTAINER" > "$EVIDENCE/docker-port.txt"
-ss -ltnp > "$EVIDENCE/listeners.txt" || true
-grep -Eq '^8080/tcp -> 127\.0\.0\.1:18080$' "$EVIDENCE/docker-port.txt" \
-  || die "LOOPBACK_BIND_FAILED"
-if grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\[::\]):18080([[:space:]]|$)' "$EVIDENCE/listeners.txt"; then
-  die "PUBLIC_18080_LISTENER"
-fi
+docker inspect "$CONTAINER" | jq -S '.[0].HostConfig.PortBindings' \
+  > "$EVIDENCE/docker-port-bindings.json"
+[[ ! -s "$EVIDENCE/docker-port.txt" ]] \
+  || die "DOCKER_PUBLISHED_PORTS_PRESENT"
+jq -e '(. == null) or (type == "object" and length == 0)' \
+  "$EVIDENCE/docker-port-bindings.json" >/dev/null \
+  || die "DOCKER_PORT_BINDINGS_PRESENT"
 
 deadline=$((SECONDS + 300))
 ready="false"
 while (( SECONDS < deadline )); do
-  if curl -fsS "$BASE_URL/readyz" \
+  if container_http_get /readyz \
       | jq -e '.ok==true and .readiness==true and .runtime_state=="DEGRADED"' \
         >/dev/null 2>&1 \
-    && curl -fsS "$BASE_URL/api/v3/integrity" \
+    && container_http_get /api/v3/integrity \
       | jq -e --arg sha "$CANDIDATE_HEAD_SHA" \
         '.code_sha==$sha and .paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
         >/dev/null 2>&1; then
@@ -673,17 +679,46 @@ if [[ "$ready" != "true" ]]; then
     > "$EVIDENCE/container-initial-failure-state.json" 2>/dev/null || true
   docker logs "$CONTAINER" \
     > "$EVIDENCE/container-initial-failure.log" 2>&1 || true
-  curl -sS "$BASE_URL/readyz" \
+  container_http_get /readyz \
     > "$EVIDENCE/readyz-initial-failure.json" 2>/dev/null || true
-  curl -sS "$BASE_URL/api/v3/integrity" \
+  container_http_get /api/v3/integrity \
     > "$EVIDENCE/integrity-initial-failure.json" 2>/dev/null || true
   die "INITIAL_ENDPOINT_GATE_FAILED"
 fi
 
+if ! docker exec "$CONTAINER" python3 -c '
+from pathlib import Path
+
+listeners = []
+for source in ("/proc/net/tcp", "/proc/net/tcp6"):
+    path = Path(source)
+    if not path.exists():
+        continue
+    for line in path.read_text(encoding="utf-8").splitlines()[1:]:
+        fields = line.split()
+        local_address, state = fields[1], fields[3]
+        address, port = local_address.split(":")
+        if state == "0A" and port.upper() == "1F90":
+            listeners.append((source, address.upper()))
+assert ("/proc/net/tcp", "0100007F") in listeners, listeners
+assert not any(
+    address in {"00000000", "00000000000000000000000000000000"}
+    for _, address in listeners
+), listeners
+print("CONTAINER_127_0_0_1_8080=LISTENING")
+print("CONTAINER_0_0_0_0_8080=NOT_LISTENING")
+' > "$EVIDENCE/container-listener-boundary.env"; then
+  die "CONTAINER_LOOPBACK_LISTENER_GATE_FAILED"
+fi
+{
+  printf 'DOCKER_PUBLISHED_PORTS=NONE\n'
+  cat "$EVIDENCE/container-listener-boundary.env"
+} > "$EVIDENCE/network-boundary.env"
+
 endpoint=""
 for endpoint in livez readyz healthz api/v3/state api/v3/integrity api/v3/replay; do
   name="${endpoint//\//_}"
-  curl -fsS "$BASE_URL/$endpoint" | jq -S . \
+  container_http_get "/$endpoint" | jq -S . \
     > "$EVIDENCE/$name.json"
 done
 jq -e \
@@ -722,7 +757,7 @@ docker start "$CONTAINER" > "$EVIDENCE/docker-start.txt"
 deadline=$((SECONDS + 300))
 restarted="false"
 while (( SECONDS < deadline )); do
-  if curl -fsS "$BASE_URL/api/v3/integrity" \
+  if container_http_get /api/v3/integrity \
       | jq -e \
         '.paper_only==true and .orders_enabled==false and .live_capital_locked==true and .chain_verified==true and .replay_verified==true and .file_sha256_matches==true and .readiness==true and .runtime.runtime_state=="DEGRADED" and .runtime.scanner_enabled==false and .runtime.publication_enabled==false and .runtime.blocking_reason=="diagnostic_only_mode"' \
         >/dev/null 2>&1; then
@@ -732,9 +767,9 @@ while (( SECONDS < deadline )); do
   sleep 10
 done
 [[ "$restarted" == "true" ]] || die "RESTART_ENDPOINT_GATE_FAILED"
-curl -fsS "$BASE_URL/api/v3/integrity" | jq -S . \
+container_http_get /api/v3/integrity | jq -S . \
   > "$EVIDENCE/integrity-after.json"
-curl -fsS "$BASE_URL/api/v3/replay" | jq -S . \
+container_http_get /api/v3/replay | jq -S . \
   > "$EVIDENCE/replay-after.json"
 post_seq="$(jq -r '.raw_chain.current_sequence' "$EVIDENCE/integrity-after.json")"
 [[ "$post_seq" =~ ^[0-9]+$ ]] \

@@ -52,6 +52,21 @@ RUNTIME_STATES: Final[frozenset[str]] = frozenset({
     "SCANNER_FAILED",
     "STOPPING",
 })
+SCANNER_TIMEOUT_S_DEFAULT: Final[float] = 1200.0
+CHILD_TERMINATE_TIMEOUT_S: Final[float] = 10.0
+CHILD_KILL_TIMEOUT_S: Final[float] = 5.0
+SCANNER_TIMEOUT_EXIT_CODE: Final[int] = 124
+
+
+def _positive_seconds_from_env(name: str, default: float) -> float | None:
+    raw = os.environ.get(name)
+    try:
+        value = default if raw is None else float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not (0 < value < float("inf")):
+        return None
+    return value
 
 
 def utc_now() -> str:
@@ -386,6 +401,9 @@ class RuntimeSupervisor:
         self.stop_requested = False
         self.dashboard: subprocess.Popen[bytes] | None = None
         self.scanner: subprocess.Popen[bytes] | None = None
+        self.scanner_timeout_s = _positive_seconds_from_env(
+            "H011_SCANNER_TIMEOUT_S", SCANNER_TIMEOUT_S_DEFAULT
+        )
 
     def _signal(self, signum: int, _frame: Any) -> None:
         self.stop_requested = True
@@ -402,105 +420,162 @@ class RuntimeSupervisor:
             env=env,
         )
 
+    @staticmethod
+    def _terminate_and_reap(child: subprocess.Popen[bytes] | None) -> None:
+        if child is None:
+            return
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=CHILD_KILL_TIMEOUT_S)
+        else:
+            child.wait(timeout=CHILD_KILL_TIMEOUT_S)
+
+    def _cleanup_children(self) -> None:
+        try:
+            self._terminate_and_reap(self.scanner)
+        finally:
+            self.scanner = None
+            try:
+                self._terminate_and_reap(self.dashboard)
+            finally:
+                self.dashboard = None
+
+    def _wait_for_scanner(self) -> tuple[int, bool]:
+        if self.scanner is None:
+            raise RuntimeError("scanner process was not started")
+        if self.scanner_timeout_s is None:
+            raise RuntimeError("scanner timeout configuration is invalid")
+        try:
+            return self.scanner.wait(timeout=self.scanner_timeout_s), False
+        except subprocess.TimeoutExpired:
+            failed_at = utc_now()
+            scanner = self.scanner
+            self._terminate_and_reap(scanner)
+            self.scanner = None
+            self.store.write(
+                runtime_state="SCANNER_FAILED",
+                readiness=False,
+                scanner_enabled=False,
+                publication_enabled=False,
+                scanner_last_failure=failed_at,
+                blocking_reason="scanner_timeout",
+                last_error=f"scanner exceeded {self.scanner_timeout_s:g}s deadline",
+            )
+            return SCANNER_TIMEOUT_EXIT_CODE, True
+
     def run(self) -> int:
         signal.signal(signal.SIGTERM, self._signal)
         signal.signal(signal.SIGINT, self._signal)
-        state = startup_recovery(results_root=self.results_root, store=self.store)
-        self._launch_dashboard()
-        if os.environ.get("H011_RUNTIME_DIAGNOSTIC_ONLY", "false").lower() == "true" and state.get("scanner_enabled"):
-            self.store.write(
-                runtime_state="DEGRADED", readiness=True, scanner_enabled=False,
-                publication_enabled=False, blocking_reason="diagnostic_only_mode",
-            )
-            while not self.stop_requested and self.dashboard.poll() is None:
-                time.sleep(1)
-            return 0
-        if not state.get("scanner_enabled"):
-            # Keep diagnostics reachable but never scan or publish.
-            while not self.stop_requested and self.dashboard.poll() is None:
-                time.sleep(1)
-            return 2
+        try:
+            state = startup_recovery(results_root=self.results_root, store=self.store)
+            self._launch_dashboard()
+            if os.environ.get("H011_RUNTIME_DIAGNOSTIC_ONLY", "false").lower() == "true" and state.get("scanner_enabled"):
+                self.store.write(
+                    runtime_state="DEGRADED", readiness=True, scanner_enabled=False,
+                    publication_enabled=False, blocking_reason="diagnostic_only_mode",
+                )
+                while not self.stop_requested and self.dashboard.poll() is None:
+                    time.sleep(1)
+                return 0
+            if not state.get("scanner_enabled"):
+                # Keep diagnostics reachable but never scan or publish.
+                while not self.stop_requested and self.dashboard.poll() is None:
+                    time.sleep(1)
+                return 2
+            if self.scanner_timeout_s is None:
+                self.store.write(
+                    runtime_state="SCANNER_FAILED",
+                    readiness=False,
+                    scanner_enabled=False,
+                    publication_enabled=False,
+                    scanner_last_failure=utc_now(),
+                    blocking_reason="scanner_timeout_config_invalid",
+                    last_error="H011_SCANNER_TIMEOUT_S must be a positive finite number",
+                )
+                return 64
 
-        scanner_command = [
-            sys.executable,
-            str(Path(__file__).with_name("vwap_detector_v2.py")),
-            "--pipeline", "integrity-v3",
-            "--mode", "scan",
-            "--window", "300",
-            "--max-markets", "10",
-            "--gamma-limit", "3000",
-        ]
-        while not self.stop_requested:
-            if self.dashboard.poll() is not None:
-                self.store.write(
-                    runtime_state="SCANNER_FAILED",
-                    readiness=False,
-                    scanner_enabled=False,
-                    publication_enabled=False,
-                    scanner_last_failure=utc_now(),
-                    last_error=f"dashboard exited with {self.dashboard.returncode}",
-                )
-                return 3
-            started = utc_now()
-            self.store.write(runtime_state="RUNNING", scanner_last_start=started)
-            env = os.environ.copy()
-            env["H011_RESULTS_DIR"] = str(self.results_root)
-            self.scanner = subprocess.Popen(scanner_command, env=env)
-            return_code = self.scanner.wait()
-            self.scanner = None
-            if self.stop_requested:
-                break
-            if return_code != 0:
-                self.store.write(
-                    runtime_state="SCANNER_FAILED",
-                    readiness=False,
-                    scanner_enabled=False,
-                    publication_enabled=False,
-                    scanner_last_failure=utc_now(),
-                    last_error=f"scanner exited with {return_code}",
-                )
-                return return_code
-            try:
-                chain = prepare_storage(self.results_root)
-                with rt.RawChainLock(chain, rt.DEFAULT_MARKER_POLICY.manifest_prefix).acquire() as guard:
-                    committed = validate_committed_chain_under_lock(
-                        guard=guard, raw_directory=chain, policy=rt.DEFAULT_MARKER_POLICY
-                    )
-                chain_view = committed.to_dict()
-            except Exception as exc:
-                self.store.write(
-                    runtime_state="BLOCKED_RAW_INTEGRITY", readiness=False,
-                    scanner_enabled=False, publication_enabled=False,
-                    scanner_last_failure=utc_now(), blocking_reason="post_scan_chain_verification",
-                    last_error=f"{type(exc).__name__}: {exc}",
-                )
-                return 4
-            self.store.write(
-                runtime_state="RUNNING",
-                readiness=True,
-                scanner_enabled=True,
-                publication_enabled=True,
-                scanner_last_success=utc_now(),
-                current_sequence=chain_view.get("current_sequence"),
-                manifest_hash=chain_view.get("manifest_hash"),
-                chain_verified=True,
-                last_error=None,
-            )
-            deadline = time.monotonic() + self.interval_s
-            while not self.stop_requested and time.monotonic() < deadline:
+            scanner_command = [
+                sys.executable,
+                str(Path(__file__).with_name("vwap_detector_v2.py")),
+                "--pipeline", "integrity-v3",
+                "--mode", "scan",
+                "--window", "300",
+                "--max-markets", "10",
+                "--gamma-limit", "1",
+            ]
+            while not self.stop_requested:
                 if self.dashboard.poll() is not None:
+                    self.store.write(
+                        runtime_state="SCANNER_FAILED",
+                        readiness=False,
+                        scanner_enabled=False,
+                        publication_enabled=False,
+                        scanner_last_failure=utc_now(),
+                        last_error=f"dashboard exited with {self.dashboard.returncode}",
+                    )
+                    return 3
+                started = utc_now()
+                self.store.write(runtime_state="RUNNING", scanner_last_start=started)
+                env = os.environ.copy()
+                env["H011_RESULTS_DIR"] = str(self.results_root)
+                self.scanner = subprocess.Popen(scanner_command, env=env)
+                return_code, timed_out = self._wait_for_scanner()
+                self.scanner = None
+                if timed_out:
+                    return return_code
+                if self.stop_requested:
                     break
-                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+                if return_code != 0:
+                    self.store.write(
+                        runtime_state="SCANNER_FAILED",
+                        readiness=False,
+                        scanner_enabled=False,
+                        publication_enabled=False,
+                        scanner_last_failure=utc_now(),
+                        last_error=f"scanner exited with {return_code}",
+                    )
+                    return return_code
+                try:
+                    chain = prepare_storage(self.results_root)
+                    with rt.RawChainLock(chain, rt.DEFAULT_MARKER_POLICY.manifest_prefix).acquire() as guard:
+                        committed = validate_committed_chain_under_lock(
+                            guard=guard, raw_directory=chain, policy=rt.DEFAULT_MARKER_POLICY
+                        )
+                    chain_view = committed.to_dict()
+                except Exception as exc:
+                    self.store.write(
+                        runtime_state="BLOCKED_RAW_INTEGRITY", readiness=False,
+                        scanner_enabled=False, publication_enabled=False,
+                        scanner_last_failure=utc_now(), blocking_reason="post_scan_chain_verification",
+                        last_error=f"{type(exc).__name__}: {exc}",
+                    )
+                    return 4
+                self.store.write(
+                    runtime_state="RUNNING",
+                    readiness=True,
+                    scanner_enabled=True,
+                    publication_enabled=True,
+                    scanner_last_success=utc_now(),
+                    current_sequence=chain_view.get("current_sequence"),
+                    manifest_hash=chain_view.get("manifest_hash"),
+                    chain_verified=True,
+                    blocking_reason=None,
+                    last_error=None,
+                )
+                deadline = time.monotonic() + self.interval_s
+                while not self.stop_requested and time.monotonic() < deadline:
+                    if self.dashboard.poll() is not None:
+                        break
+                    time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
-        self.store.write(runtime_state="STOPPING", readiness=False, scanner_enabled=False, publication_enabled=False)
-        if self.dashboard is not None and self.dashboard.poll() is None:
-            self.dashboard.terminate()
-            try:
-                self.dashboard.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.dashboard.kill()
-                self.dashboard.wait(timeout=5)
-        return 0
+            self.store.write(runtime_state="STOPPING", readiness=False, scanner_enabled=False, publication_enabled=False)
+            return 0
+        finally:
+            self._cleanup_children()
 
 
 def main() -> int:
