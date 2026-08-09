@@ -27,7 +27,7 @@ jobs:
       NF_SERVICE_SLUG: senecio-h011
       EXPECTED_PR5_HEAD: aeb50867738b7ae7199f621a730080e09465458e
       EXPECTED_PR21_HEAD: 33b4eaffffc3577c52e02d407f13a6fc61777ad6
-      EXPECTED_AUDIT_BRANCH: audit/h011-northflank-readonly-inspection
+      EXPECTED_AUDIT_BRANCH: ops/senex-zero-cost-audit-20260809
       HTTP_METHODS_ALLOWED: GET_ONLY
 
     steps:
@@ -52,7 +52,8 @@ jobs:
           test "${pr21_remote}" = "${EXPECTED_PR21_HEAD}"
 
           changed="$(git diff --name-only "${EXPECTED_PR5_HEAD}...HEAD")"
-          test "${changed}" = ".github/workflows/h011-northflank-readonly-inspection.yml"
+          expected="$(printf '%s\n' '.github/workflows/h011-northflank-readonly-inspection.yml' '.github/workflows/senex-zero-cost-northflank-audit.yml')"
+          test "${changed}" = "${expected}"
 
       - name: Verify environment token exists without disclosure
         shell: bash
