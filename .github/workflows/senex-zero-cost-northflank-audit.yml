@@ -53,7 +53,8 @@ jobs:
 
           git merge-base --is-ancestor "origin/audit/h011-northflank-readonly-inspection" HEAD
           changed="$(git diff --name-only "origin/audit/h011-northflank-readonly-inspection...HEAD")"
-          test "${changed}" = ".github/workflows/senex-zero-cost-northflank-audit.yml"
+          expected="$(printf '%s\n' '.github/workflows/senex-zero-cost-northflank-api-diagnostic.yml' '.github/workflows/senex-zero-cost-northflank-audit.yml')"
+          test "${changed}" = "${expected}"
 
       - name: Verify environment token exists without disclosure
         shell: bash
