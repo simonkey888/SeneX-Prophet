@@ -98,6 +98,7 @@ HEALTH_MAX_CYCLE_AGE_S = (CYCLE_INTERVAL_S * 2) + 300
 WINDOW_15M_S = 900
 WINDOW_1H_S = 3600
 PRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1
+SETTLEMENT_GRACE_S = 75  # wait until the containing 1m candle is closed and stable
 
 
 def _count_predictions() -> int:
@@ -199,6 +200,14 @@ def get_health_state(now: Optional[datetime] = None) -> dict[str, Any]:
         status = "STALE"
         healthy = False
         reason = "prediction loop has not completed on schedule"
+    elif last_prediction_at is None:
+        status = "STALE"
+        healthy = False
+        reason = "prediction loop completed without a publishable prediction"
+    elif prediction_age_s is None or prediction_age_s < 0 or prediction_age_s > HEALTH_MAX_CYCLE_AGE_S:
+        status = "STALE"
+        healthy = False
+        reason = "last prediction is stale or has an invalid timestamp"
     else:
         status = "HEALTHY"
         healthy = True
@@ -264,6 +273,14 @@ async def _run_one_prediction(symbol: str) -> Optional[dict]:
         prediction["exchange_used"] = exchange_used
         if "_audit" in prediction:
             prediction["_audit"]["exchange_used"] = exchange_used
+            prediction["_audit"]["origin_price_proof"] = {
+                "proof_schema": "oracle-origin-price-v1",
+                "exchange": str(exchange_used).lower(),
+                "instrument": prediction.get("symbol"),
+                "price_source": "public_ticker_best_bid",
+                "observed_at": prediction.get("timestamp"),
+                "price": prediction.get("price_now"),
+            }
 
         # ── ACT FINAL_AUDIT (A2) — STRICT_ADDITIVE audit enrichment ──
         # Adds 30+ derived fields to _audit.enriched (hour, weekday, session,
@@ -358,11 +375,13 @@ async def _fetch_current_price(symbol: str) -> Optional[float]:
     return await asyncio.to_thread(_fetch)
 
 
-async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = WINDOW_15M_S) -> Optional[float]:
-    """Fetch the historical close price at ~ts+window_seconds via OKX public candles.
+async def _fetch_price_at_time(
+    symbol: str, ts_iso: str, window_seconds: int = WINDOW_15M_S,
+) -> Optional[dict[str, Any]]:
+    """Fetch a reproducible OKX 1m settlement observation.
 
-    OKX endpoint: GET /api/v5/market/candles?instId={symbol}&bar=1m&after={ts+window_seconds_ms}&before={ts+window_seconds_ms}
-    Returns the 1-minute candle close at (ts + window_seconds) ± 30s.
+    Uses OKX public 1-minute OHLCV and returns the close of the candle that
+    contains exactly ``ts + window_seconds``.
 
     ACT XXIII: window_seconds parameter added — pass 900 for 15min, 3600 for 1h.
     The cache key upstream should be (symbol, settle_minute_ms, window_seconds)
@@ -372,10 +391,11 @@ async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = W
         symbol: e.g. "ETH/USDT" (ccxt format with slash)
         ts_iso: ISO 8601 timestamp of the PREDICTION (e.g. "2026-06-17T21:56:05+00:00")
         window_seconds: settlement window in seconds (900 = 15min, 3600 = 1h)
-    Returns:
-        Close price at ts+window_seconds, or None on failure.
+    Returns a proof dict only when the exact 1m candle containing the target
+    exists and has closed.  There is deliberately no "closest candle"
+    fallback: that would silently change the scoring horizon.
     """
-    def _fetch() -> Optional[float]:
+    def _fetch() -> Optional[dict[str, Any]]:
         try:
             import ccxt
             # Parse prediction ts, add window to get settlement time
@@ -388,8 +408,7 @@ async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = W
             # ccxt signature: fetch_ohlcv(symbol, timeframe='1m', since=ms, limit=1)
             # `since` returns the candle whose OPEN ts >= since. We want the
             # candle that CONTAINS settle_ts, so we pass since=settle_ms - 60_000
-            # (1 candle before) and limit=2, then pick the candle whose open ts
-            # is closest to settle_ts.
+            # (1 candle before) and limit=2, then require the containing candle.
             ohlcv = ex.fetch_ohlcv(
                 symbol, timeframe="1m", since=settle_ms - 60_000, limit=2
             )
@@ -400,14 +419,27 @@ async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = W
                 )
                 return None
             # ohlcv entries: [open_ts_ms, open, high, low, close, volume]
-            # Pick the candle whose open_ts is closest to (but <=) settle_ms
+            # Pick only the candle that contains the target timestamp.
             best = None
             for candle in ohlcv:
-                if candle[0] <= settle_ms:
-                    if best is None or candle[0] > best[0]:
-                        best = candle
+                if len(candle) >= 6 and candle[0] <= settle_ms < candle[0] + 60_000:
+                    best = candle
+                    break
             if best is None:
-                best = ohlcv[0]
+                log.warning(
+                    "_fetch_price_at_time: exact containing candle absent for %s @ %s (window=%ss)",
+                    symbol, settle_ts.isoformat(), window_seconds,
+                )
+                return None
+            candle_open_ms = int(best[0])
+            candle_close_ms = candle_open_ms + 60_000
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            if now_ms < candle_close_ms:
+                log.info(
+                    "_fetch_price_at_time: containing candle still open for %s @ %s",
+                    symbol, settle_ts.isoformat(),
+                )
+                return None
             close_price = float(best[4])  # index 4 = close
             if close_price <= 0:
                 log.warning(
@@ -415,7 +447,18 @@ async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = W
                     symbol, settle_ts.isoformat(), window_seconds, best,
                 )
                 return None
-            return close_price
+            return {
+                "proof_schema": "oracle-settlement-observation-v1",
+                "exchange": "okx",
+                "instrument": symbol,
+                "timeframe": "1m",
+                "target_ts": settle_ts.astimezone(timezone.utc).isoformat(),
+                "target_ts_ms": settle_ms,
+                "candle_open_ts_ms": candle_open_ms,
+                "candle_close_ts_ms": candle_close_ms,
+                "price_field": "close",
+                "price": close_price,
+            }
         except Exception as e:
             log.warning(
                 "ccxt fetch_ohlcv failed for %s @ %s (window=%ss): %s",
@@ -464,7 +507,7 @@ async def _verify_pending_outcomes() -> int:
         # ACT XXIII: fetch predictions older than 1h (the gating window).
         # 15m outcomes are still computed for research but the primary gate is 1h.
         pending = await supabase_client.fetch_pending_outcomes(
-            older_than_seconds=WINDOW_1H_S, limit=100
+            older_than_seconds=WINDOW_1H_S + SETTLEMENT_GRACE_S, limit=100
         )
     except Exception as e:
         log.exception("fetch_pending_outcomes failed: %s", e)
@@ -487,7 +530,7 @@ async def _verify_pending_outcomes() -> int:
     errors = 0
     cache_hits = 0
     # Cache key: (symbol, settle_minute_ms, window_seconds)
-    price_cache: dict[tuple[str, int, int], Optional[float]] = {}
+    price_cache: dict[tuple[str, int, int], Optional[dict[str, Any]]] = {}
 
     for row in pending:
         pred_id = row.get("id")
@@ -518,22 +561,26 @@ async def _verify_pending_outcomes() -> int:
             continue
 
         # Fetch prices at both windows (with caching per minute+window)
-        prices: dict[str, Optional[float]] = {}
+        observations: dict[str, Optional[dict[str, Any]]] = {}
         for window_name, window_s in (("15m", WINDOW_15M_S), ("1h", WINDOW_1H_S)):
             settle_dt = ts_dt + timedelta(seconds=window_s)
             settle_minute_ms = int(settle_dt.timestamp() // 60 * 60 * 1000)
             cache_key = (sym_ccxt, settle_minute_ms, window_s)
             if cache_key in price_cache:
-                prices[window_name] = price_cache[cache_key]
+                observations[window_name] = price_cache[cache_key]
                 cache_hits += 1
             else:
-                p = await _fetch_price_at_time(sym_ccxt, str(ts_iso), window_seconds=window_s)
-                price_cache[cache_key] = p
-                prices[window_name] = p
+                observation = await _fetch_price_at_time(
+                    sym_ccxt, str(ts_iso), window_seconds=window_s,
+                )
+                price_cache[cache_key] = observation
+                observations[window_name] = observation
                 await asyncio.sleep(0.3)  # gentle pacing on cache miss
 
-        price_15m = prices.get("15m")
-        price_1h = prices.get("1h")
+        observation_15m = observations.get("15m")
+        observation_1h = observations.get("1h")
+        price_15m = observation_15m.get("price") if observation_15m else None
+        price_1h = observation_1h.get("price") if observation_1h else None
 
         if not price_15m or price_15m <= 0:
             log.warning(
@@ -563,6 +610,7 @@ async def _verify_pending_outcomes() -> int:
             price_15m_later=price_15m,
             price_1h_later=price_1h,
             primary_window=PRIMARY_WINDOW,
+            settlement_observations={"15m": observation_15m, "1h": observation_1h},
         )
         if ok:
             settled += 1
@@ -648,6 +696,10 @@ async def _backfill_bogus_outcomes() -> int:
             if r.get("outcome") in ("WIN", "LOSS")
             and r.get("ts")
             and r.get("price_now")
+            and isinstance(r.get("audit"), dict)
+            and isinstance(r["audit"].get("origin_price_proof"), dict)
+            and r["audit"]["origin_price_proof"].get("proof_schema")
+            == "oracle-origin-price-v1"
         ]
     except Exception as e:
         log.exception("backfill fetch failed: %s", e)
@@ -667,7 +719,7 @@ async def _backfill_bogus_outcomes() -> int:
 
     resettled = 0
     errors = 0
-    cache: dict[tuple[str, int, int], Optional[float]] = {}
+    cache: dict[tuple[str, int, int], Optional[dict[str, Any]]] = {}
 
     for row in to_resettle:
         pred_id = row.get("id")
@@ -685,21 +737,25 @@ async def _backfill_bogus_outcomes() -> int:
             continue
 
         # Fetch prices at both windows (cached per symbol+minute+window)
-        prices: dict[str, Optional[float]] = {}
+        observations: dict[str, Optional[dict[str, Any]]] = {}
         for window_name, window_s in (("15m", WINDOW_15M_S), ("1h", WINDOW_1H_S)):
             settle_dt = ts_dt + timedelta(seconds=window_s)
             settle_minute_ms = int(settle_dt.timestamp() // 60 * 60 * 1000)
             cache_key = (sym_ccxt, settle_minute_ms, window_s)
             if cache_key in cache:
-                prices[window_name] = cache[cache_key]
+                observations[window_name] = cache[cache_key]
             else:
-                p = await _fetch_price_at_time(sym_ccxt, ts_iso, window_seconds=window_s)
-                cache[cache_key] = p
-                prices[window_name] = p
+                observation = await _fetch_price_at_time(
+                    sym_ccxt, ts_iso, window_seconds=window_s,
+                )
+                cache[cache_key] = observation
+                observations[window_name] = observation
                 await asyncio.sleep(0.3)
 
-        price_15m = prices.get("15m")
-        price_1h = prices.get("1h")
+        observation_15m = observations.get("15m")
+        observation_1h = observations.get("1h")
+        price_15m = observation_15m.get("price") if observation_15m else None
+        price_1h = observation_1h.get("price") if observation_1h else None
 
         if not price_15m or price_15m <= 0:
             log.warning(
@@ -729,6 +785,7 @@ async def _backfill_bogus_outcomes() -> int:
             price_15m_later=price_15m,
             price_1h_later=price_1h,
             primary_window=PRIMARY_WINDOW,
+            settlement_observations={"15m": observation_15m, "1h": observation_1h},
         )
         if ok:
             resettled += 1
@@ -784,21 +841,35 @@ async def _refresh_directional_stats() -> None:
         "1h":  {"LONG": {"WIN": 0, "LOSS": 0}, "SHORT": {"WIN": 0, "LOSS": 0}, "FLAT": {"WIN": 0, "LOSS": 0}},
     }
 
+    from .score_truth import validate_1h_outcome
+
     for r in rows:
-        direction = (r.get("prediction") or "").upper()
-        if direction not in ("LONG", "SHORT", "FLAT"):
+        clean, _ = validate_1h_outcome(r)
+        if clean is None:
             continue
-        # 1h outcome = primary outcome column
-        outcome_1h = r.get("outcome")
-        if outcome_1h in ("WIN", "LOSS"):
-            buckets["1h"][direction][outcome_1h] += 1
-        # 15m outcome = audit.outcomes_dual.outcome_15m (only present after ACT XXIII)
+        direction = clean["prediction"]
+        outcome_1h = clean["outcome"]
+        buckets["1h"][direction][outcome_1h] += 1
+
+        # The 15m diagnostic is accepted only when its stored label can also
+        # be recomputed from the same proof-qualified row.
         audit = r.get("audit") or {}
         if isinstance(audit, dict):
             dual = audit.get("outcomes_dual") or {}
             if isinstance(dual, dict):
                 outcome_15m = dual.get("outcome_15m")
-                if outcome_15m in ("WIN", "LOSS"):
+                try:
+                    price_15m = float(dual.get("price_15m_later"))
+                    price_now = float(r.get("price_now"))
+                except (TypeError, ValueError):
+                    price_15m = price_now = 0.0
+                expected_15m = (
+                    "WIN"
+                    if (direction == "LONG" and price_15m > price_now)
+                    or (direction == "SHORT" and price_15m < price_now)
+                    else "LOSS"
+                )
+                if outcome_15m in ("WIN", "LOSS") and outcome_15m == expected_15m:
                     buckets["15m"][direction][outcome_15m] += 1
 
     # Build stats dict
@@ -828,7 +899,8 @@ async def _refresh_directional_stats() -> None:
 
     _state["directional_stats"]["by_window"] = by_window
 
-    # Apply gates (1h window only — that's the gating source of truth)
+    # Retire the old mixed-instrument percentage gates. The public truth
+    # contract now scores each symbol separately and applies uncertainty gates.
     g = _state["gates"]
     long_1h = by_window["1h"]["LONG"]
     short_1h = by_window["1h"]["SHORT"]
@@ -836,29 +908,21 @@ async def _refresh_directional_stats() -> None:
 
     g["long_1h"]["win_rate_pct"] = long_1h["win_rate_pct"]
     g["long_1h"]["n"] = long_1h["verified"]
-    g["long_1h"]["pass"] = (
-        long_1h["verified"] >= g["long_1h"]["min_n"]
-        and long_1h["win_rate_pct"] >= g["long_1h"]["threshold_pct"]
-    )
+    g["long_1h"]["pass"] = False
+    g["long_1h"]["reason"] = "LEGACY_MULTI_INSTRUMENT_GATE_RETIRED"
 
     g["short_1h"]["win_rate_pct"] = short_1h["win_rate_pct"]
     g["short_1h"]["n"] = short_1h["verified"]
-    g["short_1h"]["pass"] = (
-        short_1h["verified"] >= g["short_1h"]["min_n"]
-        and short_1h["win_rate_pct"] >= g["short_1h"]["threshold_pct"]
-    )
+    g["short_1h"]["pass"] = False
+    g["short_1h"]["reason"] = "LEGACY_MULTI_INSTRUMENT_GATE_RETIRED"
 
     g["global_1h"]["win_rate_pct"] = global_1h["win_rate_pct"]
     g["global_1h"]["n"] = global_1h["verified"]
-    g["global_1h"]["pass"] = (
-        global_1h["verified"] >= g["global_1h"]["min_n"]
-        and global_1h["win_rate_pct"] >= g["global_1h"]["threshold_pct"]
-    )
+    g["global_1h"]["pass"] = False
+    g["global_1h"]["reason"] = "LEGACY_MULTI_INSTRUMENT_GATE_RETIRED"
 
     # SHORT_ONLY_PAPER_MODE: SHORT passes 1h gate, LONG fails 1h gate
-    _state["short_only_paper_mode"] = bool(
-        g["short_1h"]["pass"] and not g["long_1h"]["pass"]
-    )
+    _state["short_only_paper_mode"] = False
 
     log.info(
         "directional gates: LONG_1h=%s(wr=%.1f%% n=%d) SHORT_1h=%s(wr=%.1f%% n=%d) "

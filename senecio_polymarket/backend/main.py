@@ -145,10 +145,13 @@ async def health():
 @app.get("/api/oracle/state")
 async def oracle_state():
     """Detailed oracle runner state + last prediction."""
+    from .score_truth import decorate_prediction
+
     state = oracle_runner.get_state()
+    last_prediction = state.get("last_prediction_result")
     return {
         **state,
-        "last_prediction": state.get("last_prediction_result"),
+        "last_prediction": decorate_prediction(last_prediction) if last_prediction else None,
     }
 
 
@@ -165,11 +168,11 @@ async def oracle_btc_v2_shadow():
     from . import supabase_client
     from .btc_shadow_v2 import evaluate_btc_shadow
 
-    rows = await supabase_client.fetch_predictions(limit=500, symbol="BTCUSDT")
+    rows = await supabase_client.fetch_predictions(limit=1000, symbol="BTCUSDT")
     current = next((row for row in rows if row.get("prediction") in ("LONG", "SHORT", "FLAT")), None)
-    history = [row for row in rows if row.get("outcome") in ("WIN", "LOSS") and row is not current]
+    current_id = current.get("id") if current else None
+    history = [row for row in rows if row.get("id") != current_id]
     payload = evaluate_btc_shadow(current, history)
-    payload["source_ts"] = current.get("ts") if current else None
     payload["history_rows_received"] = len(rows)
     return payload
 
@@ -182,11 +185,11 @@ async def oracle_arbiter_v3():
     from .arbiter_shadow_v3 import arbitrate
     from .btc_shadow_v2 import evaluate_btc_shadow
 
-    rows = await supabase_client.fetch_predictions(limit=500, symbol="BTCUSDT")
+    rows = await supabase_client.fetch_predictions(limit=1000, symbol="BTCUSDT")
     current = next((row for row in rows if row.get("prediction") in ("LONG", "SHORT", "FLAT")), None)
-    history = [row for row in rows if row.get("outcome") in ("WIN", "LOSS") and row is not current]
+    current_id = current.get("id") if current else None
+    history = [row for row in rows if row.get("id") != current_id]
     oracle = evaluate_btc_shadow(current, history)
-    oracle["source_ts"] = current.get("ts") if current else None
     h011_url = "https://h011-web--senecio-h011--wbjggn89fnf8.code.run"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -209,6 +212,7 @@ async def oracle_arbiter_v3():
 async def oracle_predictions(limit: int = Query(default=20, le=200)):
     """Return last N predictions from predictions.jsonl (most recent first)."""
     from pathlib import Path
+    from .score_truth import decorate_prediction
     pred_path = Path(__file__).resolve().parent.parent / "oracle" / "senecio_output" / "predictions.jsonl"
     if not pred_path.exists():
         return {"count": 0, "predictions": []}
@@ -225,7 +229,10 @@ async def oracle_predictions(limit: int = Query(default=20, le=200)):
     # most recent first
     rows.reverse()
     # strip _audit for slim view (client can request /api/oracle/predictions/full for it)
-    slim = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows[:limit]]
+    slim = [
+        decorate_prediction({k: v for k, v in row.items() if not k.startswith("_")})
+        for row in rows[:limit]
+    ]
     return {"count": len(slim), "total_in_file": len(rows), "predictions": slim}
 
 
@@ -233,82 +240,26 @@ async def oracle_predictions(limit: int = Query(default=20, le=200)):
 async def oracle_predictions_db(limit: int = Query(default=50, le=500), symbol: str | None = None):
     """Read predictions directly from Supabase — survives container redeploys."""
     from . import supabase_client
+    from .score_truth import decorate_prediction
+
     rows = await supabase_client.fetch_predictions(limit=limit, symbol=symbol)
     total = await supabase_client.count_predictions()
     return {
         "source": "supabase",
         "count": len(rows),
         "total_in_db": total,
-        "predictions": rows,
+        "predictions": [decorate_prediction(row) for row in rows],
     }
 
 
 @app.get("/api/oracle/score")
-async def oracle_score():
-    """Oracle accuracy score computed from Supabase (verified predictions only).
-
-    ACT XXIII: now returns per-direction × per-window breakdown + gate states.
-    The LONG vs SHORT asymmetry is a critical GO/NO-GO signal for live capital.
-
-    Returns:
-      - total_predictions: count of all rows in Supabase
-      - verified: count of rows with WIN/LOSS outcome (= outcome_1h, the gating column)
-      - wins/losses/win_rate_pct: aggregate across all verified
-      - by_direction: per-direction breakdown using outcome_1h (primary column)
-      - by_window: {15m: {LONG, SHORT, FLAT, global}, 1h: {...}} — 15m reads from
-                   audit.outcomes_dual.outcome_15m, 1h reads primary `outcome` column
-      - gates: {long_1h, short_1h, global_1h} with pass/fail + thresholds + n
-      - short_only_paper_mode: True when SHORT passes 1h gate but LONG fails
-      - trade_mode: "PAPER" (always, per ACT XXIII directive 5 — no live capital)
-      - live_capital_locked: True (hard guard)
-    """
+async def oracle_score(symbol: str | None = None):
+    """Return only proof-qualified 1h scores; otherwise return UNKNOWN/null."""
     from . import supabase_client
-    from . import oracle_runner
-    # Get all predictions with outcome filled
-    rows = await supabase_client.fetch_predictions(limit=500)
-    verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS")]
-    wins = sum(1 for r in verified if r.get("outcome") == "WIN")
-    losses = sum(1 for r in verified if r.get("outcome") == "LOSS")
-    win_rate = (wins / len(verified) * 100) if verified else 0.0
+    from .score_truth import build_score_report
 
-    # Per-direction breakdown — surfaces edge asymmetry that the aggregate
-    # win_rate hides (e.g. LONG 0% + SHORT 82% averages to 46% which looks
-    # mediocre but actually means LONG is broken and SHORT is the alpha).
-    by_direction: dict[str, dict] = {}
-    for direction in ("LONG", "SHORT", "FLAT"):
-        sub = [r for r in verified if (r.get("prediction") or "").upper() == direction]
-        sub_w = sum(1 for r in sub if r.get("outcome") == "WIN")
-        sub_l = sum(1 for r in sub if r.get("outcome") == "LOSS")
-        sub_decided = sub_w + sub_l
-        by_direction[direction] = {
-            "verified": sub_decided,
-            "wins": sub_w,
-            "losses": sub_l,
-            "win_rate_pct": round((sub_w / sub_decided * 100) if sub_decided > 0 else 0.0, 2),
-        }
-
-    # ACT XXIII: pull full state from oracle_runner (directional stats + gates)
-    runner_state = oracle_runner.get_state()
-    by_window = runner_state.get("directional_stats", {}).get("by_window", {})
-    gates = runner_state.get("gates", {})
-    short_only_paper_mode = runner_state.get("short_only_paper_mode", False)
-    trade_mode = runner_state.get("trade_mode", "PAPER")
-    live_capital_locked = runner_state.get("live_capital_locked", True)
-
-    return {
-        "version": "ACT-XXIX-systemic-antifragility",
-        "total_predictions": len(rows),
-        "verified": len(verified),
-        "wins": wins,
-        "losses": losses,
-        "win_rate_pct": round(win_rate, 2),
-        "by_direction": by_direction,           # 1h-window primary breakdown (backward compat)
-        "by_window": by_window,                 # ACT XXIII: {15m: {...}, 1h: {...}}
-        "gates": gates,                         # ACT XXIII: directional GO/NO-GO
-        "short_only_paper_mode": short_only_paper_mode,
-        "trade_mode": trade_mode,               # always "PAPER" per directive 5
-        "live_capital_locked": live_capital_locked,
-    }
+    rows = await supabase_client.fetch_predictions(limit=10000, symbol=symbol)
+    return build_score_report(rows, requested_symbol=symbol)
 
 
 @app.get("/api/stats")
@@ -441,16 +392,10 @@ async def portfolio_meta_labeler():
 
 @app.get("/api/portfolio/live_gate")
 async def portfolio_live_gate():
-    """ACT-XXV: evaluate the 6 LIVE_GATE unlock conditions.
+    """Evaluate the permanently locked, proof-aware live gate.
 
     Returns the current gate status. The gate stays LOCKED (PAPER mode)
-    until ALL 6 conditions pass simultaneously:
-      1. global_win_rate_pct >= 52
-      2. verified >= 300
-      3. profit_factor > 1.20
-      4. max_drawdown_pct < 10
-      5. shadow_live_passed = True
-      6. execution_engine_verified = True
+    This deployment is paper-only, so the final policy condition always fails.
     """
     coord = _get_coordinator()
     if coord is None:
@@ -458,15 +403,10 @@ async def portfolio_live_gate():
     # Pull oracle score for gate evaluation
     try:
         from . import supabase_client
-        rows = await supabase_client.fetch_predictions(limit=500)
-        verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS")]
-        wins = sum(1 for r in verified if r.get("outcome") == "WIN")
-        win_rate = (wins / len(verified) * 100) if verified else 0.0
-        oracle_score = {
-            "win_rate_pct": win_rate,
-            "verified": len(verified),
-            "by_window": oracle_runner.get_state().get("directional_stats", {}).get("by_window", {}),
-        }
+        from .score_truth import build_score_report
+
+        rows = await supabase_client.fetch_predictions(limit=10000)
+        oracle_score = build_score_report(rows)
     except Exception:
         oracle_score = {}
     status = coord.evaluate_live_gate(oracle_score=oracle_score)
@@ -761,7 +701,7 @@ async def prometheus_metrics():
 # derived from the loaded predictions.jsonl.
 
 def _derive_returns_from_predictions() -> tuple[list[float], list[int], list[float], list[float]]:
-    """Synthesise (returns, directions, y, y_pred) from loaded predictions.
+    """Derive research arrays from proof-qualified 1h outcomes only.
 
     Each prediction with a known outcome (WIN/CORRECT vs LOSS/WRONG;
     SKIP/None is dropped) contributes:
@@ -776,22 +716,27 @@ def _derive_returns_from_predictions() -> tuple[list[float], list[int], list[flo
     dirs: list[int] = []
     ys:   list[float] = []
     yp:   list[float] = []
+    from .score_truth import validate_1h_outcome
+
     for rec in _research_coord.predictions:
-        outcome = (rec.get("outcome") or "").upper()
-        if outcome in ("WIN", "CORRECT"):
+        clean, _ = validate_1h_outcome(rec)
+        if clean is None:
+            continue
+        outcome = clean["outcome"]
+        if outcome == "WIN":
             y_v = 1.0
-        elif outcome in ("LOSS", "WRONG"):
+        elif outcome == "LOSS":
             y_v = 0.0
         else:
-            continue  # SKIP / None / unknown
+            continue
         try:
-            conf = float(rec.get("confidence") or 0.5)
+            conf = clean["confidence"]
             ev_v = float(rec.get("ev") or 0.0)
         except (TypeError, ValueError):
             continue
         sign = +1.0 if y_v == 1.0 else -1.0
         ret = sign * conf * ev_v
-        direction = +1 if (rec.get("prediction") or "LONG").upper() == "LONG" else -1
+        direction = +1 if clean["prediction"] == "LONG" else -1
         rets.append(float(ret))
         dirs.append(int(direction))
         ys.append(float(y_v))
@@ -1205,15 +1150,10 @@ async def research_report(request: Request):
         coord = _get_coordinator()
         if coord is not None:
             from . import supabase_client
-            rows = await supabase_client.fetch_predictions(limit=500)
-            verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS", "CORRECT", "WRONG")]
-            wins = sum(1 for r in verified if r.get("outcome") in ("WIN", "CORRECT"))
-            win_rate = (wins / len(verified) * 100) if verified else 0.0
-            oracle_score = {
-                "win_rate_pct": win_rate,
-                "verified": len(verified),
-                "by_window": oracle_runner.get_state().get("directional_stats", {}).get("by_window", {}),
-            }
+            from .score_truth import build_score_report
+
+            rows = await supabase_client.fetch_predictions(limit=10000)
+            oracle_score = build_score_report(rows)
             status = coord.evaluate_live_gate(oracle_score=oracle_score)
             live_gate_state = status.to_dict()
     except Exception as e:
@@ -1645,5 +1585,3 @@ async def final_audit_state():
         }
     except Exception as e:
         return {"error": str(e)}
-
-

@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -156,16 +158,27 @@ async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
         c = _get_client()
         # PostgREST filter: outcome=is.null AND ts=lt.{cutoff}
+        query_limit = min(max(limit * 5, limit), 1000)
         params = {
             "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit",
             "outcome": "is.null",
             "ts": f"lt.{cutoff}",
-            "order": "ts.asc",
-            "limit": str(limit),
+            "order": "ts.desc",
+            "limit": str(query_limit),
         }
         r = await c.get(f"/{SUPABASE_TABLE}", params=params)
         if r.status_code == 200:
-            return r.json() or []
+            rows = r.json() or []
+            # Legacy NULL rows cannot be settled reproducibly and must not
+            # starve newer proof-bearing predictions at the front of the queue.
+            qualified = [
+                row for row in rows
+                if isinstance(row.get("audit"), dict)
+                and isinstance(row["audit"].get("origin_price_proof"), dict)
+                and row["audit"]["origin_price_proof"].get("proof_schema")
+                == "oracle-origin-price-v1"
+            ]
+            return qualified[:limit]
         log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])
         return []
     except Exception as e:
@@ -174,59 +187,18 @@ async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100
 
 
 async def update_outcome(prediction_id: int, outcome: str, price_15m_later: float) -> bool:
-    """Update a prediction row with the settled outcome (single-window legacy path).
+    """Disabled legacy single-window writer.
 
-    Args:
-        prediction_id: Supabase row id
-        outcome: "WIN" or "LOSS"
-        price_15m_later: actual price 15min after prediction
-
-    Returns True on success.
-
-    RLS safety: PostgREST returns HTTP 200 with an empty array [] when an
-    UPDATE is blocked by RLS or the row id doesn't exist. Status code alone
-    is NOT a reliable success signal — we must check len(response body) > 0.
-
-    ACT XXIII: prefer update_outcome_dual() for new code — it stores both
-    15m and 1h outcomes in the audit JSONB. This legacy function is kept for
-    backward compat with the bogus_backfill path that only has 15m data.
+    A single current price cannot prove either a 15-minute or 1-hour label.
+    Keeping the function as a fail-closed compatibility shim prevents an old
+    caller from silently creating scoreable-looking rows.
     """
-    try:
-        c = _get_client()
-        # PostgREST PATCH with row filter: PATCH /table?id=eq.{id}
-        # Prefer: return=representation (already in default headers) so the
-        # response body contains the updated row(s).
-        r = await c.patch(
-            f"/{SUPABASE_TABLE}",
-            params={"id": f"eq.{prediction_id}"},
-            json={
-                "outcome": outcome,
-                "price_15m_later": float(price_15m_later),
-            },
-        )
-        if r.status_code in (200, 204):
-            # ACT XXI patch: validate that a row was actually updated.
-            # PostgREST returns [] when 0 rows match (RLS-blocked or id missing)
-            # — silently treating that as success caused a false positive
-            # on the first verifier run before RLS UPDATE was enabled.
-            try:
-                body = r.json() if r.content else []
-            except Exception:
-                body = []
-            if isinstance(body, list) and len(body) > 0:
-                log.info("supabase update_outcome OK id=%s outcome=%s", prediction_id, outcome)
-                return True
-            log.error(
-                "supabase update_outcome NO-OP id=%s outcome=%s status=%s body=%r "
-                "— RLS likely blocked UPDATE (check UPDATE policy on table)",
-                prediction_id, outcome, r.status_code, body,
-            )
-            return False
-        log.error("supabase update_outcome failed: %s %s", r.status_code, r.text[:300])
-        return False
-    except Exception as e:
-        log.error("supabase update_outcome error: %s", e)
-        return False
+    log.error(
+        "legacy update_outcome disabled id=%s outcome=%s; use update_outcome_dual",
+        prediction_id,
+        outcome,
+    )
+    return False
 
 
 async def update_outcome_dual(
@@ -236,6 +208,7 @@ async def update_outcome_dual(
     price_15m_later: float,
     price_1h_later: float,
     primary_window: str = "1h",
+    settlement_observations: Optional[dict[str, dict[str, Any]]] = None,
 ) -> bool:
     """Settle a prediction with BOTH 15m and 1h outcomes (ACT XXIII dual-window path).
 
@@ -257,7 +230,11 @@ async def update_outcome_dual(
         # 1) Fetch the existing audit dict (and verify row exists)
         r_get = await c.get(
             f"/{SUPABASE_TABLE}",
-            params={"select": "id,audit", "id": f"eq.{prediction_id}", "limit": "1"},
+            params={
+                "select": "id,ts,symbol,exchange_used,audit,prediction,price_now",
+                "id": f"eq.{prediction_id}",
+                "limit": "1",
+            },
         )
         if r_get.status_code != 200:
             log.error(
@@ -272,7 +249,34 @@ async def update_outcome_dual(
                 prediction_id,
             )
             return False
-        existing_audit = existing_rows[0].get("audit") or {}
+        existing = existing_rows[0]
+        direction = str(existing.get("prediction") or "").upper()
+        try:
+            origin = float(existing.get("price_now"))
+            price_15m = float(price_15m_later)
+            price_1h = float(price_1h_later)
+        except (TypeError, ValueError):
+            log.error("update_outcome_dual invalid settlement prices id=%s", prediction_id)
+            return False
+        if (
+            primary_window != "1h"
+            or direction not in {"LONG", "SHORT"}
+            or outcome_15m not in {"WIN", "LOSS"}
+            or outcome_1h not in {"WIN", "LOSS"}
+            or not all(math.isfinite(value) and value > 0 for value in (origin, price_15m, price_1h))
+        ):
+            log.error("update_outcome_dual invalid proof contract id=%s", prediction_id)
+            return False
+
+        def expected(price_later: float) -> str:
+            if direction == "LONG":
+                return "WIN" if price_later > origin else "LOSS"
+            return "WIN" if price_later < origin else "LOSS"
+
+        if expected(price_15m) != outcome_15m or expected(price_1h) != outcome_1h:
+            log.error("update_outcome_dual recomputation mismatch id=%s", prediction_id)
+            return False
+        existing_audit = existing.get("audit") or {}
         if not isinstance(existing_audit, dict):
             # Audit might be a JSON string in some edge cases — try parsing
             try:
@@ -283,13 +287,106 @@ async def update_outcome_dual(
             except Exception:
                 existing_audit = {}
 
+        def normalized_symbol(value: Any) -> str:
+            return str(value or "").upper().replace("/", "").replace("-", "")
+
+        try:
+            prediction_at = datetime.fromisoformat(
+                str(existing.get("ts") or "").replace("Z", "+00:00")
+            )
+            if prediction_at.tzinfo is None:
+                prediction_at = prediction_at.replace(tzinfo=timezone.utc)
+            prediction_at = prediction_at.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            log.error("update_outcome_dual invalid prediction timestamp id=%s", prediction_id)
+            return False
+
+        row_symbol = normalized_symbol(existing.get("symbol"))
+        origin_proof = existing_audit.get("origin_price_proof")
+        if not isinstance(origin_proof, dict):
+            log.error("update_outcome_dual missing origin proof id=%s", prediction_id)
+            return False
+        origin_observed_at = None
+        try:
+            origin_observed_at = datetime.fromisoformat(
+                str(origin_proof.get("observed_at") or "").replace("Z", "+00:00")
+            )
+            if origin_observed_at.tzinfo is None:
+                origin_observed_at = origin_observed_at.replace(tzinfo=timezone.utc)
+            origin_observed_at = origin_observed_at.astimezone(timezone.utc)
+            origin_proof_price = float(origin_proof.get("price"))
+        except (TypeError, ValueError):
+            log.error("update_outcome_dual malformed origin proof id=%s", prediction_id)
+            return False
+        if (
+            origin_proof.get("proof_schema") != "oracle-origin-price-v1"
+            or str(existing.get("exchange_used") or "").lower() != "okx"
+            or str(origin_proof.get("exchange") or "").lower() != "okx"
+            or normalized_symbol(origin_proof.get("instrument")) != row_symbol
+            or origin_proof.get("price_source") != "public_ticker_best_bid"
+            or abs((origin_observed_at - prediction_at).total_seconds()) > 1.0
+            or not math.isclose(origin_proof_price, origin, rel_tol=0.0, abs_tol=1e-9)
+        ):
+            log.error("update_outcome_dual origin proof mismatch id=%s", prediction_id)
+            return False
+
+        if not isinstance(settlement_observations, dict):
+            log.error("update_outcome_dual missing settlement observations id=%s", prediction_id)
+            return False
+
+        def valid_observation(window_name: str, window_s: int, expected_price: float) -> bool:
+            observation = settlement_observations.get(window_name)
+            if not isinstance(observation, dict):
+                return False
+            try:
+                target_ts_ms = int(observation.get("target_ts_ms"))
+                candle_open_ms = int(observation.get("candle_open_ts_ms"))
+                candle_close_ms = int(observation.get("candle_close_ts_ms"))
+                observed_price = float(observation.get("price"))
+                target_ts = datetime.fromisoformat(
+                    str(observation.get("target_ts") or "").replace("Z", "+00:00")
+                )
+                if target_ts.tzinfo is None:
+                    target_ts = target_ts.replace(tzinfo=timezone.utc)
+                target_ts = target_ts.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                return False
+            expected_target = prediction_at + timedelta(seconds=window_s)
+            expected_target_ms = int(expected_target.timestamp() * 1000)
+            return (
+                observation.get("proof_schema") == "oracle-settlement-observation-v1"
+                and str(observation.get("exchange") or "").lower() == "okx"
+                and normalized_symbol(observation.get("instrument")) == row_symbol
+                and observation.get("timeframe") == "1m"
+                and observation.get("price_field") == "close"
+                and abs((target_ts - expected_target).total_seconds()) <= 0.001
+                and abs(target_ts_ms - expected_target_ms) <= 1
+                and candle_close_ms - candle_open_ms == 60_000
+                and candle_open_ms <= target_ts_ms < candle_close_ms
+                and int(datetime.now(timezone.utc).timestamp() * 1000) >= candle_close_ms
+                and math.isfinite(observed_price)
+                and math.isclose(observed_price, expected_price, rel_tol=0.0, abs_tol=1e-9)
+            )
+
+        if (
+            not valid_observation("15m", 900, price_15m)
+            or not valid_observation("1h", 3600, price_1h)
+        ):
+            log.error("update_outcome_dual invalid settlement observation id=%s", prediction_id)
+            return False
+
         # 2) Merge new outcomes_dual sub-dict (preserves any pre-existing fields)
         outcomes_dual = {
+            "proof_schema": "oracle-settlement-proof-v1",
+            "price_source": "okx_public_ohlcv",
+            "settlement_method": "historical_1m_close_containing_target",
+            "settled_at": datetime.now(timezone.utc).isoformat(),
             "outcome_15m": outcome_15m,
             "outcome_1h": outcome_1h,
             "price_15m_later": float(price_15m_later) if price_15m_later is not None else None,
             "price_1h_later": float(price_1h_later) if price_1h_later is not None else None,
             "primary_window": primary_window,
+            "settlement_observations": settlement_observations,
         }
         existing_audit["outcomes_dual"] = outcomes_dual
 
