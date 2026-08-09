@@ -319,7 +319,7 @@ jobs:
           project_id = str(project_data.get("id") or PROJECT_SLUG)
           project_region = project_data.get("region") or first_scalar(project_data, ("region",))
 
-          if team_id:
+          if project_source == "team_project" and team_id:
               project_prefix = (
                   f"/teams/{urllib.parse.quote(team_id)}/projects/"
                   f"{urllib.parse.quote(project_id)}"
