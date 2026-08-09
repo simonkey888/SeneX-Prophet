@@ -189,6 +189,16 @@ def test_source_health_zero_objects_is_healthy():
     assert health["objects_received"] == 0
 
 
+def test_source_health_expected_slug_absence_is_healthy_and_explicit():
+    tracker = SourceHealthTracker("gamma_metadata")
+    tracker.record_request()
+    tracker.record_expected_absence(404)
+    health = tracker.build()
+    assert health["status"] == "HEALTHY"
+    assert health["http_status"] == 404
+    assert health["expected_absence"] is True
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 3. Invariant Evaluation
 # ═══════════════════════════════════════════════════════════════════════

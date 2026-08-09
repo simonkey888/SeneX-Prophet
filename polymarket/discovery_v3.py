@@ -15,7 +15,7 @@ from typing import Any, Callable, Protocol
 import httpx
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
-DISCOVERY_VERSION = "h011-v3-discovery-v4"
+DISCOVERY_VERSION = "h011-v3-discovery-v5"
 RESOLVED_PRICE_THRESHOLD = 0.95
 PRICE_SUM_TOLERANCE = 0.02
 
@@ -53,7 +53,7 @@ ALL_REJECTION_REASONS = (*REJECTION_REASONS, "invalid_outcome_prices", "resolved
 
 
 class GammaDiscoveryClient(Protocol):
-    def fetch_pages(self, limit: int) -> dict[str, Any]: ...
+    def fetch_pages(self, limit: int, *, as_of_ts: str | None = None) -> dict[str, Any]: ...
 
 
 # Fields where /markets is canonical (NOT to be overwritten by /events).
@@ -377,7 +377,7 @@ class HttpxGammaDiscoveryClient:
                 time.sleep(0.5 * (2 ** (attempt - 1)))
         return None, last_error
 
-    def fetch_pages(self, limit: int) -> dict[str, Any]:
+    def fetch_pages(self, limit: int, *, as_of_ts: str | None = None) -> dict[str, Any]:
         """Fetch btc-updown-5m candidates via keyset pagination, then enrich
         each with canonical market metadata from /markets/slug/{slug}.
 
@@ -521,6 +521,181 @@ class HttpxGammaDiscoveryClient:
             },
             "endpoint_states": endpoint_states,
             "any_source_error": any_error_or_loop,
+        }
+
+
+class BoundedGammaDiscoveryClient(HttpxGammaDiscoveryClient):
+    """Discover only the BTC 5-minute market implied by ``as_of_ts``.
+
+    The production scanner needs the market whose window contains the scan
+    timestamp.  Its slug is deterministic: ``btc-updown-5m-<floor(ts/300)>``.
+    Crawling the complete open-events catalogue cannot prove that bounded
+    cohort complete and, in practice, reached the catalogue page cap before
+    the current event.  This client queries both canonical market and event
+    slug endpoints for the one in-scope slug and fails closed on disagreement.
+
+    A 404 from *both* endpoints is a proven empty bounded cohort.  A 404 from
+    only one endpoint, malformed JSON, a transport error, or inconsistent
+    nested market metadata is a source failure.
+    """
+
+    @staticmethod
+    def _target_slug(as_of_ts: str | None) -> str:
+        epoch = _parse_epoch(as_of_ts)
+        if epoch is None or not math.isfinite(epoch):
+            raise ValueError("bounded discovery requires a valid as_of_ts")
+        slot_epoch = int(epoch) // 300 * 300
+        return f"btc-updown-5m-{slot_epoch}"
+
+    @staticmethod
+    def _page(endpoint: str, slug: str, *, requested_at: str,
+              received_at: str | None, status_code: int | None,
+              count: int, error: str | None = None) -> dict[str, Any]:
+        page = {
+            "endpoint": endpoint,
+            "slug": slug,
+            "offset": 0,
+            "limit": 1,
+            "requested_at": requested_at,
+            "received_at": received_at,
+            "status_code": status_code,
+            "count": count,
+        }
+        if error:
+            page["error"] = error
+        return page
+
+    def _fetch_slug(self, client: httpx.Client, endpoint: str, slug: str,
+                    tracker) -> tuple[dict[str, Any] | None, bool, dict[str, Any], str | None]:
+        """Return ``(payload, not_found, page, error)`` for one slug GET."""
+        requested_at = datetime.now(timezone.utc).isoformat()
+        received_at: str | None = None
+        response = None
+        if tracker:
+            tracker.record_request()
+        try:
+            response = client.get(f"{GAMMA_BASE}{endpoint}/{slug}")
+            received_at = datetime.now(timezone.utc).isoformat()
+            if response.status_code == 404:
+                if tracker:
+                    if hasattr(tracker, "record_expected_absence"):
+                        tracker.record_expected_absence(404)
+                    else:
+                        tracker.record_response(404, 0)
+                return None, True, self._page(
+                    endpoint, slug, requested_at=requested_at,
+                    received_at=received_at, status_code=404, count=0,
+                ), None
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError(f"slug response is not a dict (type={type(payload).__name__})")
+            if tracker:
+                tracker.record_response(response.status_code, 1)
+            return payload, False, self._page(
+                endpoint, slug, requested_at=requested_at,
+                received_at=received_at, status_code=response.status_code, count=1,
+            ), None
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            if tracker:
+                tracker.record_error(error)
+            return None, False, self._page(
+                endpoint, slug, requested_at=requested_at,
+                received_at=received_at,
+                status_code=getattr(response, "status_code", None) if response is not None else None,
+                count=0, error=error,
+            ), error
+
+    def fetch_pages(self, limit: int, *, as_of_ts: str | None = None) -> dict[str, Any]:
+        if limit < 1:
+            raise ValueError("gamma_limit must be at least 1")
+        slug = self._target_slug(as_of_ts)
+        pages: list[dict[str, Any]] = []
+
+        with httpx.Client(timeout=30.0, transport=self.transport) as client:
+            canonical, market_missing, market_page, market_error = self._fetch_slug(
+                client, "/markets/slug", slug, self.canonical_tracker)
+            pages.append(market_page)
+            event, event_missing, event_page, event_error = self._fetch_slug(
+                client, "/events/slug", slug, self.gamma_tracker)
+            pages.append(event_page)
+
+        failures: list[str] = []
+        if market_error:
+            failures.append(f"/markets/slug: {market_error}")
+        if event_error:
+            failures.append(f"/events/slug: {event_error}")
+        if market_missing != event_missing:
+            failures.append("cross-source presence conflict")
+
+        merged_markets: list[dict[str, Any]] = []
+        cross_source_conflicts: list[dict[str, Any]] = []
+        if not failures and not market_missing and canonical is not None and event is not None:
+            nested_matches = [
+                item for item in (event.get("markets") or [])
+                if isinstance(item, dict) and str(item.get("slug") or "") == slug
+            ]
+            if len(nested_matches) != 1:
+                failures.append(f"event nested market cardinality is {len(nested_matches)}, expected 1")
+            else:
+                merged, conflict = _merge_market_and_event(canonical, nested_matches[0], event)
+                if conflict:
+                    cross_source_conflicts.append({"slug": slug, "field_conflict": conflict})
+                    failures.append(conflict)
+                elif merged is not None:
+                    merged_markets.append(merged)
+
+        any_source_error = bool(failures)
+        endpoint_status = "error" if any_source_error else "exhausted"
+        endpoint_error = failures[0] if failures else None
+        endpoint_states = {
+            "/markets/slug": {
+                "status": endpoint_status,
+                "error": endpoint_error,
+                "attempted": 1,
+                "succeeded": int(canonical is not None),
+                "not_found": int(market_missing),
+                "failed": int(bool(market_error)),
+                "target_slug": slug,
+            },
+            "/events/slug": {
+                "status": endpoint_status,
+                "error": endpoint_error,
+                "attempted": 1,
+                "succeeded": int(event is not None),
+                "not_found": int(event_missing),
+                "failed": int(bool(event_error)),
+                "target_slug": slug,
+            },
+        }
+        source_exhausted = not any_source_error
+        records_before_dedup = len(merged_markets)
+        return {
+            "markets": merged_markets if not any_source_error else [],
+            "pages": pages,
+            "source_exhausted": source_exhausted,
+            "limit_reached": False,
+            "next_offset": None,
+            "discovery_metrics": {
+                "discovery_scope": "bounded_current_btc_5m_slug",
+                "target_slug": slug,
+                "markets_api_objects": int(canonical is not None),
+                "events_api_objects": int(event is not None),
+                "event_nested_markets_flattened": records_before_dedup,
+                "markets_from_markets_endpoint": int(canonical is not None),
+                "records_before_dedup": records_before_dedup,
+                "unique_markets_after_dedup": len(merged_markets),
+                "duplicates_removed": 0,
+                "cross_source_conflicts_count": len(cross_source_conflicts),
+                "missing_identifiers_count": 0,
+                "canonical_fetch_attempted": 1,
+                "canonical_fetch_succeeded": int(canonical is not None),
+                "canonical_fetch_failed": int(bool(market_error)),
+                "canonical_limit_truncated": False,
+            },
+            "endpoint_states": endpoint_states,
+            "any_source_error": any_source_error,
         }
 
 
@@ -1080,7 +1255,7 @@ def discover_markets_v3(config, gamma_limit: int, gamma_client: GammaDiscoveryCl
     endpoint_states: dict[str, Any] = {}
     any_source_error = False
     try:
-        fetched = gamma_client.fetch_pages(gamma_limit)
+        fetched = gamma_client.fetch_pages(gamma_limit, as_of_ts=as_of_ts)
         markets, pages = fetched["markets"], fetched["pages"]
         source_exhausted = bool(fetched["source_exhausted"])
         limit_reached = bool(fetched["limit_reached"])

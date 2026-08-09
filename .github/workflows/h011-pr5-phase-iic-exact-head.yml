@@ -191,17 +191,25 @@ jobs:
           set -euo pipefail
           docker run -d \
             --name senex-h011-iic \
-            -p 18080:8080 \
             -v "${RUNNER_TEMP}/senex-runtime-volume:/app/polymarket/results" \
             -e SENECIO_CODE_SHA="${{ github.event.pull_request.head.sha }}" \
             -e H011_RUNTIME_DIAGNOSTIC_ONLY=true \
             -e PYTHONUNBUFFERED=1 \
             senex-h011-iic:${{ github.event.pull_request.head.sha }}
 
+          probe_json() {
+            docker exec senex-h011-iic python3 -c \
+              'import sys; from urllib.request import ProxyHandler, build_opener; sys.stdout.buffer.write(build_opener(ProxyHandler({})).open("http://127.0.0.1:8080" + sys.argv[1], timeout=5).read())' \
+              "$1" > "$2"
+          }
+          test -z "$(docker port senex-h011-iic 8080/tcp 2>/dev/null || true)"
+          test "$(docker inspect -f '{{json .HostConfig.PortBindings}}' senex-h011-iic)" = "{}"
+          docker exec senex-h011-iic python3 -c \
+            'import dashboard_v3; assert dashboard_v3.UVICORN_HOST == "127.0.0.1"'
+
           ready=0
           for _ in $(seq 1 90); do
-            if curl --fail --silent http://127.0.0.1:18080/readyz \
-              -o /tmp/h011-iic-ready.json; then
+            if probe_json /readyz /tmp/h011-iic-ready.json 2>/dev/null; then
               ready=1
               break
             fi
@@ -212,11 +220,11 @@ jobs:
             sleep 2
           done
           test "$ready" = 1
-          curl --fail --silent http://127.0.0.1:18080/livez -o /tmp/h011-iic-live.json
-          curl --fail --silent http://127.0.0.1:18080/healthz -o /tmp/h011-iic-health.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/state -o /tmp/h011-iic-state.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/integrity -o /tmp/h011-iic-integrity.json
-          curl --fail --silent http://127.0.0.1:18080/api/v3/replay -o /tmp/h011-iic-replay.json
+          probe_json /livez /tmp/h011-iic-live.json
+          probe_json /healthz /tmp/h011-iic-health.json
+          probe_json /api/v3/state /tmp/h011-iic-state.json
+          probe_json /api/v3/integrity /tmp/h011-iic-integrity.json
+          probe_json /api/v3/replay /tmp/h011-iic-replay.json
           docker logs senex-h011-iic | tee /tmp/h011-iic-container.log
 
           python - <<'PY'

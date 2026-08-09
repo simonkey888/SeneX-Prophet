@@ -1014,11 +1014,9 @@ def main():
                         help=f"VWAP window in seconds (default {DEFAULT_WINDOW_SEC})")
     parser.add_argument("--estimator", choices=["vwap", "ewma"], default="vwap",
                         help="Estimator: vwap (default) o ewma con half-life=window")
-    parser.add_argument("--gamma-limit", type=int, default=3000,
-                        help="How many active markets to paginate from Gamma (default 3000). "
-                             "Must be >= 3000 to find btc-updown-5m markets (which appear at "
-                             "offset ~2082+ in production). Lower values will silently fail to "
-                             "discover any valid directional markets.")
+    parser.add_argument("--gamma-limit", type=int, default=1,
+                        help="Safety cap for bounded Gamma discovery (default 1). "
+                             "Integrity V3 derives the one in-window BTC 5m slug directly.")
     parser.add_argument("--pipeline", choices=["legacy-v2", "integrity-v3"], default=None,
                         help="Pipeline version: legacy-v2 (default) or integrity-v3")
     args = parser.parse_args()
@@ -1041,7 +1039,7 @@ def main():
         )
         from discovery_v3 import (
             discover_markets_v3,
-            HttpxGammaDiscoveryClient,
+            BoundedGammaDiscoveryClient,
             monitor_discovery_loop,
         )
 
@@ -1059,7 +1057,7 @@ def main():
         canonical_tracker = SourceHealthTracker("gamma_canonical")
         data_api_tracker = SourceHealthTracker("data_api_trades")
 
-        gamma_client = HttpxGammaDiscoveryClient(
+        gamma_client = BoundedGammaDiscoveryClient(
             gamma_tracker=gamma_tracker,
             canonical_tracker=canonical_tracker,
         )

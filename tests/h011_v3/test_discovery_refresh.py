@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from polymarket.discovery_v3 import (
+    BoundedGammaDiscoveryClient,
     discover_markets_v3,
     HttpxGammaDiscoveryClient,
     monitor_discovery_loop,
@@ -98,7 +99,7 @@ class SequenceGamma:
         self.responses = list(responses)
         self.calls = 0
 
-    def fetch_pages(self, limit):
+    def fetch_pages(self, limit, *, as_of_ts=None):
         value = self.responses[self.calls]
         self.calls += 1
         if isinstance(value, Exception):
@@ -316,6 +317,93 @@ def test_keyset_client_truncated_when_max_pages_reached(tmp_path):
     # Hit max_pages → limit_reached
     assert result["evidence"]["source_exhausted"] is False
     assert result["evidence"]["limit_reached"] is True
+
+
+def test_bounded_client_queries_only_current_slug_and_selects(tmp_path):
+    valid_market = market()
+    requested_paths = []
+
+    def handler(request):
+        requested_paths.append(request.url.path)
+        if request.url.path == f"/markets/slug/{valid_market['slug']}":
+            return httpx.Response(200, json=valid_market)
+        if request.url.path == f"/events/slug/{valid_market['slug']}":
+            return httpx.Response(200, json={
+                "id": "109968",
+                "slug": valid_market["slug"],
+                "ticker": valid_market["slug"],
+                "description": valid_market["description"],
+                "resolutionSource": valid_market["resolutionSource"],
+                "markets": [valid_market],
+            })
+        return httpx.Response(404)
+
+    client = BoundedGammaDiscoveryClient(transport=httpx.MockTransport(handler))
+    result = discover_markets_v3(
+        config(), 1, client, evidence_dir=tmp_path, as_of_ts=DEFAULT_AS_OF_TS,
+    )
+
+    assert result["status"] == "SELECTED_NONEMPTY"
+    assert result["discovery_complete"] is True
+    assert result["discovery_replay_verified"] is True
+    assert requested_paths == [
+        f"/markets/slug/{valid_market['slug']}",
+        f"/events/slug/{valid_market['slug']}",
+    ]
+    assert result["evidence"]["discovery_metrics"]["discovery_scope"] == (
+        "bounded_current_btc_5m_slug"
+    )
+
+
+def test_bounded_client_dual_404_is_proven_empty_cohort(tmp_path):
+    def handler(request):
+        return httpx.Response(404)
+
+    client = BoundedGammaDiscoveryClient(transport=httpx.MockTransport(handler))
+    result = discover_markets_v3(
+        config(), 1, client, evidence_dir=tmp_path, as_of_ts=DEFAULT_AS_OF_TS,
+    )
+
+    assert result["status"] == "DISCOVERY_SOURCE_EMPTY"
+    assert result["discovery_complete"] is True
+    assert result["discovery_replay_verified"] is True
+    assert result["evidence"]["endpoint_states"]["/markets/slug"]["not_found"] == 1
+    assert result["evidence"]["endpoint_states"]["/events/slug"]["not_found"] == 1
+
+
+def test_bounded_client_asymmetric_404_fails_closed(tmp_path):
+    valid_market = market()
+
+    def handler(request):
+        if request.url.path.startswith("/markets/slug/"):
+            return httpx.Response(200, json=valid_market)
+        return httpx.Response(404)
+
+    client = BoundedGammaDiscoveryClient(transport=httpx.MockTransport(handler))
+    result = discover_markets_v3(
+        config(), 1, client, evidence_dir=tmp_path, as_of_ts=DEFAULT_AS_OF_TS,
+    )
+
+    assert result["status"] == "DISCOVERY_SOURCE_FAILED"
+    assert result["discovery_complete"] is False
+    assert result["markets"] == []
+    assert "presence conflict" in result["evidence"]["source_error"]
+
+
+def test_bounded_client_http_error_fails_closed(tmp_path):
+    def handler(request):
+        if request.url.path.startswith("/markets/slug/"):
+            return httpx.Response(503, json={"error": "unavailable"})
+        return httpx.Response(404)
+
+    client = BoundedGammaDiscoveryClient(transport=httpx.MockTransport(handler))
+    result = discover_markets_v3(
+        config(), 1, client, evidence_dir=tmp_path, as_of_ts=DEFAULT_AS_OF_TS,
+    )
+
+    assert result["status"] == "DISCOVERY_SOURCE_FAILED"
+    assert result["discovery_complete"] is False
+    assert result["markets"] == []
 
 
 def test_evidence_is_compressed_atomic_and_replay_verified(tmp_path):

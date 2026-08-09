@@ -109,6 +109,7 @@ class SourceHealthTracker:
         self._http_status: int | None = None
         self._objects_received = 0
         self._fallback_used = False
+        self._expected_absence = False
         self._used = False  # Set True when the source is actually consulted
 
     def mark_used(self):
@@ -133,6 +134,16 @@ class SourceHealthTracker:
                 self._latency_ms = (t2 - t1).total_seconds() * 1000
             except (ValueError, TypeError):
                 pass
+
+    def record_expected_absence(self, http_status: int = 404):
+        """Record a documented not-found response for a direct lookup.
+
+        A bounded slug lookup uses a dual 404 to prove an empty cohort.  The
+        raw HTTP status remains visible, but this expected absence is source
+        HEALTHY rather than a fabricated outage.
+        """
+        self.record_response(http_status, 0)
+        self._expected_absence = True
 
     def record_error(self, error: str):
         """Call when an HTTP error, timeout, or parse failure occurs."""
@@ -163,6 +174,8 @@ class SourceHealthTracker:
             status = "FAILED"
         elif self._failures > 0:
             status = "DEGRADED"
+        elif self._expected_absence and self._http_status == 404:
+            status = "HEALTHY"
         elif self._http_status is not None and 200 <= self._http_status < 300:
             status = "HEALTHY"
         elif self._http_status is not None:
@@ -184,6 +197,7 @@ class SourceHealthTracker:
             "fallback_used": self._fallback_used,
             "objects_received": self._objects_received,
             "http_status": self._http_status,
+            "expected_absence": self._expected_absence,
         }
 
 

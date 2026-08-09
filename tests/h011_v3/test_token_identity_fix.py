@@ -347,7 +347,7 @@ class _SequenceGamma:
         self.responses = list(responses)
         self.calls = 0
 
-    def fetch_pages(self, limit):
+    def fetch_pages(self, limit, *, as_of_ts=None):
         value = self.responses[self.calls]
         self.calls += 1
         if isinstance(value, Exception):
