@@ -1,0 +1,63 @@
+name: SENEX Zero-Cost Northflank API Diagnostic
+
+on:
+  push:
+    branches:
+      - ops/senex-zero-cost-audit-20260809
+    paths:
+      - .github/workflows/senex-zero-cost-northflank-api-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: northflank-readonly-audit
+    steps:
+      - name: Probe safe GET variants
+        shell: bash
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          import datetime,hashlib,json,os,urllib.error,urllib.request
+          base='https://api.northflank.com/v1'
+          routes=['/projects/seneciobot','/projects/seneciobot/services/senecio-h011','/projects/seneciobot/services/senecio-h011/deployment','/projects/seneciobot/volumes/h011-results-vol']
+          results=[]
+          for token_name in ('NORTHFLANK_API_TOKEN','NORTHFLANK_SENEX_MAINTENANCE_TOKEN'):
+              token=os.environ[token_name]
+              for header_mode in ('accept_only','content_type'):
+                  headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-arq-diagnostic/1'}
+                  if header_mode=='content_type': headers['Content-Type']='application/json'
+                  for route in routes:
+                      req=urllib.request.Request(base+route,headers=headers,method='GET')
+                      raw=b''; status=0
+                      try:
+                          with urllib.request.urlopen(req,timeout=30) as r: status=r.status; raw=r.read()
+                      except urllib.error.HTTPError as exc: status=exc.code; raw=exc.read()
+                      text=raw.decode('utf-8','replace')
+                      try:
+                          obj=json.loads(text or '{}')
+                          safe={k:v for k,v in obj.items() if k.lower() in {'message','error','code','status','success'}} if isinstance(obj,dict) else {'json_type':type(obj).__name__}
+                      except Exception:
+                          safe={'text':text[:240]}
+                      results.append({'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'token_name':token_name,'header_mode':header_mode,'method':'GET','path':route,'status':status,'bytes':len(raw),'body_sha256':hashlib.sha256(raw).hexdigest(),'safe_response':safe})
+          open('evidence/northflank_api_diagnostic.json','w').write(json.dumps({'results':results,'secret_values_exported':False},sort_keys=True,indent=2)+'\n')
+          print(json.dumps({'results':results,'secret_values_exported':False},sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: northflank-api-diagnostic-${{ github.sha }}
+          path: evidence
+          retention-days: 14
+          if-no-files-found: error
