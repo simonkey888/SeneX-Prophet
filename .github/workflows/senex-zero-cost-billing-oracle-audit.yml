@@ -243,6 +243,7 @@ jobs:
                   "build_id": scalar(deployment_data, {"buildId", "build"}),
                   "replicas": scalar(deployment_data, {"instances", "replicas", "instanceCount"}),
                   "ports_present": bool(ports_data),
+                  "public_dns": scalar(ports_data, {"dns"}),
                   "container_status_counts": status_counts,
                   "runtime_log_bytes": len(logs_raw),
                   "runtime_log_sha256": hashlib.sha256(logs_raw).hexdigest(),
