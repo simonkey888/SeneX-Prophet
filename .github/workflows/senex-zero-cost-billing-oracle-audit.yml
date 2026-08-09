@@ -1,0 +1,274 @@
+name: SENEX Zero-Cost Billing and Oracle Audit
+
+on:
+  push:
+    branches:
+      - ops/senex-zero-cost-audit-20260809
+    paths:
+      - .github/workflows/senex-zero-cost-billing-oracle-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: northflank-readonly-audit
+    steps:
+      - name: Verify billing and inventory oracle with GET only
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          BASE = "https://api.northflank.com/v1"
+          PROJECT_ID = "seneciobot"
+          ORACLE_SERVICE_ID = "seneciobot"
+          TOKEN = os.environ["NORTHFLANK_SENEX_MAINTENANCE_TOKEN"]
+          LEDGER = []
+
+          def get(path, params=None):
+              if params:
+                  path += "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(
+                  BASE + path,
+                  headers={
+                      "Authorization": f"Bearer {TOKEN}",
+                      "Accept": "application/json",
+                      "User-Agent": "senex-zero-cost-audit/1",
+                  },
+                  method="GET",
+              )
+              raw = b""
+              status = 0
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      status = response.status
+                      raw = response.read()
+              except urllib.error.HTTPError as exc:
+                  status = exc.code
+                  raw = exc.read()
+              LEDGER.append({
+                  "method": "GET",
+                  "path": path,
+                  "status": status,
+                  "bytes": len(raw),
+                  "body_sha256": hashlib.sha256(raw).hexdigest(),
+              })
+              try:
+                  body = json.loads(raw.decode("utf-8", "replace") or "{}")
+              except Exception:
+                  body = {}
+              return status, body, raw
+
+          def data(body):
+              value = body.get("data", {}) if isinstance(body, dict) else {}
+              return value if isinstance(value, dict) else {}
+
+          def scalar(obj, names):
+              if isinstance(obj, dict):
+                  for key, value in obj.items():
+                      if key in names and isinstance(value, (str, int, float, bool)):
+                          return value
+                  for value in obj.values():
+                      found = scalar(value, names)
+                      if found is not None:
+                          return found
+              elif isinstance(obj, list):
+                  for value in obj:
+                      found = scalar(value, names)
+                      if found is not None:
+                          return found
+              return None
+
+          def price(obj):
+              value = obj if isinstance(obj, dict) else {}
+              return {
+                  name: float(value.get(name, 0) or 0)
+                  for name in ("total", "cpu", "memory", "storage", "gpu")
+              }
+
+          now = datetime.datetime.now(datetime.timezone.utc)
+          month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+          latest_complete_hour = int(now.timestamp() // 3600 * 3600 - 3600)
+
+          auth_status, auth_body, _ = get("/auth")
+          teams_status, teams_body, _ = get("/teams", {"per_page": 100})
+
+          usage_entries = []
+          usage_statuses = []
+          cursor = None
+          for _ in range(10):
+              params = {
+                  "startTime": int(month_start.timestamp()),
+                  "endTime": int(now.timestamp()) + 1,
+                  "per_page": 100,
+              }
+              if cursor:
+                  params["cursor"] = cursor
+              status, body, _ = get("/billing/usage", params)
+              usage_statuses.append(status)
+              if status != 200:
+                  break
+              payload = data(body)
+              page = payload.get("usage", [])
+              if isinstance(page, list):
+                  usage_entries.extend(item for item in page if isinstance(item, dict))
+              pagination = body.get("pagination", {}) if isinstance(body, dict) else {}
+              if not pagination.get("hasNextPage"):
+                  break
+              cursor = pagination.get("cursor")
+              if not cursor:
+                  break
+
+          month_price = {name: 0.0 for name in ("total", "cpu", "memory", "storage", "gpu")}
+          for entry in usage_entries:
+              item_price = price(entry.get("paasUsage", {}).get("price", {}))
+              for name in month_price:
+                  month_price[name] += item_price[name]
+
+          hourly = {}
+          for resource_type in ("service", "volume"):
+              status, body, _ = get(
+                  f"/billing/usage/{latest_complete_hour}",
+                  {
+                      "projectId": PROJECT_ID,
+                      "resourceType": resource_type,
+                      "per_page": 100,
+                  },
+              )
+              payload = data(body)
+              hourly[resource_type] = {
+                  "status": status,
+                  "timestamp": payload.get("timestamp"),
+                  "price_cents": price(payload.get("paasUsage", {}).get("price", {})),
+              }
+
+          service_path = f"/projects/{PROJECT_ID}/services/{ORACLE_SERVICE_ID}"
+          service_status, service_body, _ = get(service_path)
+          deploy_status, deploy_body, _ = get(service_path + "/deployment")
+          ports_status, ports_body, _ = get(service_path + "/ports")
+          containers_status, containers_body, _ = get(service_path + "/containers", {"per_page": 100})
+          logs_status, _, logs_raw = get(
+              service_path + "/logs",
+              {
+                  "type": "runtime",
+                  "queryType": "range",
+                  "duration": 604800,
+                  "lineLimit": 500,
+                  "direction": "backward",
+              },
+          )
+
+          service_data = data(service_body)
+          deployment_data = data(deploy_body)
+          ports_data = data(ports_body)
+          containers_data = data(containers_body)
+          possible_containers = containers_data.get("containers", [])
+          if not isinstance(possible_containers, list):
+              possible_containers = []
+          status_counts = {}
+          for container in possible_containers:
+              status = str(container.get("status", "UNKNOWN")) if isinstance(container, dict) else "UNKNOWN"
+              status_counts[status] = status_counts.get(status, 0) + 1
+
+          log_text = logs_raw.decode("utf-8", "replace").lower()
+          log_keywords = {
+              word: log_text.count(word)
+              for word in (
+                  "error", "exception", "oracle", "prediction", "paper",
+                  "confidence", "buy", "sell", "timeout", "rate limit"
+              )
+          }
+
+          list_proven = (
+              usage_statuses
+              and all(status == 200 for status in usage_statuses)
+              and len(usage_entries) > 0
+              and month_price["total"] == 0
+          )
+          hourly_proven = all(
+              item["status"] == 200 and item["price_cents"]["total"] == 0
+              for item in hourly.values()
+          )
+          cost_gate = "PROVEN_ZERO" if list_proven and hourly_proven else "NOT_PROVEN"
+
+          report = {
+              "captured_at": now.isoformat(),
+              "mode": "READ_ONLY_GET_ONLY",
+              "secret_values_exported": False,
+              "mutating_requests": sum(1 for item in LEDGER if item["method"] != "GET"),
+              "cost_gate": cost_gate,
+              "billing": {
+                  "auth_status": auth_status,
+                  "auth_kind": scalar(data(auth_body), {"kind", "type", "accountType"}),
+                  "teams_status": teams_status,
+                  "usage_statuses": usage_statuses,
+                  "month_start": month_start.isoformat(),
+                  "usage_entry_count": len(usage_entries),
+                  "month_price_cents": month_price,
+                  "latest_complete_hour": latest_complete_hour,
+                  "hourly": hourly,
+              },
+              "oracle_service": {
+                  "service_id": ORACLE_SERVICE_ID,
+                  "request_statuses": {
+                      "service": service_status,
+                      "deployment": deploy_status,
+                      "ports": ports_status,
+                      "containers": containers_status,
+                      "runtime_logs": logs_status,
+                  },
+                  "repository": scalar(service_data, {"repository", "repoUrl", "repositoryUrl"}),
+                  "branch": scalar(service_data, {"branch", "branchName"}),
+                  "dockerfile": scalar(service_data, {"dockerfile", "dockerfilePath"}),
+                  "build_context": scalar(service_data, {"buildContext", "build_context"}),
+                  "deployment_plan": scalar(service_data, {"deploymentPlan", "plan"}),
+                  "build_plan": scalar(service_data, {"buildPlan"}),
+                  "deployed_sha": scalar(deployment_data, {"sha", "commitSha", "deployedSha"}),
+                  "build_id": scalar(deployment_data, {"buildId", "build"}),
+                  "replicas": scalar(deployment_data, {"instances", "replicas", "instanceCount"}),
+                  "ports_present": bool(ports_data),
+                  "container_status_counts": status_counts,
+                  "runtime_log_bytes": len(logs_raw),
+                  "runtime_log_sha256": hashlib.sha256(logs_raw).hexdigest(),
+                  "runtime_log_keyword_counts": log_keywords,
+              },
+              "request_ledger": LEDGER,
+          }
+          assert report["mutating_requests"] == 0
+          serialized = json.dumps(report, sort_keys=True, indent=2) + "\n"
+          forbidden = [TOKEN]
+          assert all(not value or value not in serialized for value in forbidden)
+          with open("evidence/zero-cost-billing-oracle-audit.json", "w", encoding="utf-8") as handle:
+              handle.write(serialized)
+          print(json.dumps({
+              "cost_gate": cost_gate,
+              "month_price_cents": month_price,
+              "hourly": hourly,
+              "oracle_request_statuses": report["oracle_service"]["request_statuses"],
+              "oracle_branch": report["oracle_service"]["branch"],
+              "oracle_deployed_sha": report["oracle_service"]["deployed_sha"],
+              "mutating_requests": report["mutating_requests"],
+          }, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zero-cost-billing-oracle-audit-${{ github.sha }}
+          path: evidence
+          retention-days: 14
+          if-no-files-found: error
