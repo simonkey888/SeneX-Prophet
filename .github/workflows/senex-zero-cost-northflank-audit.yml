@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 20
     environment: northflank-readonly-audit
     env:
-      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
       NF_PROJECT_SLUG: seneciobot
       NF_SERVICE_SLUG: senecio-h011
       EXPECTED_PR5_HEAD: aeb50867738b7ae7199f621a730080e09465458e
