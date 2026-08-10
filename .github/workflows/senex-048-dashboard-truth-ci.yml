@@ -1,0 +1,185 @@
+name: SENEX 048 Dashboard Truth CI
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-048-dashboard-truth-ci.yml]
+
+permissions:
+  contents: read
+
+env:
+  TARGET_SHA: 79edb63d8870b57dc49920bf074023204407b78b
+  BASE_SHA: d3abdde2aedb56a4800333937111804b396f843b
+
+jobs:
+  truth-ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR41 head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Scope and diff gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git diff --check "$BASE_SHA" "$TARGET_SHA"
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$TARGET_SHA")
+          test "${#changed[@]}" -eq 3
+          for path in "${changed[@]}"; do
+            case "$path" in
+              senecio_polymarket/frontend/*) ;;
+              *) echo "OUT_OF_SCOPE=$path"; exit 1 ;;
+            esac
+          done
+          printf '%s\n' "${changed[@]}"
+
+      - name: JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check senecio_polymarket/frontend/app.js
+          node --check senecio_polymarket/frontend/truth-alignment.js
+
+      - name: Static presentation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          index=Path('senecio_polymarket/frontend/index.html').read_text()
+          js=Path('senecio_polymarket/frontend/truth-alignment.js').read_text()
+          css=Path('senecio_polymarket/frontend/truth-alignment.css').read_text()
+          assert "SCORE_ROUTE = '/api/oracle/score?symbol=BTCUSDT'" in js
+          assert "raw === '/api/oracle/score'" in js
+          assert "originalFetch(SCORE_ROUTE" in js
+          assert "data-score-source=\"authoritative_score_pct\"" in index
+          assert "score?.authoritative_score_pct" in js
+          assert "— / NOT YET AUTHORITATIVE" in index and "— / NOT YET AUTHORITATIVE" in js
+          assert 'score-winrate' not in index
+          assert 'Observed verified win rate · diagnostic' in index
+          assert 'selected?.observed_win_rate_pct' in js
+          assert '>RAW CONF<' in index
+          assert 'uncalibrated model conviction — not probability / not authoritative score' in index
+          assert 'score-exclusion-reasons' in index and 'exclusion_reasons' in js
+          assert 'score-proof-progress' in index and '/100' in js
+          assert 'score-long-progress' in index and '/30' in js
+          assert 'score-short-progress' in index
+          assert '@media (max-width: 480px)' in css
+          assert 'truth-alignment.js' in index and index.index('truth-alignment.js') < index.index('app.js')
+          print('STATIC_PRESENTATION_CONTRACT=PASS')
+          PY
+
+      - name: Runtime DOM contract — null and calibrated score
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const vm = require('vm');
+          const source = fs.readFileSync('senecio_polymarket/frontend/truth-alignment.js', 'utf8');
+          async function runCase(payload, expectedScore, expectedStatus) {
+            const nodes = new Map();
+            const get = (id) => {
+              if (!nodes.has(id)) nodes.set(id, { textContent: '', dataset: {} });
+              return nodes.get(id);
+            };
+            const calls = [];
+            const context = {
+              console,
+              document: {
+                hidden: false,
+                getElementById: get,
+                addEventListener: () => {},
+              },
+              window: {
+                fetch: async (input) => {
+                  calls.push(typeof input === 'string' ? input : input.url);
+                  return { ok: true, status: 200, json: async () => payload };
+                },
+                setInterval: () => 0,
+              },
+            };
+            vm.createContext(context);
+            vm.runInContext(source, context);
+            await new Promise(resolve => setImmediate(resolve));
+            if (get('score-authoritative').textContent !== expectedScore) throw new Error('authoritative mismatch');
+            if (get('score-status').textContent !== expectedStatus) throw new Error('status mismatch');
+            if (calls.some(x => x !== '/api/oracle/score?symbol=BTCUSDT')) throw new Error(`unbound call ${calls}`);
+            await context.window.fetch('/api/oracle/score');
+            if (calls.at(-1) !== '/api/oracle/score?symbol=BTCUSDT') throw new Error('legacy fetch was not rebound');
+            return { calls, nodes };
+          }
+          (async () => {
+            await runCase({
+              score_status:'UNKNOWN', authoritative_score_pct:null, proof_qualified_rows:0, excluded_rows:1000,
+              exclusion_reasons:{MISSING_ORIGIN_PRICE_PROOF:1000}, selected:{verified:0,wins:0,losses:0,observed_win_rate_pct:null,wilson_lower_95:null,raw_confidence_brier:null,raw_confidence_ece:null}
+            }, '— / NOT YET AUTHORITATIVE', 'UNKNOWN');
+            await runCase({
+              score_status:'CALIBRATED', authoritative_score_pct:73.21, proof_qualified_rows:120, excluded_rows:8,
+              exclusion_reasons:{DUPLICATE_EVIDENCE:8}, selected:{verified:120,wins:88,losses:32,observed_win_rate_pct:73.33,wilson_lower_95:0.6461,raw_confidence_brier:0.19,raw_confidence_ece:0.04,by_direction:{LONG:{verified:61},SHORT:{verified:59}}}
+            }, '73.21%', 'CALIBRATED');
+            console.log('RUNTIME_DOM_CONTRACT=PASS');
+          })().catch(e => { console.error(e); process.exit(1); });
+          NODE
+
+      - name: Python syntax and focused truth tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -r senecio_polymarket/requirements.txt >/dev/null
+          python -m compileall -q senecio_polymarket/backend
+          python -m pytest -q \
+            tests/oracle/test_score_truth.py \
+            tests/oracle/test_permanent_paper_gate.py \
+            tests/oracle/test_oracle_health.py
+
+      - name: Frozen predictor and repository safety smoke
+        shell: bash
+        working-directory: senecio_polymarket
+        run: |
+          set -euo pipefail
+          python -m scripts.act_final_audit_smoke
+
+      - name: Materialize CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          payload={
+            'order':'AUD-SENEX-ORACLE-DASHBOARD-TRUTH-ALIGNMENT-048',
+            'target_sha':'79edb63d8870b57dc49920bf074023204407b78b',
+            'base_sha':'d3abdde2aedb56a4800333937111804b396f843b',
+            'changed_files':subprocess.check_output(['git','diff','--name-only','d3abdde2aedb56a4800333937111804b396f843b','79edb63d8870b57dc49920bf074023204407b78b'],text=True).splitlines(),
+            'dashboard_score_source':'authoritative_score_pct',
+            'score_route':'/api/oracle/score?symbol=BTCUSDT',
+            'null_score_fallback_to_other_percent':False,
+            'raw_confidence_labeled_non_authoritative':True,
+            'paper_only_contract_unchanged':True,
+            'do_not_touch_freeze':'PASS',
+            'ci':'GREEN',
+          }
+          raw=(json.dumps(payload,sort_keys=True,indent=2)+'\n').encode()
+          Path('evidence/senex-048-ci.json').write_bytes(raw)
+          Path('evidence/SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  senex-048-ci.json\n')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-048-dashboard-truth-${{ env.TARGET_SHA }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: error
