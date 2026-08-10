@@ -115,7 +115,6 @@ jobs:
             if (calls.some(x => x !== '/api/oracle/score?symbol=BTCUSDT')) throw new Error(`unbound call ${calls}`);
             await context.window.fetch('/api/oracle/score');
             if (calls.at(-1) !== '/api/oracle/score?symbol=BTCUSDT') throw new Error('legacy fetch was not rebound');
-            return { calls, nodes };
           }
           (async () => {
             await runCase({
@@ -135,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip >/dev/null
-          python -m pip install -r senecio_polymarket/requirements.txt >/dev/null
+          python -m pip install -r senecio_polymarket/requirements.txt pytest >/dev/null
           python -m compileall -q senecio_polymarket/backend
           python -m pytest -q \
             tests/oracle/test_score_truth.py \
