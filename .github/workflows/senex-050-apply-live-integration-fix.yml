@@ -1,0 +1,73 @@
+name: SENEX 050 Apply Live Integration Fix
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-050-apply-live-integration-fix.yml]
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: fix/oracle-dashboard-live-integration-050
+  EXPECTED_BASE: 3f48a8b7cc0be42de79c78f43f630edebaf1e886
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact correction branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+      - name: Verify exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+      - name: Apply minimal frontend-only correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('senecio_polymarket/frontend/app.js')
+          text = app.read_text()
+          replacements = {
+              "$('#stat-events').innerHTML  = `events: <b>${total}</b>`;": "$('#stat-events').innerHTML  = `demo events: <b>${total}</b>`;",
+              "$('#stat-ticks').innerHTML   = `ticks: <b>${state.counters.MARKET_TICK}</b>`;": "$('#stat-ticks').innerHTML   = `demo ticks: <b>${state.counters.MARKET_TICK}</b>`;",
+              "$('#stat-signals').innerHTML = `signals: <b>${state.counters.SIGNAL}</b>`;": "$('#stat-signals').innerHTML = `demo signals: <b>${state.counters.SIGNAL}</b>`;",
+              "$('#stat-fills').innerHTML   = `fills: <b>${state.counters.EXECUTION_SIM}</b>`;": "$('#stat-fills').innerHTML   = `demo fills: <b>${state.counters.EXECUTION_SIM}</b>`;",
+              "$('#stat-equity').innerHTML  = `equity: <b>$${eq.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>`;": "$('#stat-equity').innerHTML  = `demo equity: <b>$${eq.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>`;",
+              "$('#cursor-display').textContent = `cursor: clob=${state.cursors.clob} / onchain=${state.cursors.onchain}`;": "const cursor = $('#cursor-display');\n    if (cursor) cursor.textContent = `synthetic demo cursor: clob=${state.cursors.clob} / onchain=${state.cursors.onchain}`;",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'app.js expected snippet count != 1: {old}')
+              text = text.replace(old, new)
+          app.write_text(text)
+
+          truth = Path('senecio_polymarket/frontend/truth-alignment.js')
+          text = truth.read_text()
+          old = "document.querySelectorAll('#oracle-table tbody tr td:last-child').forEach((cell) => {"
+          new = "document.querySelectorAll('#oracle-table tbody tr td:last-child:not(.placeholder)').forEach((cell) => {"
+          if text.count(old) != 1:
+              raise SystemExit('truth-alignment.js expected selector count != 1')
+          truth.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected=$'senecio_polymarket/frontend/app.js\nsenecio_polymarket/frontend/truth-alignment.js'
+          test "$changed" = "$expected"
+          git diff --stat
+      - name: Commit exact correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'SENEX ARQ'
+          git config user.email 'actions@users.noreply.github.com'
+          git add senecio_polymarket/frontend/app.js senecio_polymarket/frontend/truth-alignment.js
+          git commit -m 'fix(oracle): preserve demo labels and raw placeholders'
+          git push origin "HEAD:${TARGET_BRANCH}"
