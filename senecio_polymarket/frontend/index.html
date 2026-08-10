@@ -9,6 +9,7 @@
 <title>SENECIO ORACLE — Polymarket Cockpit</title>
 <meta name="oracle-version" content="ACT-XX-ORACLE-FIRST-V3" />
 <link rel="stylesheet" href="/static/styles.css" />
+<link rel="stylesheet" href="/static/truth-alignment.css" />
 </head>
 <body>
 <div id="app">
@@ -31,25 +32,63 @@
   </header>
 
   <main>
-    <!-- FIRST COLUMN (was 4th): REAL ORACLE — Supabase-backed predictions -->
+    <!-- FIRST COLUMN: REAL ORACLE — Supabase-backed predictions + proof-qualified score -->
     <section class="col col-oracle">
       <div class="panel">
         <div class="panel-head">
-          <h2>Oracle Score</h2>
-          <span id="oracle-score-meta" class="meta">live</span>
+          <h2>Oracle Score · BTCUSDT</h2>
+          <span id="oracle-score-meta" class="meta">proof-qualified</span>
         </div>
-        <div id="oracle-score" class="oracle-score-grid">
-          <div class="score-card">
-            <div class="score-label">Total</div>
-            <div class="score-value" id="score-total">—</div>
+        <div id="oracle-score" class="oracle-score-grid" data-score-source="authoritative_score_pct">
+          <div class="score-card score-authoritative">
+            <div class="score-label">Authoritative Oracle score</div>
+            <div class="score-value" id="score-authoritative">— / NOT YET AUTHORITATIVE</div>
+            <div class="score-detail truth-note">Only <code>authoritative_score_pct</code> may populate this value. No raw-confidence or win-rate fallback.</div>
+          </div>
+          <div class="score-card score-status-card">
+            <div class="score-label">Score status</div>
+            <div class="score-value" id="score-status" data-status="UNKNOWN">UNKNOWN</div>
           </div>
           <div class="score-card">
-            <div class="score-label">Verified</div>
-            <div class="score-value" id="score-verified">—</div>
+            <div class="score-label">Proof-qualified · global</div>
+            <div class="score-value" id="score-proof-progress">0/100</div>
+            <div class="score-detail">minimum required global: <span id="score-minimum-global">100</span></div>
           </div>
-          <div class="score-card score-win">
-            <div class="score-label">Win rate</div>
-            <div class="score-value" id="score-winrate">—</div>
+          <div class="score-card">
+            <div class="score-label">LONG verified</div>
+            <div class="score-value" id="score-long-progress">0/30</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">SHORT verified</div>
+            <div class="score-value" id="score-short-progress">0/30</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Excluded rows</div>
+            <div class="score-value" id="score-excluded">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Verified wins / losses</div>
+            <div class="score-value"><span id="score-wins">0</span> / <span id="score-losses">0</span></div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Observed verified win rate · diagnostic</div>
+            <div class="score-value" id="score-observed-winrate">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Wilson lower 95</div>
+            <div class="score-value" id="score-wilson">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Raw confidence Brier</div>
+            <div class="score-value" id="score-brier">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Raw confidence ECE</div>
+            <div class="score-value" id="score-ece">—</div>
+          </div>
+          <div class="score-card score-wide">
+            <div class="score-label">Exclusion reasons</div>
+            <div class="score-detail exclusion-list" id="score-exclusion-reasons">loading…</div>
           </div>
           <div class="score-card">
             <div class="score-label">Next cycle</div>
@@ -73,11 +112,12 @@
           <h2>Oracle Predictions (live DB)</h2>
           <span id="oracle-pred-meta" class="meta">—</span>
         </div>
+        <div class="oracle-raw-confidence-note">RAW CONF = uncalibrated model conviction — not probability / not authoritative score.</div>
         <div class="table-wrap">
           <table id="oracle-table" class="table">
             <thead>
               <tr>
-                <th>TS</th><th>SYM</th><th>PRED</th><th>CONF</th><th>EV</th><th>PRICE</th><th>EX</th><th>OUT</th>
+                <th>TS</th><th>SYM</th><th>PRED</th><th class="raw-conf-heading">RAW CONF</th><th>EV</th><th>PRICE</th><th>EX</th><th>OUT</th>
               </tr>
             </thead>
             <tbody>
@@ -88,7 +128,7 @@
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Confidence Trend (last 50)</h2></div>
+        <div class="panel-head"><h2>Raw Confidence Trend (last 50 · non-authoritative)</h2></div>
         <div class="chart-wrap">
           <canvas id="oracle-conf-chart"></canvas>
         </div>
@@ -195,6 +235,7 @@
   </footer>
 </div>
 
+<script src="/static/truth-alignment.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
