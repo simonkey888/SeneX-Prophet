@@ -1,0 +1,247 @@
+name: SENEX 048 Oracle UI Deploy
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-048-oracle-ui-deploy.yml]
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  PROJECT_ID: seneciobot
+  SERVICE_ID: seneciobot
+  SERVICE_BRANCH: feat/oracle-paper-health
+  TARGET_SHA: 734e1517d6f1a42c3a2dc308b35bff3cc7b5ecc1
+  PUBLIC_URL: https://p01--seneciobot--wbjggn89fnf8.code.run
+
+jobs:
+  deploy-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: northflank-readonly-audit
+    steps:
+      - name: Checkout ops harness
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact merged product ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git ls-remote origin refs/heads/${SERVICE_BRANCH} | awk '{print $1}')"
+          test "$actual" = "$TARGET_SHA"
+
+      - name: Deploy only existing seneciobot and prove UI/API agreement
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          from __future__ import annotations
+          import datetime, hashlib, json, os, time, urllib.error, urllib.parse, urllib.request
+          from pathlib import Path
+
+          API=os.environ['NF_API'].rstrip('/')
+          TOKEN=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          PROJECT=os.environ['PROJECT_ID']
+          SERVICE=os.environ['SERVICE_ID']
+          BRANCH=os.environ['SERVICE_BRANCH']
+          TARGET=os.environ['TARGET_SHA']
+          PUBLIC=os.environ['PUBLIC_URL'].rstrip('/')
+          HEAD={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-arq-048/1'}
+          out={
+            'order':'AUD-SENEX-ORACLE-DASHBOARD-TRUTH-ALIGNMENT-048',
+            'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'target_service':SERVICE,'target_sha':TARGET,'public_url':PUBLIC,
+            'requests':[],'secret_values_exported':False,'runtime_017_touched':False,'h011_mutation':False,
+            'new_service':False,'new_job':False,'new_addon':False,'new_volume':False,
+            'replica_scale_up':False,'plan_change':False,
+            'safety':{'paper_only':True,'H011_ORDERS_ENABLED':False,'orders_enabled':False,'live_capital_locked':True,'REAL_ORDER_NETWORK_CALLS':0,'WALLET_OR_PRIVATE_KEY_ACCESS':0,'REAL_CAPITAL_ACTIONS':0},
+          }
+          def persist():
+            raw=(json.dumps(out,sort_keys=True,indent=2)+'\n').encode()
+            Path('evidence/senex-048-terminal.json').write_bytes(raw)
+            Path('evidence/SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  senex-048-terminal.json\n')
+          def data(o): return o.get('data',o) if isinstance(o,dict) else o
+          def call(method,path,payload=None,label=None):
+            body=None if payload is None else json.dumps(payload,separators=(',',':')).encode()
+            req=urllib.request.Request(API+path,headers=HEAD,data=body,method=method); raw=b''; status=0
+            try:
+              with urllib.request.urlopen(req,timeout=90) as r: status=r.status; raw=r.read()
+            except urllib.error.HTTPError as e: status=e.code; raw=e.read()
+            digest=hashlib.sha256(raw).hexdigest(); obj={}; safe=''
+            try:
+              obj=json.loads(raw.decode() or '{}')
+              if isinstance(obj,dict): safe=str(obj.get('message') or obj.get('error') or '')[:180]
+            except Exception: pass
+            out['requests'].append({'label':label or path,'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':digest,'safe_error':safe if status>=400 else ''}); persist()
+            if not 200 <= status < 300: raise RuntimeError(f'{method} {path} status={status} body_sha256={digest} safe={safe}')
+            return data(obj)
+          def pub_bytes(path,accept='application/json'):
+            req=urllib.request.Request(PUBLIC+path,headers={'Accept':accept,'User-Agent':'senex-arq-048-public/1'},method='GET')
+            with urllib.request.urlopen(req,timeout=35) as r: raw=r.read(); status=r.status
+            return status,raw,hashlib.sha256(raw).hexdigest()
+          def pub_json(path):
+            status,raw,digest=pub_bytes(path)
+            return status,json.loads(raw.decode()),digest
+          def items(x,key):
+            x=data(x)
+            if isinstance(x,list): return x
+            if isinstance(x,dict):
+              v=x.get(key) or x.get('data') or []
+              return v if isinstance(v,list) else []
+            return []
+          def inventory(tag):
+            ss=items(call('GET',f'/projects/{PROJECT}/services?per_page=100',label=f'services_{tag}'),'services')
+            js=items(call('GET',f'/projects/{PROJECT}/jobs?per_page=100',label=f'jobs_{tag}'),'jobs')
+            aa=items(call('GET',f'/projects/{PROJECT}/addons?per_page=100',label=f'addons_{tag}'),'addons')
+            vv=items(call('GET',f'/projects/{PROJECT}/volumes?per_page=100',label=f'volumes_{tag}'),'volumes')
+            sids=sorted(str(x.get('id')) for x in ss if isinstance(x,dict)); vids=sorted(str(x.get('id')) for x in vv if isinstance(x,dict))
+            if sids!=['senecio-h011','seneciobot'] or len(ss)!=2 or len(js)!=2 or len(aa)!=0 or vids!=['h011-results-vol']:
+              raise RuntimeError(f'inventory drift services={sids} jobs={len(js)} addons={len(aa)} volumes={vids}')
+            return {'services':sids,'jobs_count':len(js),'addons_count':len(aa),'volumes':vids}
+          def service(): return call('GET',f'/projects/{PROJECT}/services/{SERVICE}',label='oracle_service')
+          def deployment(label): return call('GET',f'/projects/{PROJECT}/services/{SERVICE}/deployment',label=label)
+          def containers(label):
+            d=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/containers?per_page=100',label=label)
+            if isinstance(d,dict): d=d.get('containers') or []
+            return d if isinstance(d,list) else []
+          def ident(d):
+            i=d.get('internal') or {}
+            return {'build_id':i.get('buildId'),'build_sha':i.get('buildSHA'),'deployed_sha':i.get('deployedSHA'),'branch':i.get('branch'),'instances':d.get('instances')}
+          def assert_shape(s,d):
+            vcs=s.get('vcsData') or {}; i=d.get('internal') or {}; branch=vcs.get('branch') or i.get('branch')
+            billing=s.get('billing') or {}; dp=billing.get('deploymentPlan') or s.get('deploymentPlan'); bp=billing.get('buildPlan') or s.get('buildPlan')
+            if branch!=BRANCH: raise RuntimeError(f'branch drift {branch}')
+            if int(d.get('instances') or 0)!=1: raise RuntimeError(f'instance drift {d.get("instances")}')
+            if dp not in (None,'nf-compute-20') or bp not in (None,'nf-compute-400-16'): raise RuntimeError(f'plan drift deployment={dp} build={bp}')
+          out['inventory_before']=inventory('before')
+          svc=service(); dep=deployment('deployment_before'); assert_shape(svc,dep)
+          before=ident(dep); internal=dep.get('internal') or {}
+          runtime={'docker':dep['docker']} if isinstance(dep.get('docker'),dict) else ({'buildpack':dep['buildpack']} if isinstance(dep.get('buildpack'),dict) else {})
+          if not internal.get('buildId') or not (internal.get('deployedSHA') or internal.get('buildSHA')) or not runtime: raise RuntimeError('rollback identity incomplete')
+          rollback={'build_id':internal['buildId'],'sha':internal.get('deployedSHA') or internal.get('buildSHA'),'branch':internal.get('branch') or BRANCH,'runtime':runtime}
+          out['before']=before; out['rollback_ref']={'build_id':rollback['build_id'],'sha':rollback['sha'],'branch':rollback['branch']}; persist()
+
+          # Pre-deploy API truth must already be healthy; no mutation if it is not.
+          pre_status,pre_score,pre_digest=pub_json('/api/oracle/score?symbol=BTCUSDT')
+          if pre_status!=200: raise RuntimeError('predeploy score API not HTTP 200')
+          out['predeploy_score']={'http':pre_status,'score_status':pre_score.get('score_status'),'authoritative_score_pct':pre_score.get('authoritative_score_pct'),'proof_qualified_rows':pre_score.get('proof_qualified_rows'),'excluded_rows':pre_score.get('excluded_rows'),'body_sha256':pre_digest}; persist()
+
+          changed=False
+          try:
+            actual=before.get('deployed_sha') or before.get('build_sha')
+            if actual==TARGET:
+              build_id=before.get('build_id'); out['build_reused']=True
+            else:
+              b=call('POST',f'/projects/{PROJECT}/services/{SERVICE}/build',{'sha':TARGET},label='oracle_build_start'); build_id=b.get('id')
+              if not build_id: raise RuntimeError('build id missing')
+              deadline=time.time()+3600; final={}
+              while time.time()<deadline:
+                final=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/build/{build_id}',label='oracle_build_poll')
+                if final.get('concluded'): break
+                time.sleep(15)
+              if not final.get('concluded') or not final.get('success') or final.get('sha')!=TARGET: raise RuntimeError(f'exact build failed id={build_id}')
+              out['build']={'id':build_id,'sha':final.get('sha'),'success':final.get('success'),'status':final.get('status')}; persist()
+              call('POST',f'/projects/{PROJECT}/services/{SERVICE}/deployment',{'internal':{'id':SERVICE,'branch':BRANCH,'buildId':build_id},**runtime},label='oracle_deploy_start'); changed=True
+
+            deadline=time.time()+1800; stable=None
+            while time.time()<deadline:
+              d=deployment('oracle_deploy_poll'); s=service(); cs=containers('oracle_containers_poll'); ii=ident(d); actual=ii.get('deployed_sha') or ii.get('build_sha'); completed=((s.get('status') or {}).get('deployment') or {}).get('status')=='COMPLETED'; running=[c for c in cs if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+              if actual==TARGET and ii.get('instances')==1 and completed and len(running)==1:
+                stable={'deployment':ii,'running_tasks':1}; break
+              time.sleep(10)
+            if not stable: raise RuntimeError('deployment did not stabilize on exact SHA with one running task')
+            out['northflank']={'build_id':build_id,'deployed_sha':TARGET,'instances':1,'task_running':1}; persist()
+
+            # Public route/API and deployed static assets.
+            deadline=time.time()+900; public=None
+            while time.time()<deadline:
+              try:
+                cockpit=pub_bytes('/',accept='text/html'); health=pub_json('/api/health'); healthz=pub_json('/api/oracle/healthz'); score=pub_json('/api/oracle/score?symbol=BTCUSDT'); preds=pub_json('/api/oracle/predictions?limit=5'); js=pub_bytes('/static/truth-alignment.js',accept='application/javascript'); css=pub_bytes('/static/truth-alignment.css',accept='text/css')
+                html=cockpit[1].decode('utf-8','replace'); js_text=js[1].decode('utf-8','replace')
+                static_ok=(cockpit[0]==200 and js[0]==200 and css[0]==200 and 'data-score-source="authoritative_score_pct"' in html and 'RAW CONF' in html and 'uncalibrated model conviction — not probability / not authoritative score' in html and "SCORE_ROUTE = '/api/oracle/score?symbol=BTCUSDT'" in js_text and "score?.authoritative_score_pct" in js_text and '— / NOT YET AUTHORITATIVE' in js_text)
+                score_obj=score[1]; api_ok=(health[0]==200 and healthz[0]==200 and score[0]==200 and preds[0]==200 and health[1].get('status')=='ok' and healthz[1].get('ok') is True and score_obj.get('mode')=='PAPER_ONLY' and score_obj.get('orders_enabled') is False and score_obj.get('live_capital_locked') is True)
+                if static_ok and api_ok:
+                  public={'cockpit_http':cockpit[0],'health_http':health[0],'healthz_http':healthz[0],'score_http':score[0],'predictions_http':preds[0],'html_sha256':cockpit[2],'truth_js_sha256':js[2],'truth_css_sha256':css[2],'score_body_sha256':score[2],'score':score_obj};
+                  Path('/tmp/deployed-truth-alignment.js').write_text(js_text,encoding='utf-8'); Path('/tmp/current-score.json').write_text(json.dumps(score_obj),encoding='utf-8'); break
+              except Exception as e:
+                out['public_last_error']=f'{type(e).__name__}:{str(e)[:180]}'; persist()
+              time.sleep(10)
+            if not public: raise RuntimeError('public cockpit/API/static gate timeout')
+            out['public']={k:v for k,v in public.items() if k!='score'}
+            score_obj=public['score']; out['score_summary']={'score_status':score_obj.get('score_status'),'authoritative_score_pct':score_obj.get('authoritative_score_pct'),'proof_qualified_rows':score_obj.get('proof_qualified_rows'),'excluded_rows':score_obj.get('excluded_rows'),'exclusion_reasons':score_obj.get('exclusion_reasons'),'requested_symbol':score_obj.get('requested_symbol')}; persist()
+
+          except Exception as exc:
+            out['failure']=f'{type(exc).__name__}: {str(exc)[:500]}'; persist()
+            if changed:
+              try:
+                call('POST',f'/projects/{PROJECT}/services/{SERVICE}/deployment',{'internal':{'id':SERVICE,'branch':rollback['branch'],'buildId':rollback['build_id']},**rollback['runtime']},label='oracle_rollback_start')
+                deadline=time.time()+1200
+                while time.time()<deadline:
+                  d=deployment('oracle_rollback_poll'); s=service(); cs=containers('oracle_rollback_containers'); ii=ident(d); actual=ii.get('deployed_sha') or ii.get('build_sha'); completed=((s.get('status') or {}).get('deployment') or {}).get('status')=='COMPLETED'; running=[c for c in cs if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+                  if actual==rollback['sha'] and ii.get('instances')==1 and completed and len(running)==1: out['rollback_verified']=True; persist(); break
+                  time.sleep(10)
+              except Exception as rb: out['rollback_error']=f'{type(rb).__name__}:{str(rb)[:180]}'; persist()
+            raise
+          PY
+
+          # Execute the ACTUAL deployed rendering adapter against the ACTUAL live score payload.
+          node <<'NODE'
+          const fs=require('fs'), vm=require('vm');
+          const source=fs.readFileSync('/tmp/deployed-truth-alignment.js','utf8');
+          const payload=JSON.parse(fs.readFileSync('/tmp/current-score.json','utf8'));
+          const nodes=new Map();
+          const get=(id)=>{ if(!nodes.has(id)) nodes.set(id,{textContent:'',dataset:{}}); return nodes.get(id); };
+          const calls=[];
+          const context={console,document:{hidden:false,getElementById:get,addEventListener:()=>{}},window:{fetch:async(input)=>{calls.push(typeof input==='string'?input:input.url);return{ok:true,status:200,json:async()=>payload}},setInterval:()=>0}};
+          vm.createContext(context); vm.runInContext(source,context);
+          setImmediate(async()=>{
+            const expectedStatus=['UNKNOWN','INSUFFICIENT_EVIDENCE','REJECTED','CALIBRATED'].includes(payload.score_status)?payload.score_status:'UNKNOWN';
+            const expectedScore=payload.authoritative_score_pct==null?'— / NOT YET AUTHORITATIVE':Number(payload.authoritative_score_pct).toFixed(2)+'%';
+            if(get('score-status').textContent!==expectedStatus) throw new Error(`status UI=${get('score-status').textContent} API=${expectedStatus}`);
+            if(get('score-authoritative').textContent!==expectedScore) throw new Error(`score UI=${get('score-authoritative').textContent} API=${expectedScore}`);
+            if(calls.some(x=>x!=='/api/oracle/score?symbol=BTCUSDT')) throw new Error(`wrong score route ${calls}`);
+            const result={visible_score_status:get('score-status').textContent,visible_authoritative_score:get('score-authoritative').textContent,api_score_status:expectedStatus,api_authoritative_score:payload.authoritative_score_pct,visible_score_status_matches_api:true,visible_authoritative_score_matches_api:true,if_api_score_null_ui_shows_not_authoritative:payload.authoritative_score_pct!==null||get('score-authoritative').textContent==='— / NOT YET AUTHORITATIVE'};
+            fs.writeFileSync('/tmp/dom-proof.json',JSON.stringify(result)); console.log(JSON.stringify(result));
+          });
+          NODE
+          sleep 1
+
+          python - <<'PY'
+          import hashlib,json,os,urllib.error,urllib.request
+          from pathlib import Path
+          report=Path('evidence/senex-048-terminal.json'); out=json.loads(report.read_text()); dom=json.loads(Path('/tmp/dom-proof.json').read_text()); out['dom_proof']=dom
+          API=os.environ['NF_API'].rstrip('/'); TOKEN=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']; PROJECT=os.environ['PROJECT_ID']; HEAD={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','User-Agent':'senex-arq-048-final/1'}
+          def get(path):
+            req=urllib.request.Request(API+path,headers=HEAD,method='GET')
+            with urllib.request.urlopen(req,timeout=60) as r: return json.loads(r.read().decode()).get('data',{})
+          def items(obj,key):
+            if isinstance(obj,list): return obj
+            return (obj.get(key) or obj.get('data') or []) if isinstance(obj,dict) else []
+          ss=items(get(f'/projects/{PROJECT}/services?per_page=100'),'services'); js=items(get(f'/projects/{PROJECT}/jobs?per_page=100'),'jobs'); aa=items(get(f'/projects/{PROJECT}/addons?per_page=100'),'addons'); vv=items(get(f'/projects/{PROJECT}/volumes?per_page=100'),'volumes')
+          after={'services':sorted(str(x.get('id')) for x in ss),'jobs_count':len(js),'addons_count':len(aa),'volumes':sorted(str(x.get('id')) for x in vv)}
+          if after!=out['inventory_before']: raise SystemExit(f'inventory changed: before={out["inventory_before"]} after={after}')
+          out['inventory_after']=after; out['zero_cost_envelope_unchanged']=True; out['DASHBOARD_API_ALIGNED']='YES'; out['completed_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+          raw=(json.dumps(out,sort_keys=True,indent=2)+'\n').encode(); report.write_bytes(raw); Path('evidence/SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  senex-048-terminal.json\n')
+          print(json.dumps({'DASHBOARD_API_ALIGNED':'YES','deployed_sha':out['northflank']['deployed_sha'],'build_id':out['northflank']['build_id'],'score_summary':out['score_summary'],'dom_proof':dom,'zero_cost_envelope_unchanged':True},sort_keys=True))
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+
+      - name: Upload terminal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-048-oracle-ui-${{ env.TARGET_SHA }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: error
