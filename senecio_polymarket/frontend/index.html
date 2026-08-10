@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#07090d" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>SENECIO ORACLE — Polymarket Cockpit</title>
-<meta name="oracle-version" content="ACT-XX-ORACLE-FIRST-V3" />
-<link rel="stylesheet" href="/static/styles.css" />
-<link rel="stylesheet" href="/static/truth-alignment.css" />
+<title>SENECIO ORACLE — Truth Cockpit</title>
+<meta name="oracle-version" content="AUD-049-R1-TRUTH-HARDENED" />
+<link rel="stylesheet" href="/static/styles.css?v=049r1" />
+<link rel="stylesheet" href="/static/truth-alignment.css?v=049r1" />
 </head>
 <body>
 <div id="app">
@@ -18,57 +18,83 @@
       <div class="logo">⬡</div>
       <div>
         <div class="title">SENECIO ORACLE</div>
-        <div class="subtitle">Polymarket-style autonomous trading intelligence stack</div>
+        <div class="subtitle">Real BTC Oracle truth zone + isolated synthetic demo telemetry</div>
       </div>
     </div>
     <div id="conn-status" class="pill pill-amber">connecting…</div>
-    <div class="topbar-stats">
-      <span id="stat-events" class="stat">events: <b>0</b></span>
-      <span id="stat-ticks"   class="stat">ticks: <b>0</b></span>
-      <span id="stat-signals" class="stat">signals: <b>0</b></span>
-      <span id="stat-fills"   class="stat">fills: <b>0</b></span>
-      <span id="stat-equity"  class="stat">equity: <b>$10,000</b></span>
+    <div class="topbar-stats synthetic-topbar-stats" aria-label="Synthetic demo telemetry only">
+      <span id="stat-events" class="stat">demo events: <b>0</b></span>
+      <span id="stat-ticks"   class="stat">demo ticks: <b>0</b></span>
+      <span id="stat-signals" class="stat">demo signals: <b>0</b></span>
+      <span id="stat-fills"   class="stat">demo fills: <b>0</b></span>
+      <span id="stat-equity"  class="stat">demo equity: <b>$10,000</b></span>
     </div>
   </header>
 
   <main>
-    <!-- FIRST COLUMN: REAL ORACLE — Supabase-backed predictions + proof-qualified score -->
-    <section class="col col-oracle">
+    <!-- PRIMARY TRUTH ZONE: REAL ORACLE BTCUSDT, 1h proof-qualified calibration -->
+    <section class="col col-oracle" data-truth-zone="REAL_ORACLE_BTCUSDT">
+      <div class="truth-zone-banner">
+        REAL ORACLE · BTCUSDT · 1H DIRECTIONAL PROOF-QUALIFIED · PAPER ONLY · H011 5M IS A DISTINCT CONTRACT
+      </div>
       <div class="panel">
         <div class="panel-head">
-          <h2>Oracle Score · BTCUSDT</h2>
-          <span id="oracle-score-meta" class="meta">proof-qualified</span>
+          <h2>Oracle Score · BTCUSDT · 1h</h2>
+          <span id="oracle-score-meta" class="meta">checking authoritative contract…</span>
         </div>
         <div id="oracle-score" class="oracle-score-grid" data-score-source="authoritative_score_pct">
           <div class="score-card score-authoritative">
-            <div class="score-label">Authoritative Oracle score</div>
-            <div class="score-value" id="score-authoritative">— / NOT YET AUTHORITATIVE</div>
-            <div class="score-detail truth-note">Only <code>authoritative_score_pct</code> may populate this value. No raw-confidence or win-rate fallback.</div>
+            <div class="score-label">1H Directional Proof-Qualified Score</div>
+            <div class="score-value" id="score-authoritative">—</div>
+            <div class="score-detail truth-note">Only <code>authoritative_score_pct</code> from the validated BTCUSDT score contract may populate this value. It is 1-hour directional calibration, not H011 5-minute market success and not raw model confidence.</div>
           </div>
           <div class="score-card score-status-card">
-            <div class="score-label">Score status</div>
-            <div class="score-value" id="score-status" data-status="UNKNOWN">UNKNOWN</div>
+            <div class="score-label">Backend score status</div>
+            <div class="score-value" id="score-status" data-status="UNAVAILABLE">—</div>
+          </div>
+          <div class="score-card score-status-card">
+            <div class="score-label">Score availability</div>
+            <div class="score-value" id="score-availability">UNAVAILABLE</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Last successful refresh</div>
+            <div class="score-value score-small" id="score-last-success">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Refresh age</div>
+            <div class="score-value" id="score-refresh-age">—</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Oracle horizon</div>
+            <div class="score-value" id="score-horizon">—</div>
+            <div class="score-detail">H011 market horizon = 5m / 300s · separate from this score.</div>
+          </div>
+          <div class="score-card">
+            <div class="score-label">Safety contract</div>
+            <div class="score-value score-small" id="score-safety">checking…</div>
           </div>
           <div class="score-card">
             <div class="score-label">Proof-qualified · global</div>
-            <div class="score-value" id="score-proof-progress">0/100</div>
-            <div class="score-detail">minimum required global: <span id="score-minimum-global">100</span></div>
+            <div class="score-value" id="score-proof-progress">—</div>
+            <div class="score-detail">server minimum: <span id="score-minimum-global">—</span></div>
           </div>
           <div class="score-card">
-            <div class="score-label">LONG verified</div>
-            <div class="score-value" id="score-long-progress">0/30</div>
+            <div class="score-label">LONG proof-qualified</div>
+            <div class="score-value" id="score-long-progress">—</div>
+            <div class="score-detail">server minimum: <span id="score-long-minimum">—</span></div>
           </div>
           <div class="score-card">
-            <div class="score-label">SHORT verified</div>
-            <div class="score-value" id="score-short-progress">0/30</div>
+            <div class="score-label">SHORT proof-qualified</div>
+            <div class="score-value" id="score-short-progress">—</div>
+            <div class="score-detail">server minimum: <span id="score-short-minimum">—</span></div>
           </div>
           <div class="score-card">
             <div class="score-label">Excluded rows</div>
             <div class="score-value" id="score-excluded">—</div>
           </div>
           <div class="score-card">
-            <div class="score-label">Verified wins / losses</div>
-            <div class="score-value"><span id="score-wins">0</span> / <span id="score-losses">0</span></div>
+            <div class="score-label">Proof-qualified wins / losses</div>
+            <div class="score-value"><span id="score-wins">—</span> / <span id="score-losses">—</span></div>
           </div>
           <div class="score-card">
             <div class="score-label">Observed verified win rate · diagnostic</div>
@@ -79,67 +105,71 @@
             <div class="score-value" id="score-wilson">—</div>
           </div>
           <div class="score-card">
-            <div class="score-label">Raw confidence Brier</div>
+            <div class="score-label">Raw confidence Brier · diagnostic</div>
             <div class="score-value" id="score-brier">—</div>
           </div>
           <div class="score-card">
-            <div class="score-label">Raw confidence ECE</div>
+            <div class="score-label">Raw confidence ECE · diagnostic</div>
             <div class="score-value" id="score-ece">—</div>
           </div>
           <div class="score-card score-wide">
             <div class="score-label">Exclusion reasons</div>
-            <div class="score-detail exclusion-list" id="score-exclusion-reasons">loading…</div>
+            <div class="score-detail exclusion-list" id="score-exclusion-reasons">—</div>
+          </div>
+          <div class="score-card score-wide">
+            <div class="score-label">Availability / contract detail</div>
+            <div class="score-detail exclusion-list" id="score-error-detail">—</div>
           </div>
           <div class="score-card">
-            <div class="score-label">Next cycle</div>
+            <div class="score-label">Next Oracle cycle</div>
             <div class="score-value" id="score-next" style="font-size:13px">—</div>
           </div>
           <div class="score-card score-shadow">
-            <div class="score-label">BTC V2 shadow</div>
+            <div class="score-label">BTC V2 shadow · paper-only</div>
             <div class="score-value" id="score-btc-shadow">—</div>
-            <div class="score-detail" id="score-btc-shadow-detail">calibrating</div>
+            <div class="score-detail" id="score-btc-shadow-detail">waiting for exact reasons</div>
           </div>
           <div class="score-card score-shadow">
-            <div class="score-label">Motor 3 · Arbiter</div>
+            <div class="score-label">Arbiter · Oracle 1h ↔ H011 5m</div>
             <div class="score-value" id="score-arbiter">—</div>
-            <div class="score-detail" id="score-arbiter-detail">cross-checking engines</div>
+            <div class="score-detail" id="score-arbiter-detail">waiting; exact fail-closed reasons appear here, including HORIZON_MISMATCH when returned</div>
           </div>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-head">
-          <h2>Oracle Predictions (live DB)</h2>
+          <h2>Oracle Predictions · BTCUSDT · Supabase DB</h2>
           <span id="oracle-pred-meta" class="meta">—</span>
         </div>
-        <div class="oracle-raw-confidence-note">RAW CONF = uncalibrated model conviction — not probability / not authoritative score.</div>
+        <div class="oracle-raw-confidence-note">SOURCE = <code>/api/oracle/predictions/db?limit=50&amp;symbol=BTCUSDT</code> · RAW CONF = uncalibrated model conviction, not probability and not authoritative score. Stored outcomes are RAW / UNVERIFIED unless accepted by the backend 1h proof validator; this table does not reimplement that validator.</div>
         <div class="table-wrap">
           <table id="oracle-table" class="table">
             <thead>
               <tr>
-                <th>TS</th><th>SYM</th><th>PRED</th><th class="raw-conf-heading">RAW CONF</th><th>EV</th><th>PRICE</th><th>EX</th><th>OUT</th>
+                <th>TS</th><th>SYM</th><th>PRED</th><th class="raw-conf-heading">RAW CONF</th><th>EV</th><th>PRICE</th><th>EX</th><th class="raw-outcome-heading">RAW OUTCOME</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td colspan="8" class="placeholder">loading…</td></tr>
+              <tr><td colspan="8" class="placeholder">loading BTCUSDT raw predictions…</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Raw Confidence Trend (last 50 · non-authoritative)</h2></div>
+        <div class="panel-head"><h2>Raw Confidence Trend · BTCUSDT · non-authoritative</h2></div>
         <div class="chart-wrap">
           <canvas id="oracle-conf-chart"></canvas>
         </div>
       </div>
     </section>
 
-    <!-- SECOND COLUMN: live feed -->
-    <section class="col col-left">
+    <!-- SECONDARY ZONE: synthetic dashboard scheduler/demo telemetry -->
+    <section class="col col-left synthetic-zone" data-authority="SYNTHETIC_DEMO_NON_AUTHORITATIVE">
       <div class="panel">
         <div class="panel-head">
-          <h2>Live Event Stream</h2>
+          <h2>Synthetic Demo Event Stream</h2>
           <div class="filter-chips" id="filter-chips">
             <button class="chip active" data-type="">ALL</button>
             <button class="chip" data-type="MARKET_TICK">TICK</button>
@@ -155,87 +185,68 @@
       </div>
     </section>
 
-    <!-- THIRD COLUMN: scanner + wallet + decision trace -->
-    <section class="col col-mid">
+    <section class="col col-mid synthetic-zone" data-authority="SYNTHETIC_DEMO_NON_AUTHORITATIVE">
       <div class="panel">
-        <div class="panel-head"><h2>Scanner Ranking</h2><span id="scanner-meta" class="meta">—</span></div>
+        <div class="panel-head"><h2>Synthetic Demo Scanner Ranking</h2><span id="scanner-meta" class="meta">—</span></div>
         <div class="table-wrap">
           <table id="scanner-table" class="table">
-            <thead>
-              <tr>
-                <th>#</th><th>SYM</th><th>SCAN</th><th>SCORE</th><th>REASONS</th><th>TS</th>
-              </tr>
-            </thead>
+            <thead><tr><th>#</th><th>SYM</th><th>SCAN</th><th>SCORE</th><th>REASONS</th><th>TS</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Wallet Activity</h2><span id="wallet-meta" class="meta">—</span></div>
+        <div class="panel-head"><h2>Synthetic Demo Wallet Activity</h2><span id="wallet-meta" class="meta">—</span></div>
         <div class="table-wrap">
           <table id="wallet-table" class="table">
-            <thead>
-              <tr>
-                <th>WALLET</th><th>SYM</th><th>ACTION</th><th>SIZE</th><th>LABEL</th><th>TS</th>
-              </tr>
-            </thead>
+            <thead><tr><th>WALLET</th><th>SYM</th><th>ACTION</th><th>SIZE</th><th>LABEL</th><th>TS</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Decision Trace (Latest Signal)</h2></div>
-        <div id="decision-trace" class="decision-trace">
-          <div class="placeholder">Awaiting first signal…</div>
-        </div>
+        <div class="panel-head"><h2>Synthetic Demo Decision Trace</h2></div>
+        <div id="decision-trace" class="decision-trace"><div class="placeholder">Awaiting demo signal…</div></div>
       </div>
     </section>
 
-    <!-- RIGHT COLUMN: positions + risk + charts -->
-    <section class="col col-right">
+    <section class="col col-right synthetic-zone" data-authority="SYNTHETIC_DEMO_NON_AUTHORITATIVE">
       <div class="panel">
-        <div class="panel-head"><h2>Open Positions (paper)</h2></div>
+        <div class="panel-head"><h2>Synthetic Demo Positions · paper simulation</h2></div>
         <div class="table-wrap">
           <table id="positions-table" class="table">
-            <thead>
-              <tr><th>SYM</th><th>QTY</th><th>ENTRY</th><th>STOP</th><th>TGT</th><th>TS</th></tr>
-            </thead>
+            <thead><tr><th>SYM</th><th>QTY</th><th>ENTRY</th><th>STOP</th><th>TGT</th><th>TS</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Risk & Calibration</h2></div>
+        <div class="panel-head"><h2>Synthetic Demo Risk & Win Rate</h2></div>
         <div id="risk-grid" class="risk-grid"></div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Equity Curve (paper)</h2></div>
-        <div class="chart-wrap">
-          <canvas id="equity-chart"></canvas>
-        </div>
+        <div class="panel-head"><h2>Synthetic Demo Equity Curve</h2></div>
+        <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Confidence Distribution</h2></div>
-        <div class="chart-wrap">
-          <canvas id="confidence-chart"></canvas>
-        </div>
+        <div class="panel-head"><h2>Synthetic Demo Confidence Distribution</h2></div>
+        <div class="chart-wrap"><canvas id="confidence-chart"></canvas></div>
       </div>
     </section>
-
   </main>
 
   <footer>
-    <span>SENECIO ORACLE • ACT XIX • Unified Oracle + Supabase • paper-only • all events auditable</span>
-    <span id="cursor-display">cursor: clob=0 / onchain=0</span>
+    <span>PRIMARY TRUTH: REAL ORACLE BTCUSDT · 1h proof-qualified · PAPER_ONLY · H011 5m distinct</span>
+    <span>SECONDARY PANELS: SYNTHETIC DEMO · NON-AUTHORITATIVE · NO REAL CAPITAL</span>
   </footer>
 </div>
 
-<script src="/static/truth-alignment.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/truth-alignment.js?v=049r1"></script>
+<script src="/static/app.js?v=049r1"></script>
 </body>
 </html>
