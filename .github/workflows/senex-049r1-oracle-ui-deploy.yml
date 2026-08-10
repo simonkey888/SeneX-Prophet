@@ -1,0 +1,402 @@
+name: SENEX 049-R1 Oracle UI Deploy
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-049r1-oracle-ui-deploy.yml]
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  PROJECT_ID: seneciobot
+  SERVICE_ID: seneciobot
+  SERVICE_BRANCH: feat/oracle-paper-health
+  TARGET_SHA: 3f48a8b7cc0be42de79c78f43f630edebaf1e886
+  PUBLIC_URL: https://p01--seneciobot--wbjggn89fnf8.code.run
+
+jobs:
+  deploy-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    environment: northflank-readonly-audit
+    steps:
+      - name: Checkout exact merged product SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact merged product ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          actual="$(git ls-remote origin refs/heads/${SERVICE_BRANCH} | awk '{print $1}')"
+          test "$actual" = "$TARGET_SHA"
+
+      - name: Deploy only existing seneciobot and capture fresh public truth
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
+          mkdir -p evidence
+          python - <<'PY'
+          from __future__ import annotations
+          import datetime, hashlib, json, os, sys, time, urllib.error, urllib.parse, urllib.request
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path.cwd()))
+          from senecio_polymarket.backend.score_truth import validate_1h_outcome
+
+          API=os.environ['NF_API'].rstrip('/')
+          TOKEN=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
+          PROJECT=os.environ['PROJECT_ID']
+          SERVICE=os.environ['SERVICE_ID']
+          BRANCH=os.environ['SERVICE_BRANCH']
+          TARGET=os.environ['TARGET_SHA']
+          PUBLIC=os.environ['PUBLIC_URL'].rstrip('/')
+          HEAD={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-arq-049r1/1'}
+          out={
+            'order':'AUD-SENEX-DASHBOARD-TRUTH-SUPER-AUDIT-049-R1',
+            'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'target_service':SERVICE,'target_sha':TARGET,'public_url':PUBLIC,
+            'requests':[],'secret_values_exported':False,'runtime_017_touched':False,'h011_mutation':False,
+            'new_service':False,'new_job':False,'new_addon':False,'new_volume':False,
+            'replica_scale_up':False,'plan_change':False,'cost_ceiling_usd':0,
+            'safety':{'paper_only':True,'H011_ORDERS_ENABLED':False,'orders_enabled':False,'live_capital_locked':True,'REAL_ORDER_NETWORK_CALLS':0,'WALLET_OR_PRIVATE_KEY_ACCESS':0,'REAL_CAPITAL_ACTIONS':0},
+          }
+          def persist():
+            raw=(json.dumps(out,sort_keys=True,indent=2)+'\n').encode()
+            Path('evidence/senex-049r1-terminal.json').write_bytes(raw)
+          def data(o): return o.get('data',o) if isinstance(o,dict) else o
+          def call(method,path,payload=None,label=None):
+            body=None if payload is None else json.dumps(payload,separators=(',',':')).encode()
+            req=urllib.request.Request(API+path,headers=HEAD,data=body,method=method); raw=b''; status=0
+            try:
+              with urllib.request.urlopen(req,timeout=90) as r: status=r.status; raw=r.read()
+            except urllib.error.HTTPError as e: status=e.code; raw=e.read()
+            digest=hashlib.sha256(raw).hexdigest(); obj={}; safe=''
+            try:
+              obj=json.loads(raw.decode() or '{}')
+              if isinstance(obj,dict): safe=str(obj.get('message') or obj.get('error') or '')[:180]
+            except Exception: pass
+            out['requests'].append({'label':label or path,'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':digest,'safe_error':safe if status>=400 else ''}); persist()
+            if not 200 <= status < 300: raise RuntimeError(f'{method} {path} status={status} body_sha256={digest} safe={safe}')
+            return data(obj)
+          def pub_bytes(path,accept='application/json'):
+            req=urllib.request.Request(PUBLIC+path,headers={'Accept':accept,'Cache-Control':'no-cache','User-Agent':'senex-arq-049r1-public/1'},method='GET')
+            with urllib.request.urlopen(req,timeout=40) as r: raw=r.read(); status=r.status
+            return status,raw,hashlib.sha256(raw).hexdigest()
+          def pub_json(path):
+            status,raw,digest=pub_bytes(path)
+            return status,json.loads(raw.decode()),digest
+          def items(x,key):
+            x=data(x)
+            if isinstance(x,list): return x
+            if isinstance(x,dict):
+              v=x.get(key) or x.get('data') or []
+              return v if isinstance(v,list) else []
+            return []
+          def inventory(tag):
+            ss=items(call('GET',f'/projects/{PROJECT}/services?per_page=100',label=f'services_{tag}'),'services')
+            js=items(call('GET',f'/projects/{PROJECT}/jobs?per_page=100',label=f'jobs_{tag}'),'jobs')
+            aa=items(call('GET',f'/projects/{PROJECT}/addons?per_page=100',label=f'addons_{tag}'),'addons')
+            vv=items(call('GET',f'/projects/{PROJECT}/volumes?per_page=100',label=f'volumes_{tag}'),'volumes')
+            sids=sorted(str(x.get('id')) for x in ss if isinstance(x,dict)); vids=sorted(str(x.get('id')) for x in vv if isinstance(x,dict))
+            if sids!=['senecio-h011','seneciobot'] or len(ss)!=2 or len(js)!=2 or len(aa)!=0 or vids!=['h011-results-vol']:
+              raise RuntimeError(f'inventory drift services={sids} jobs={len(js)} addons={len(aa)} volumes={vids}')
+            return {'services':sids,'jobs_count':len(js),'addons_count':len(aa),'volumes':vids}
+          def service(label): return call('GET',f'/projects/{PROJECT}/services/{SERVICE}',label=label)
+          def deployment(label): return call('GET',f'/projects/{PROJECT}/services/{SERVICE}/deployment',label=label)
+          def containers(label):
+            d=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/containers?per_page=100',label=label)
+            if isinstance(d,dict): d=d.get('containers') or []
+            return d if isinstance(d,list) else []
+          def ident(d):
+            i=d.get('internal') or {}
+            return {'build_id':i.get('buildId'),'build_sha':i.get('buildSHA'),'deployed_sha':i.get('deployedSHA'),'branch':i.get('branch'),'instances':d.get('instances')}
+          def shape(s,d):
+            vcs=s.get('vcsData') or {}; i=d.get('internal') or {}; branch=vcs.get('branch') or i.get('branch')
+            billing=s.get('billing') or {}
+            return {'branch':branch,'instances':int(d.get('instances') or 0),'deployment_plan':billing.get('deploymentPlan') or s.get('deploymentPlan'),'build_plan':billing.get('buildPlan') or s.get('buildPlan')}
+          def assert_shape(x):
+            if x['branch']!=BRANCH or x['instances']!=1: raise RuntimeError(f'service shape drift {x}')
+            if x['deployment_plan'] not in (None,'nf-compute-20') or x['build_plan'] not in (None,'nf-compute-400-16'): raise RuntimeError(f'plan drift {x}')
+          def rollback_now(rb):
+            call('POST',f'/projects/{PROJECT}/services/{SERVICE}/deployment',{'internal':{'id':SERVICE,'branch':rb['branch'],'buildId':rb['build_id']},**rb['runtime']},label='oracle_rollback_start')
+            deadline=time.time()+1200
+            while time.time()<deadline:
+              d=deployment('oracle_rollback_poll'); s=service('oracle_rollback_service'); cs=containers('oracle_rollback_containers'); ii=ident(d); actual=ii.get('deployed_sha') or ii.get('build_sha'); completed=((s.get('status') or {}).get('deployment') or {}).get('status')=='COMPLETED'; running=[c for c in cs if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+              if actual==rb['sha'] and ii.get('instances')==1 and completed and len(running)==1:
+                out['rollback_verified']=True; persist(); return
+              time.sleep(10)
+            raise RuntimeError('rollback timeout')
+
+          out['inventory_before']=inventory('before')
+          svc=service('oracle_service_before'); dep=deployment('oracle_deployment_before'); before_shape=shape(svc,dep); assert_shape(before_shape)
+          before=ident(dep); internal=dep.get('internal') or {}; runtime={'docker':dep['docker']} if isinstance(dep.get('docker'),dict) else ({'buildpack':dep['buildpack']} if isinstance(dep.get('buildpack'),dict) else {})
+          if not internal.get('buildId') or not (internal.get('deployedSHA') or internal.get('buildSHA')) or not runtime: raise RuntimeError('rollback identity incomplete')
+          rollback={'build_id':internal['buildId'],'sha':internal.get('deployedSHA') or internal.get('buildSHA'),'branch':internal.get('branch') or BRANCH,'runtime':runtime}
+          out['before']={'deployment':before,'shape':before_shape}; out['rollback_ref']={'build_id':rollback['build_id'],'sha':rollback['sha'],'branch':rollback['branch']}; persist()
+          Path('/tmp/senex049r1-rollback.json').write_text(json.dumps({'changed':False,**rollback}),encoding='utf-8')
+
+          # No mutation if the current public paper-only API is not healthy.
+          pre_h=pub_json('/api/health'); pre_s=pub_json('/api/oracle/score?symbol=BTCUSDT')
+          if pre_h[0]!=200 or pre_h[1].get('status')!='ok' or pre_s[0]!=200 or pre_s[1].get('mode')!='PAPER_ONLY' or pre_s[1].get('orders_enabled') is not False or pre_s[1].get('live_capital_locked') is not True:
+            raise RuntimeError('predeploy public paper-only health gate failed')
+          out['predeploy']={'health_http':pre_h[0],'score_http':pre_s[0],'score_status':pre_s[1].get('score_status'),'authoritative_score_pct':pre_s[1].get('authoritative_score_pct'),'score_sha256':pre_s[2]}; persist()
+
+          changed=False
+          try:
+            actual=before.get('deployed_sha') or before.get('build_sha')
+            if actual==TARGET:
+              build_id=before.get('build_id'); out['build_reused']=True
+            else:
+              b=call('POST',f'/projects/{PROJECT}/services/{SERVICE}/build',{'sha':TARGET},label='oracle_build_start'); build_id=b.get('id')
+              if not build_id: raise RuntimeError('build id missing')
+              deadline=time.time()+3600; final={}
+              while time.time()<deadline:
+                final=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/build/{build_id}',label='oracle_build_poll')
+                if final.get('concluded'): break
+                time.sleep(15)
+              if not final.get('concluded') or not final.get('success') or final.get('sha')!=TARGET: raise RuntimeError(f'exact build failed id={build_id}')
+              out['build']={'id':build_id,'sha':final.get('sha'),'success':final.get('success'),'status':final.get('status')}; persist()
+              call('POST',f'/projects/{PROJECT}/services/{SERVICE}/deployment',{'internal':{'id':SERVICE,'branch':BRANCH,'buildId':build_id},**runtime},label='oracle_deploy_start'); changed=True
+              Path('/tmp/senex049r1-rollback.json').write_text(json.dumps({'changed':True,**rollback}),encoding='utf-8')
+
+            deadline=time.time()+1800; stable=None
+            while time.time()<deadline:
+              d=deployment('oracle_deploy_poll'); s=service('oracle_service_poll'); cs=containers('oracle_containers_poll'); ii=ident(d); actual=ii.get('deployed_sha') or ii.get('build_sha'); completed=((s.get('status') or {}).get('deployment') or {}).get('status')=='COMPLETED'; running=[c for c in cs if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+              if actual==TARGET and ii.get('instances')==1 and completed and len(running)==1:
+                stable={'deployment':ii,'running_tasks':1,'shape':shape(s,d)}; assert_shape(stable['shape']); break
+              time.sleep(10)
+            if not stable: raise RuntimeError('deployment did not stabilize on exact SHA with one running task')
+            out['northflank']={'build_id':build_id,'deployed_sha':TARGET,'instances':1,'task_running':1,'shape':stable['shape']}; persist()
+
+            # Fresh public capture of the exact routes the cockpit uses.
+            deadline=time.time()+900; public=None
+            while time.time()<deadline:
+              try:
+                cockpit=pub_bytes('/',accept='text/html')
+                health=pub_json('/api/health')
+                healthz=pub_json('/api/oracle/healthz')
+                score=pub_json('/api/oracle/score?symbol=BTCUSDT')
+                preds=pub_json('/api/oracle/predictions/db?limit=50&symbol=BTCUSDT')
+                shadow=pub_json('/api/oracle/btc-v2-shadow')
+                arbiter=pub_json('/api/oracle/arbiter-v3')
+                js=pub_bytes('/static/truth-alignment.js?v=049r1',accept='application/javascript')
+                css=pub_bytes('/static/truth-alignment.css?v=049r1',accept='text/css')
+                appjs=pub_bytes('/static/app.js?v=049r1',accept='application/javascript')
+                html=cockpit[1].decode('utf-8','replace'); js_text=js[1].decode('utf-8','replace'); css_text=css[1].decode('utf-8','replace'); app_text=appjs[1].decode('utf-8','replace')
+                score_obj=score[1]; pred_obj=preds[1]
+                static_ok=(cockpit[0]==200 and js[0]==200 and css[0]==200 and appjs[0]==200 and 'AUD-049-R1-TRUTH-HARDENED' in html and '1H DIRECTIONAL PROOF-QUALIFIED' in html and 'H011 5M IS A DISTINCT CONTRACT' in html and 'SYNTHETIC_DEMO_NON_AUTHORITATIVE' in html and 'RAW OUTCOME' in html and 'truth-alignment.js?v=049r1' in html and "PREDICTIONS_ROUTE = '/api/oracle/predictions/db?limit=50&symbol=BTCUSDT'" in js_text and 'STALE_AFTER_MS' in js_text and 'CONTRACT_ERROR' in js_text and 'SYNTHETIC DEMO · NON-AUTHORITATIVE · SEPARATE FROM ORACLE AND H011' in css_text and "arbiterDetail.textContent = (v3.reasons || ['waiting for both engines']).join(' · ')" in app_text)
+                api_ok=(health[0]==200 and healthz[0]==200 and score[0]==200 and preds[0]==200 and shadow[0]==200 and arbiter[0]==200 and health[1].get('status')=='ok' and healthz[1].get('ok') is True and score_obj.get('requested_symbol')=='BTCUSDT' and score_obj.get('mode')=='PAPER_ONLY' and score_obj.get('orders_enabled') is False and score_obj.get('live_capital_locked') is True and score_obj.get('horizon_s')==3600 and pred_obj.get('source')=='supabase')
+                rows=pred_obj.get('predictions') or []
+                rows_ok=all(str(r.get('symbol') or '').upper().replace('/','')=='BTCUSDT' and r.get('mode')=='PAPER_ONLY' and r.get('orders_enabled') is False and r.get('live_capital_locked') is True and r.get('authoritative_score_pct') is None and r.get('publication_status') in ('RAW_UNCALIBRATED','ABSTAIN') for r in rows)
+                if static_ok and api_ok and rows_ok:
+                  public={'cockpit':cockpit,'health':health,'healthz':healthz,'score':score,'preds':preds,'shadow':shadow,'arbiter':arbiter,'js':js,'css':css,'appjs':appjs,'html':html,'js_text':js_text,'app_text':app_text}; break
+              except Exception as e:
+                out['public_last_error']=f'{type(e).__name__}:{str(e)[:180]}'; persist()
+              time.sleep(10)
+            if not public: raise RuntimeError('public cockpit/API/static gate timeout')
+
+            score_obj=public['score'][1]; pred_obj=public['preds'][1]; rows=pred_obj.get('predictions') or []
+            selected=score_obj.get('selected') or {}; bydir=selected.get('by_direction') if isinstance(selected,dict) else None
+            minima={
+              'global': selected.get('minimum_n') if isinstance(selected,dict) else None,
+              'LONG': ((bydir or {}).get('LONG') or {}).get('minimum_n') if isinstance(bydir,dict) else None,
+              'SHORT': ((bydir or {}).get('SHORT') or {}).get('minimum_n') if isinstance(bydir,dict) else None,
+            }
+            progress={
+              'global': score_obj.get('proof_qualified_rows'),
+              'LONG': ((bydir or {}).get('LONG') or {}).get('verified') if isinstance(bydir,dict) else None,
+              'SHORT': ((bydir or {}).get('SHORT') or {}).get('verified') if isinstance(bydir,dict) else None,
+            }
+            out['public']={
+              'captured_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'cockpit_http':public['cockpit'][0],'health_http':public['health'][0],'healthz_http':public['healthz'][0],
+              'score_http':public['score'][0],'predictions_db_http':public['preds'][0],'btc_shadow_http':public['shadow'][0],'arbiter_http':public['arbiter'][0],
+              'truth_js_http':public['js'][0],'truth_css_http':public['css'][0],'app_js_http':public['appjs'][0],
+              'html_sha256':public['cockpit'][2],'score_sha256':public['score'][2],'predictions_sha256':public['preds'][2],
+              'truth_js_sha256':public['js'][2],'truth_css_sha256':public['css'][2],'app_js_sha256':public['appjs'][2],
+            }
+            out['score_summary']={
+              'requested_symbol':score_obj.get('requested_symbol'),'score_status':score_obj.get('score_status'),'authoritative_score_pct':score_obj.get('authoritative_score_pct'),
+              'proof_qualified_rows':score_obj.get('proof_qualified_rows'),'excluded_rows':score_obj.get('excluded_rows'),'exclusion_reasons':score_obj.get('exclusion_reasons'),
+              'server_minimum_n':minima,'progress':progress,'horizon_s':score_obj.get('horizon_s'),'mode':score_obj.get('mode'),'orders_enabled':score_obj.get('orders_enabled'),'live_capital_locked':score_obj.get('live_capital_locked'),
+            }
+            out['predictions_summary']={
+              'source':pred_obj.get('source'),'count':len(rows),'symbols':sorted(set(str(r.get('symbol') or '') for r in rows)),
+              'publication_statuses':sorted(set(str(r.get('publication_status') or '') for r in rows)),
+              'stored_outcome_counts':{k:sum(1 for r in rows if str(r.get('outcome') or '').upper()==k) for k in ('WIN','LOSS','')},
+              'raw_confidence_semantics':sorted(set(str(r.get('confidence_semantics') or '') for r in rows)),
+            }
+            shadow_obj=public['shadow'][1]; arbiter_obj=public['arbiter'][1]
+            out['btc_shadow']={'gate_status':shadow_obj.get('gate_status'),'shadow_action':shadow_obj.get('shadow_action'),'reasons':shadow_obj.get('reasons'),'cohort':shadow_obj.get('cohort')}
+            out['arbiter']={'decision':arbiter_obj.get('decision'),'action':arbiter_obj.get('action'),'reasons':arbiter_obj.get('reasons'),'detail':arbiter_obj.get('detail'),'horizon_mismatch_visible_in_api':'HORIZON_MISMATCH' in (arbiter_obj.get('reasons') or [])}
+
+            # F10: inspect fresh post-truth-gate BTC directional rows using the EXISTING validator.
+            now=datetime.datetime.now(datetime.timezone.utc)
+            eligible=[]
+            for row in rows:
+              if str(row.get('prediction') or '').upper() not in ('LONG','SHORT'): continue
+              audit=row.get('audit') or row.get('_audit') or {}
+              origin=audit.get('origin_price_proof') if isinstance(audit,dict) else None
+              if not isinstance(origin,dict) or origin.get('proof_schema')!='oracle-origin-price-v1': continue
+              ts=row.get('ts') or row.get('timestamp')
+              try: dt=datetime.datetime.fromisoformat(str(ts).replace('Z','+00:00')); dt=dt.replace(tzinfo=datetime.timezone.utc) if dt.tzinfo is None else dt.astimezone(datetime.timezone.utc)
+              except Exception: continue
+              age=(now-dt).total_seconds()
+              if age >= 3675: eligible.append((age,row))
+            eligible.sort(key=lambda x:x[0], reverse=True)
+            f10={'eligible_older_than_3675s':len(eligible),'result':'NO_ELIGIBLE_ROW_YET'}
+            if eligible:
+              age,row=eligible[0]; clean,reason=validate_1h_outcome(row)
+              f10={
+                'eligible_older_than_3675s':len(eligible),'sample_id':row.get('id'),'sample_ts':row.get('ts') or row.get('timestamp'),'sample_age_s':round(age,1),
+                'stored_prediction':row.get('prediction'),'stored_outcome':row.get('outcome'),
+                'result':'PROOF_QUALIFIED' if clean is not None else 'REJECTED_FAIL_CLOSED','validator_reason':reason,
+                'proved_outcome':clean.get('outcome') if clean else None,'price_1h_later':clean.get('price_1h_later') if clean else None,
+              }
+            out['post_pr38_evidence_progression']=f10
+
+            Path('/tmp/senex049r1-live-score.json').write_text(json.dumps(score_obj),encoding='utf-8')
+            Path('/tmp/senex049r1-live-preds.json').write_text(json.dumps(pred_obj),encoding='utf-8')
+            Path('/tmp/senex049r1-truth.js').write_text(public['js_text'],encoding='utf-8')
+            out['inventory_after']=inventory('after')
+            svc_after=service('oracle_service_after'); dep_after=deployment('oracle_deployment_after'); after_shape=shape(svc_after,dep_after); assert_shape(after_shape)
+            after=ident(dep_after)
+            if (after.get('deployed_sha') or after.get('build_sha'))!=TARGET: raise RuntimeError('postcapture deployed SHA drift')
+            if out['inventory_after']!=out['inventory_before']: raise RuntimeError('inventory changed')
+            if after_shape!=before_shape: raise RuntimeError(f'service resource/plan shape changed before={before_shape} after={after_shape}')
+            out['after']={'deployment':after,'shape':after_shape}; out['resource_cost_envelope_unchanged']=True; persist()
+          except Exception as exc:
+            out['failure']=f'{type(exc).__name__}: {str(exc)[:500]}'; persist()
+            if changed:
+              try: rollback_now(rollback)
+              except Exception as rb: out['rollback_error']=f'{type(rb).__name__}:{str(rb)[:180]}'; persist()
+            raise
+          PY
+
+      - name: Execute deployed fail-closed DOM adapter against live and failure states
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs'), vm=require('vm');
+          const source=fs.readFileSync('/tmp/senex049r1-truth.js','utf8');
+          const live=JSON.parse(fs.readFileSync('/tmp/senex049r1-live-score.json','utf8'));
+          const nodes=new Map();
+          const get=(id)=>{ if(!nodes.has(id)) nodes.set(id,{textContent:'',dataset:{}}); return nodes.get(id); };
+          const document={hidden:false,getElementById:get,querySelector:()=>null,querySelectorAll:()=>[],addEventListener:()=>{}};
+          let transport=async()=>({ok:true,status:200,json:async()=>live});
+          const context={console,document,AbortController,MutationObserver:undefined,Date,setTimeout,clearTimeout,setImmediate,window:{fetch:(...a)=>transport(...a),setInterval:()=>0,setTimeout,clearTimeout}};
+          vm.createContext(context); vm.runInContext(source,context);
+          const api=context.window.__senexTruth049;
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          const derived=['score-authoritative','score-status','score-proof-progress','score-minimum-global','score-long-progress','score-long-minimum','score-short-progress','score-short-minimum','score-excluded','score-exclusion-reasons','score-wins','score-losses','score-observed-winrate','score-wilson','score-brier','score-ece','score-horizon','score-safety'];
+          const snap=()=>Object.fromEntries([...nodes.entries()].map(([k,v])=>[k,v.textContent]));
+          const cleared=()=>derived.every(id=>get(id).textContent==='—');
+          (async()=>{
+            await sleep(0); await sleep(0);
+            await api.refreshTruth(100);
+            const liveDom=snap();
+            if(get('score-availability').textContent!=='FRESH') throw new Error('live score did not render FRESH');
+            const expected=live.authoritative_score_pct==null?'— / NOT YET AUTHORITATIVE':`${Number(live.authoritative_score_pct).toFixed(2)}%`;
+            if(get('score-authoritative').textContent!==expected || get('score-status').textContent!==live.score_status) throw new Error('live DOM/API mismatch');
+
+            transport=async()=>({ok:false,status:503,json:async()=>({})});
+            await api.refreshTruth(50); const non2xx={availability:get('score-availability').textContent,cleared:cleared(),dom:snap()};
+            if(non2xx.availability!=='STALE'||!non2xx.cleared) throw new Error('non2xx not fail-closed');
+
+            api.renderScore(live);
+            transport=(input,init)=>new Promise((resolve,reject)=>init.signal.addEventListener('abort',()=>{const e=new Error('aborted');e.name='AbortError';reject(e);},{once:true}));
+            await api.refreshTruth(5); const timeout={availability:get('score-availability').textContent,cleared:cleared(),dom:snap()};
+            if(timeout.availability!=='STALE'||!timeout.cleared) throw new Error('timeout not fail-closed');
+
+            api.renderScore(live);
+            transport=async()=>({ok:true,status:200,json:async()=>{throw new SyntaxError('bad json')}});
+            await api.refreshTruth(50); const malformed={availability:get('score-availability').textContent,cleared:cleared(),dom:snap()};
+            if(malformed.availability!=='CONTRACT_ERROR'||!malformed.cleared) throw new Error('malformed not contract-error');
+
+            api.renderScore(live,Date.now()-api.STALE_AFTER_MS-1000);
+            api.refreshAgeState(Date.now()); const staleAge={availability:get('score-availability').textContent,cleared:cleared(),dom:snap()};
+            if(staleAge.availability!=='STALE'||!staleAge.cleared) throw new Error('age stale not fail-closed');
+
+            transport=async()=>({ok:true,status:200,json:async()=>live});
+            await api.refreshTruth(100); const recovered=snap();
+            if(get('score-availability').textContent!=='FRESH'||get('score-authoritative').textContent!==expected) throw new Error('recovery failed');
+
+            const proof={
+              live:{score_status:live.score_status,authoritative_score_pct:live.authoritative_score_pct,visible_score:expected,availability:'FRESH',proof_progress:get('score-proof-progress').textContent,global_min:get('score-minimum-global').textContent,long_progress:get('score-long-progress').textContent,long_min:get('score-long-minimum').textContent,short_progress:get('score-short-progress').textContent,short_min:get('score-short-minimum').textContent,horizon:get('score-horizon').textContent,safety:get('score-safety').textContent,last_success:get('score-last-success').textContent,refresh_age:get('score-refresh-age').textContent},
+              non2xx,timeout,malformed,stale_age:staleAge,recovered,
+              raw_outcome_examples:{WIN:api.normalizeOutcomeLabel('WIN'),LOSS:api.normalizeOutcomeLabel('LOSS'),PEND:api.normalizeOutcomeLabel('PEND')},
+              routes:{score:api.SCORE_ROUTE,predictions:api.PREDICTIONS_ROUTE},
+            };
+            fs.writeFileSync('evidence/senex-049r1-dom-proof.json',JSON.stringify(proof,null,2)+'\n');
+            console.log(JSON.stringify(proof));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+      - name: Finalize evidence integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          p=Path('evidence/senex-049r1-terminal.json'); obj=json.loads(p.read_text()); obj['dom_proof']='PASS'; obj['completed_at']=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(); obj['dashboard_truth_hardening']='PASS'; p.write_text(json.dumps(obj,sort_keys=True,indent=2)+'\n')
+          sums=[]
+          for name in ('senex-049r1-terminal.json','senex-049r1-dom-proof.json'):
+            raw=Path('evidence',name).read_bytes(); sums.append(f'{hashlib.sha256(raw).hexdigest()}  {name}')
+          Path('evidence/SHA256SUMS').write_text('\n'.join(sums)+'\n')
+          PY
+          (cd evidence && sha256sum -c SHA256SUMS)
+
+      - name: Roll back seneciobot if post-deploy verification failed
+        if: failure()
+        shell: bash
+        env:
+          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          [ -f /tmp/senex049r1-rollback.json ] || exit 0
+          python - <<'PY'
+          import json,os,time,urllib.request
+          from pathlib import Path
+          rb=json.loads(Path('/tmp/senex049r1-rollback.json').read_text())
+          if not rb.get('changed'): raise SystemExit(0)
+          api=os.environ['NF_API'].rstrip('/'); token=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']; project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']
+          head={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-arq-049r1-rollback/1'}
+          payload={'internal':{'id':service,'branch':rb['branch'],'buildId':rb['build_id']},**rb['runtime']}
+          req=urllib.request.Request(f'{api}/projects/{project}/services/{service}/deployment',headers=head,data=json.dumps(payload).encode(),method='POST')
+          with urllib.request.urlopen(req,timeout=90) as r:
+            if not 200 <= r.status < 300: raise RuntimeError(f'rollback start {r.status}')
+          deadline=time.time()+1200
+          while time.time()<deadline:
+            def get(path):
+              q=urllib.request.Request(api+path,headers=head,method='GET')
+              with urllib.request.urlopen(q,timeout=90) as r:return json.loads(r.read().decode()).get('data',{})
+            dep=get(f'/projects/{project}/services/{service}/deployment'); svc=get(f'/projects/{project}/services/{service}'); cs=get(f'/projects/{project}/services/{service}/containers?per_page=100'); ii=dep.get('internal') or {}; actual=ii.get('deployedSHA') or ii.get('buildSHA'); completed=((svc.get('status') or {}).get('deployment') or {}).get('status')=='COMPLETED'; containers=(cs.get('containers') or []) if isinstance(cs,dict) else cs; running=[c for c in containers if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+            if actual==rb['sha'] and dep.get('instances')==1 and completed and len(running)==1:
+              print('ROLLBACK_VERIFIED=YES'); raise SystemExit(0)
+            time.sleep(10)
+          raise RuntimeError('rollback timeout')
+          PY
+
+      - name: Upload 049-R1 terminal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-049r1-oracle-ui-${{ env.TARGET_SHA }}
+          path: evidence
+          retention-days: 30
+          if-no-files-found: warn
