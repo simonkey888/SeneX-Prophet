@@ -1,0 +1,200 @@
+name: SENEX 050 Live Integration CI
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-050-live-integration-ci.yml]
+
+permissions:
+  contents: read
+
+env:
+  TARGET_SHA: 5068096a72134209856ab1a136d328ae3d944105
+  BASE_SHA: 3f48a8b7cc0be42de79c78f43f630edebaf1e886
+
+jobs:
+  integrated-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR43 head
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Scope and diff gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git diff --check "$BASE_SHA" "$TARGET_SHA"
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$TARGET_SHA")
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "senecio_polymarket/frontend/app.js"
+          test "${changed[1]}" = "senecio_polymarket/frontend/truth-alignment.js"
+
+      - name: JavaScript syntax
+        run: |
+          set -euo pipefail
+          node --check senecio_polymarket/frontend/app.js
+          node --check senecio_polymarket/frontend/truth-alignment.js
+
+      - name: Integrated app plus truth event DOM regression A-E
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs'), vm=require('vm');
+          const truth=fs.readFileSync('senecio_polymarket/frontend/truth-alignment.js','utf8');
+          const app=fs.readFileSync('senecio_polymarket/frontend/app.js','utf8');
+          const nodes=new Map();
+          const mk=(id)=>({id,textContent:'',innerHTML:'',dataset:{},className:'',children:[],prepend(x){this.children.unshift(x)},removeChild(x){const i=this.children.indexOf(x);if(i>=0)this.children.splice(i,1)},get lastChild(){return this.children[this.children.length-1]},addEventListener(){},classList:{toggle(){},add(){},remove(){}},closest(){return null}});
+          const get=id=>{if(!nodes.has(id))nodes.set(id,mk(id));return nodes.get(id)};
+          for(const id of ['conn-status','stat-events','stat-ticks','stat-signals','stat-fills','stat-equity','feed','oracle-pred-meta','score-next','score-btc-shadow','score-btc-shadow-detail','score-arbiter','score-arbiter-detail'])get(id);
+          const tbody=mk('oracle-tbody');
+          const placeholder=mk('placeholder'); placeholder.className='placeholder'; placeholder.textContent='loading BTCUSDT raw predictions…';
+          const win=mk('win'); win.textContent='WIN'; const loss=mk('loss'); loss.textContent='LOSS'; const pend=mk('pend'); pend.textContent='PEND';
+          const domListeners={};
+          const document={
+            hidden:false,
+            getElementById:get,
+            querySelector(sel){
+              if(sel==='#cursor-display') return null;
+              if(sel==='#oracle-table tbody') return tbody;
+              if(sel.startsWith('#')) return get(sel.slice(1));
+              return null;
+            },
+            querySelectorAll(sel){
+              if(sel==='.chip') return [];
+              if(sel==='#oracle-table tbody tr td:last-child:not(.placeholder)') return [win,loss,pend];
+              if(sel==='#oracle-table tbody tr td:last-child') return [placeholder,win,loss,pend];
+              return [];
+            },
+            createElement(){return mk('created')},
+            addEventListener(type,fn){domListeners[type]=fn;},
+          };
+          const validScore={version:'oracle-score-truth-v1',mode:'PAPER_ONLY',orders_enabled:false,live_capital_locked:true,horizon_s:3600,score_semantics:'proof-qualified',score_status:'UNKNOWN',authoritative_score_pct:null,requested_symbol:'BTCUSDT',input_rows:10,proof_qualified_rows:0,excluded_rows:10,exclusion_reasons:{MISSING_ORIGIN_PRICE_PROOF:10},selected:{score_status:'UNKNOWN',authoritative_score_pct:null,observed_win_rate_pct:null,verified:0,wins:0,losses:0,posterior_accuracy:null,wilson_lower_95:null,raw_confidence_brier:null,raw_confidence_ece:null,minimum_n:100,reasons:[]},by_symbol:{}};
+          const response=(payload,status=200)=>({ok:status>=200&&status<300,status,json:async()=>payload});
+          const baseFetch=async input=>{
+            const u=typeof input==='string'?input:input.url;
+            if(u.startsWith('/api/stats')) return response({cursors:{clob:{offset:1},onchain:{offset:2}}});
+            if(u.includes('/api/oracle/predictions/db')) return response({predictions:[]});
+            if(u.includes('/api/oracle/score')) return response(validScore);
+            if(u==='/api/health') return response({oracle:{next_cycle_at:null,supabase_total:0}});
+            if(u==='/api/oracle/btc-v2-shadow') return response({});
+            if(u==='/api/oracle/arbiter-v3') return response({});
+            return response({});
+          };
+          let wsInstance=null;
+          class WS{constructor(){wsInstance=this;} close(){} }
+          class ES{addEventListener(){} }
+          class MO{constructor(fn){this.fn=fn;} observe(){} }
+          const errors=[];
+          const consoleProxy={...console,error:(...a)=>errors.push(a.map(String).join(' '))};
+          const context={console:consoleProxy,document,location:{protocol:'https:',host:'example.test'},WebSocket:WS,EventSource:ES,MutationObserver:MO,AbortController,Date,setTimeout,clearTimeout,setImmediate,window:{fetch:baseFetch,setInterval:()=>0,setTimeout,clearTimeout,addEventListener:()=>{},devicePixelRatio:1}};
+          context.window.window=context.window;
+          vm.createContext(context);
+          vm.runInContext(truth,context);
+          vm.runInContext(app,context);
+          if(domListeners.DOMContentLoaded) domListeners.DOMContentLoaded();
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          (async()=>{
+            await sleep(0); await sleep(0);
+            if(!wsInstance || typeof wsInstance.onmessage!=='function') throw new Error('A websocket handler missing');
+            const event={event_type:'MARKET_TICK',ts:new Date().toISOString(),symbol:'BTCUSDT',payload:{price:100,volume:12,bid:99,ask:101,cursor_offset:7}};
+            for(let i=0;i<4;i++) wsInstance.onmessage({data:JSON.stringify(event)});
+            if(errors.length) throw new Error('A/B console errors: '+errors.join(' | '));
+            for(const [id,prefix] of [['stat-events','demo events:'],['stat-ticks','demo ticks:'],['stat-signals','demo signals:'],['stat-fills','demo fills:'],['stat-equity','demo equity:']]){
+              if(!get(id).innerHTML.startsWith(prefix)) throw new Error(`A/B label lost ${id}: ${get(id).innerHTML}`);
+            }
+            console.log('A_EVENT_NO_EXCEPTION_DEMO_LABELS=PASS');
+            console.log('B_REPEATED_EVENTS_CURSOR_NULL_SAFE=PASS');
+            const api=context.window.__senexTruth049;
+            if(!api) throw new Error('truth API missing');
+            api.markRawOutcomeCells();
+            if(placeholder.textContent!=='loading BTCUSDT raw predictions…') throw new Error('C loading placeholder mutated');
+            console.log('C_LOADING_PLACEHOLDER_PRESERVED=PASS');
+            placeholder.textContent='no predictions yet'; api.markRawOutcomeCells();
+            if(placeholder.textContent!=='no predictions yet') throw new Error('D no-data placeholder mutated');
+            console.log('D_NO_DATA_PLACEHOLDER_PRESERVED=PASS');
+            if(win.textContent!=='RAW / UNVERIFIED WIN'||loss.textContent!=='RAW / UNVERIFIED LOSS'||pend.textContent!=='RAW / UNVERIFIED · 1h pending') throw new Error(`E outcome semantics ${win.textContent}|${loss.textContent}|${pend.textContent}`);
+            console.log('E_REAL_OUTCOME_RAW_SEMANTICS=PASS');
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+      - name: Existing 049-R1 score regression F
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs=require('fs'),vm=require('vm');
+          const source=fs.readFileSync('senecio_polymarket/frontend/truth-alignment.js','utf8');
+          const index=fs.readFileSync('senecio_polymarket/frontend/index.html','utf8');
+          const css=fs.readFileSync('senecio_polymarket/frontend/truth-alignment.css','utf8');
+          const nodes=new Map(); const get=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',dataset:{}});return nodes.get(id)};
+          const document={hidden:false,getElementById:get,querySelector:()=>null,querySelectorAll:()=>[],addEventListener:()=>{}};
+          let transport; const response=(p,s=200)=>({ok:s>=200&&s<300,status:s,json:async()=>p});
+          function metric({status='UNKNOWN',auth=null,verified=0,wins=0,losses=0,min=100}={}){return{score_status:status,authoritative_score_pct:auth,observed_win_rate_pct:verified?wins/verified*100:null,verified,wins,losses,posterior_accuracy:verified?(wins+1)/(verified+2):null,wilson_lower_95:verified?0.61:null,raw_confidence_brier:verified?0.19:null,raw_confidence_ece:verified?0.04:null,minimum_n:min,reasons:[]}}
+          function payload({status='UNKNOWN',auth=null,verified=0,wins=0,losses=0,excluded=10,globalMin=100,longMin=null,shortMin=null}={}){const selected=metric({status,auth,verified,wins,losses,min:globalMin});if(longMin!=null||shortMin!=null){const lv=Math.floor(verified/2),sv=verified-lv,lw=Math.min(lv,Math.floor(wins/2)),sw=wins-lw;selected.by_direction={LONG:metric({status:'CALIBRATED',auth:71.11,verified:lv,wins:lw,losses:lv-lw,min:longMin}),SHORT:metric({status:'CALIBRATED',auth:72.22,verified:sv,wins:sw,losses:sv-sw,min:shortMin})}}return{version:'oracle-score-truth-v1',mode:'PAPER_ONLY',orders_enabled:false,live_capital_locked:true,horizon_s:3600,score_semantics:'proof-qualified',score_status:status,authoritative_score_pct:auth,requested_symbol:'BTCUSDT',input_rows:verified+excluded,proof_qualified_rows:verified,excluded_rows:excluded,exclusion_reasons:excluded?{MISSING_ORIGIN_PRICE_PROOF:excluded}:{},selected,by_symbol:{}}}
+          transport=async()=>response(payload());
+          const context={console,document,AbortController,MutationObserver:undefined,Date,setTimeout,clearTimeout,setImmediate,window:{fetch:(...a)=>transport(...a),setInterval:()=>0,setTimeout,clearTimeout}};
+          vm.createContext(context);vm.runInContext(source,context);const api=context.window.__senexTruth049;if(!api)throw new Error('API missing');
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          const unavailable=()=>['score-authoritative','score-status','score-proof-progress','score-minimum-global','score-long-progress','score-long-minimum','score-short-progress','score-short-minimum','score-excluded','score-exclusion-reasons','score-wins','score-losses','score-observed-winrate','score-wilson','score-brier','score-ece','score-horizon','score-safety'].every(id=>get(id).textContent==='—');
+          (async()=>{await sleep(0);await sleep(0);
+            api.renderScore(payload()); if(get('score-status').textContent!=='UNKNOWN'||get('score-authoritative').textContent!=='— / NOT YET AUTHORITATIVE')throw new Error('T1'); console.log('T1=PASS');
+            const cal=payload({status:'CALIBRATED',auth:73.21,verified:120,wins:88,losses:32,excluded:8,globalMin:100,longMin:30,shortMin:30});api.renderScore(cal);if(get('score-authoritative').textContent!=='73.21%')throw new Error('T2');console.log('T2=PASS');
+            transport=async()=>response({},503);await api.refreshTruth(50);if(get('score-availability').textContent!=='STALE'||!unavailable())throw new Error('T3');console.log('T3=PASS');
+            api.renderScore(cal);transport=(i,init)=>new Promise((res,rej)=>init.signal.addEventListener('abort',()=>{const e=new Error('aborted');e.name='AbortError';rej(e)},{once:true}));await api.refreshTruth(5);if(get('score-availability').textContent!=='STALE'||!unavailable())throw new Error('T4');console.log('T4=PASS');
+            transport=async()=>response(cal);await api.refreshTruth(50);if(get('score-availability').textContent!=='FRESH'||get('score-authoritative').textContent!=='73.21%')throw new Error('T5');console.log('T5=PASS');
+            transport=async()=>({ok:true,status:200,json:async()=>{throw new SyntaxError('bad')}});await api.refreshTruth(50);if(get('score-availability').textContent!=='CONTRACT_ERROR'||!unavailable())throw new Error('T6');console.log('T6=PASS');
+            const bu=payload();bu.authoritative_score_pct=51.2;let rej=false;try{api.validateScoreContract(bu)}catch(_){rej=true}if(!rej)throw new Error('T7');console.log('T7=PASS');
+            for(const bad of [null,NaN,-.01,100.01]){const x=payload({status:'CALIBRATED',auth:73.21,verified:120,wins:88,losses:32,excluded:8,globalMin:100,longMin:30,shortMin:30});x.authoritative_score_pct=bad;let f=false;try{api.validateScoreContract(x)}catch(_){f=true}if(!f)throw new Error('T8')}console.log('T8=PASS');
+            let firstResolve,call=0;const old=payload({status:'CALIBRATED',auth:55.55,verified:120,wins:70,losses:50,excluded:1,globalMin:100,longMin:30,shortMin:30}),fresh=payload({status:'CALIBRATED',auth:88.88,verified:120,wins:105,losses:15,excluded:1,globalMin:100,longMin:30,shortMin:30});transport=()=>{call++;if(call===1)return new Promise(r=>firstResolve=r);return Promise.resolve(response(fresh))};const slow=api.refreshTruth(500);await sleep(0);const fast=api.refreshTruth(500);await fast;firstResolve(response(old));await slow;if(get('score-authoritative').textContent!=='88.88%')throw new Error('T9');console.log('T9=PASS');
+            const minp=payload({status:'CALIBRATED',auth:81.25,verified:160,wins:130,losses:30,excluded:2,globalMin:137,longMin:41,shortMin:43});api.renderScore(minp);if(get('score-proof-progress').textContent!=='160/137'||!get('score-long-progress').textContent.endsWith('/41')||!get('score-short-progress').textContent.endsWith('/43')||source.includes('/100')||source.includes('/30'))throw new Error('T10');console.log('T10=PASS');
+            if(api.PREDICTIONS_ROUTE!=='/api/oracle/predictions/db?limit=50&symbol=BTCUSDT')throw new Error('T11');console.log('T11=PASS');
+            if(api.normalizeOutcomeLabel('WIN')!=='RAW / UNVERIFIED WIN'||api.normalizeOutcomeLabel('LOSS')!=='RAW / UNVERIFIED LOSS'||!api.normalizeOutcomeLabel('PEND').includes('1h pending'))throw new Error('T12');console.log('T12=PASS');
+            if(!index.includes('1H DIRECTIONAL PROOF-QUALIFIED')||!index.includes('H011 5M IS A DISTINCT CONTRACT'))throw new Error('T13');console.log('T13=PASS');
+            if((index.match(/data-authority="SYNTHETIC_DEMO_NON_AUTHORITATIVE"/g)||[]).length!==3||!css.includes('SYNTHETIC DEMO · NON-AUTHORITATIVE · SEPARATE FROM ORACLE AND H011')||!index.includes('SECONDARY PANELS: SYNTHETIC DEMO · NON-AUTHORITATIVE'))throw new Error('T14');console.log('T14=PASS');
+            for(const asset of ['styles.css?v=049r1','truth-alignment.css?v=049r1','truth-alignment.js?v=049r1','app.js?v=049r1'])if(!index.includes(asset))throw new Error('T15 '+asset);console.log('T15=PASS');console.log('F_EXISTING_049R1_T1_T15=PASS');
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+
+      - name: Python truth tests and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip >/dev/null
+          python -m pip install -r senecio_polymarket/requirements.txt pytest >/dev/null
+          python -m compileall -q senecio_polymarket/backend
+          python -m pytest -q tests/oracle/test_score_truth.py tests/oracle/test_permanent_paper_gate.py tests/oracle/test_oracle_health.py tests/oracle/test_settlement_observation.py tests/oracle/test_supabase_truth.py
+
+      - name: DO_NOT_TOUCH freeze and final audit
+        working-directory: senecio_polymarket
+        run: |
+          set -euo pipefail
+          python -m scripts.act_final_audit_smoke
+
+      - name: Materialize CI evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          changed=subprocess.check_output(['git','diff','--name-only','3f48a8b7cc0be42de79c78f43f630edebaf1e886','5068096a72134209856ab1a136d328ae3d944105'],text=True).splitlines()
+          out={'order':'AUD-SENEX-DASHBOARD-LIVE-INTEGRATION-REMEDIATION-050','target_sha':'5068096a72134209856ab1a136d328ae3d944105','base_sha':'3f48a8b7cc0be42de79c78f43f630edebaf1e886','changed_files':changed,'scope':'frontend_only','integrated_A_E':'PASS','existing_049r1_T1_T15':'PASS','python_truth_tests':'PASS','act_final_audit':'PASS','do_not_touch_freeze':'PASS','paper_only_contract':'UNCHANGED'}
+          raw=(json.dumps(out,sort_keys=True,indent=2)+'\n').encode();Path('evidence/senex-050-ci.json').write_bytes(raw);Path('evidence/SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  senex-050-ci.json\n')
+          print('CI_REPORT_SHA256='+hashlib.sha256(raw).hexdigest())
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: senex-050-live-integration-${{ env.TARGET_SHA }}
+          path: evidence
+          if-no-files-found: error
+          retention-days: 30
