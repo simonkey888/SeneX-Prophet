@@ -155,13 +155,14 @@
   // ---- renderers ----
   function renderTopbar() {
     const total = Object.values(state.counters).reduce((a, b) => a + b, 0);
-    $('#stat-events').innerHTML  = `events: <b>${total}</b>`;
-    $('#stat-ticks').innerHTML   = `ticks: <b>${state.counters.MARKET_TICK}</b>`;
-    $('#stat-signals').innerHTML = `signals: <b>${state.counters.SIGNAL}</b>`;
-    $('#stat-fills').innerHTML   = `fills: <b>${state.counters.EXECUTION_SIM}</b>`;
+    $('#stat-events').innerHTML  = `demo events: <b>${total}</b>`;
+    $('#stat-ticks').innerHTML   = `demo ticks: <b>${state.counters.MARKET_TICK}</b>`;
+    $('#stat-signals').innerHTML = `demo signals: <b>${state.counters.SIGNAL}</b>`;
+    $('#stat-fills').innerHTML   = `demo fills: <b>${state.counters.EXECUTION_SIM}</b>`;
     const eq = state.latestRisk?.equity ?? 10000;
-    $('#stat-equity').innerHTML  = `equity: <b>$${eq.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>`;
-    $('#cursor-display').textContent = `cursor: clob=${state.cursors.clob} / onchain=${state.cursors.onchain}`;
+    $('#stat-equity').innerHTML  = `demo equity: <b>$${eq.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>`;
+    const cursor = $('#cursor-display');
+    if (cursor) cursor.textContent = `synthetic demo cursor: clob=${state.cursors.clob} / onchain=${state.cursors.onchain}`;
   }
 
   function renderFeedRow(ev) {

@@ -289,7 +289,7 @@
 
   function markRawOutcomeCells() {
     if (!document.querySelectorAll) return;
-    document.querySelectorAll('#oracle-table tbody tr td:last-child').forEach((cell) => {
+    document.querySelectorAll('#oracle-table tbody tr td:last-child:not(.placeholder)').forEach((cell) => {
       const next = normalizeOutcomeLabel(cell.textContent);
       if (cell.textContent !== next) {
         cell.textContent = next;
