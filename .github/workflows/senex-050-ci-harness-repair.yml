@@ -1,0 +1,42 @@
+name: SENEX 050 CI Harness Repair
+
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/senex-050-ci-harness-repair.yml]
+
+permissions:
+  contents: write
+
+env:
+  EXPECTED_OPS_HEAD: c3c0841ae3ee9d10ba6e8d30554f550ec1d4f655
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ops/senex-zero-cost-audit-20260809
+          fetch-depth: 0
+      - name: Patch harness only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_OPS_HEAD"
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/senex-050-live-integration-ci.yml')
+          s=p.read_text()
+          old="MutationObserver:MO,AbortController,Date,setTimeout,clearTimeout,setImmediate,window:"
+          new="MutationObserver:MO,AbortController,Date,setTimeout,clearTimeout,setInterval:()=>0,setImmediate,window:"
+          if s.count(old)!=1: raise SystemExit(f'expected one harness target, got {s.count(old)}')
+          p.write_text(s.replace(old,new))
+          PY
+          git diff --check
+          test "$(git diff --name-only)" = ".github/workflows/senex-050-live-integration-ci.yml"
+          git config user.name 'SENEX ARQ'
+          git config user.email 'actions@users.noreply.github.com'
+          git add .github/workflows/senex-050-live-integration-ci.yml
+          git commit -m 'ci(050): add global interval stub to integrated harness'
+          git push origin HEAD:ops/senex-zero-cost-audit-20260809
