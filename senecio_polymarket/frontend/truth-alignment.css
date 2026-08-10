@@ -1,0 +1,44 @@
+/* AUD 048 — proof-qualified Oracle score presentation. */
+.score-card.score-authoritative {
+  grid-column: 1 / -1;
+  border-color: rgba(0,255,163,0.45);
+  background: linear-gradient(180deg, rgba(0,255,163,0.08), var(--bg-panel-2));
+}
+.score-card.score-authoritative .score-value {
+  color: var(--accent);
+  font-size: 20px;
+  word-break: break-word;
+}
+.score-card.score-status-card .score-value {
+  font-size: 14px;
+  letter-spacing: 0.05em;
+}
+#score-status[data-status="CALIBRATED"] { color: var(--accent); }
+#score-status[data-status="REJECTED"] { color: var(--danger); }
+#score-status[data-status="INSUFFICIENT_EVIDENCE"],
+#score-status[data-status="UNKNOWN"] { color: var(--warn); }
+.score-card.score-wide { grid-column: 1 / -1; }
+.score-card .score-detail.truth-note {
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.score-card .score-detail.exclusion-list {
+  line-height: 1.45;
+  word-break: break-word;
+}
+.oracle-raw-confidence-note {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--warn);
+  background: rgba(255,176,0,0.06);
+  font: 9px/1.45 var(--mono);
+}
+#oracle-table th.raw-conf-heading { color: var(--warn); }
+
+@media (max-width: 480px) {
+  .oracle-score-grid { grid-template-columns: 1fr; }
+  .score-card.score-authoritative,
+  .score-card.score-wide,
+  .score-card.score-shadow { grid-column: 1; }
+  .score-card.score-authoritative .score-value { font-size: 17px; }
+}
