@@ -1,0 +1,71 @@
+name: SCORE-002 Authorized Autofix PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  repair:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.head.sha, '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: senecio_polymarket
+        run: pip install -r requirements.txt
+
+      - name: Apply fixes
+        run: python scripts/score002_autofix.py
+
+      - name: Focused tests
+        working-directory: senecio_polymarket
+        run: python -m unittest discover -s tests -p 'test_senex_score_002.py' -v
+
+      - name: Full tests
+        working-directory: senecio_polymarket
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile tree and security invariants
+        working-directory: senecio_polymarket
+        run: |
+          python -m compileall -q .
+          sh -n start_single_authority.sh
+          ! grep -RInE 'supabase\.co|sb_publishable_[A-Za-z0-9_-]+' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' .
+          grep -RIn 'origin-price-v1' backend/oracle_runner.py backend/settlement_proof.py
+          grep -RIn 'filter_proof_qualified' backend/main.py backend/settlement_proof.py
+          grep -RIn 'is_proof_qualified' backend/oracle_runner.py backend/forensics/pipeline.py backend/research/coordinator.py
+          grep -n 'audit->outcomes_dual.*is.null' backend/settlement_reconciler.py
+          ! grep -n 'patch = {"outcome"' backend/settlement_reconciler.py
+
+      - name: Commit and push repair
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No source changes needed.'
+            exit 0
+          fi
+          git diff --cached --stat
+          git commit -m 'fix(score-002): enforce proof-qualified scoring and safe reconciliation [score-002-autofix]'
+          git push origin "$BRANCH"
