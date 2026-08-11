@@ -2,6 +2,7 @@
 
 A raw WIN/LOSS is never proof-qualified. Qualification requires:
 - a valid origin_price_v1 proof;
+- origin price matching the persisted prediction price;
 - dual 15m/1h settlement evidence;
 - primary_window == 1h;
 - primary outcome matching the 1h evidence; and
@@ -12,10 +13,13 @@ from Supabase, ccxt, and the runtime daemon.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
 VALID_OUTCOMES = {"WIN", "LOSS"}
+ORIGIN_PRICE_REL_TOL = 1e-9
+ORIGIN_PRICE_ABS_TOL = 1e-9
 
 
 def _as_audit(row: dict[str, Any]) -> dict[str, Any]:
@@ -61,11 +65,19 @@ def is_proof_qualified(row: dict[str, Any]) -> bool:
 
     try:
         origin_price = float(origin_proof.get("price"))
+        row_price = float(row.get("price_now"))
         price_15m = float(dual.get("price_15m_later"))
         price_1h = float(dual.get("price_1h_later"))
     except (TypeError, ValueError):
         return False
-    if origin_price <= 0 or price_15m <= 0 or price_1h <= 0:
+    if origin_price <= 0 or row_price <= 0 or price_15m <= 0 or price_1h <= 0:
+        return False
+    if not math.isclose(
+        origin_price,
+        row_price,
+        rel_tol=ORIGIN_PRICE_REL_TOL,
+        abs_tol=ORIGIN_PRICE_ABS_TOL,
+    ):
         return False
 
     if dual.get("primary_window") != "1h":
