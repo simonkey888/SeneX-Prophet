@@ -161,24 +161,21 @@ class SettlementReconcilerTests(unittest.TestCase):
         class FutureExchange:
             def fetch_ohlcv(self, *args, **kwargs):
                 target = 1000000
-                return [[target + 120000, 1, 1, 1, 101, 1], [target + 180000, 1, 1, 1, 102, 1]]
-        self.assertIsNone(reconciler._price_at(FutureExchange(), "1970-01-01T00:16:40+00:00", 900,))
+                return [[target + 2000000, 1, 1, 1, 101, 1], [target + 3000000, 1, 1, 1, 102, 1]]
+        self.assertIsNone(reconciler._price_at(FutureExchange(), "1970-01-01T00:16:40+00:00", 900))
 
     def test_multi_batch_repairs_all_eligible_rows(self):
         rows = [{"id": i, "ts": f"2026-08-10T00:{i:02d}:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"} for i in range(51)]
         pages = [rows[:50], rows[50:]]
-
         class PagedClient(FakeClient):
             def __init__(self, pages):
                 super().__init__([])
                 self.pages, self.page_index = pages, 0
-
             async def get(self, url, params=None):
                 self.get_calls.append((url, dict(params or {})))
                 page = self.pages[self.page_index] if self.page_index < len(self.pages) else []
                 self.page_index += 1
                 return FakeResponse(200, list(page))
-
         client = PagedClient(pages)
         old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
         reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
