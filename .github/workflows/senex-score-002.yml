@@ -1,0 +1,46 @@
+name: SENEX SCORE-002 Reconciliation Regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  score-002:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install oracle dependencies
+        run: pip install -r senecio_polymarket/requirements.txt
+
+      - name: Compile reconciliation guard
+        run: |
+          python -m py_compile senecio_polymarket/backend/settlement_reconciler.py
+          sh -n senecio_polymarket/start_single_authority.sh
+
+      - name: Assert repair-only query boundary
+        run: |
+          grep -q '"outcome": "in.(WIN,LOSS)"' senecio_polymarket/backend/settlement_reconciler.py
+          ! grep -q '"outcome": "is.null"' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q 'outcomes_dual' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q 'primary_window.*1h' senecio_polymarket/backend/settlement_reconciler.py
+
+      - name: Assert single authority launcher
+        run: |
+          grep -q 'backend.settlement_reconciler' senecio_polymarket/start_single_authority.sh
+          grep -q 'backend.main:app' senecio_polymarket/start_single_authority.sh
+          ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
+          grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
+          grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
