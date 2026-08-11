@@ -12,6 +12,7 @@ from Supabase, ccxt, and the runtime daemon.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -61,11 +62,17 @@ def is_proof_qualified(row: dict[str, Any]) -> bool:
 
     try:
         origin_price = float(origin_proof.get("price"))
+        row_price = float(row.get("price_now"))
         price_15m = float(dual.get("price_15m_later"))
         price_1h = float(dual.get("price_1h_later"))
     except (TypeError, ValueError):
         return False
-    if origin_price <= 0 or price_15m <= 0 or price_1h <= 0:
+    if origin_price <= 0 or row_price <= 0 or price_15m <= 0 or price_1h <= 0:
+        return False
+    # The origin proof is a commitment to the exact prediction price. A
+    # directional match alone is insufficient because two different origins
+    # can produce the same WIN/LOSS result.
+    if not math.isclose(origin_price, row_price, rel_tol=1e-12, abs_tol=1e-12):
         return False
 
     if dual.get("primary_window") != "1h":
