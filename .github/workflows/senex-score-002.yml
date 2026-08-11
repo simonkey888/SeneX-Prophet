@@ -7,7 +7,7 @@ on:
     branches: [main, 'fix/senex-score-002-authoritative-reconciliation']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   score-002:
@@ -27,10 +27,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Apply authorized SCORE-002 source repair
-        working-directory: .
-        run: python scripts/score002_autofix.py
 
       - name: Install oracle dependencies
         run: pip install -r requirements.txt
@@ -78,20 +74,3 @@ jobs:
         run: |
           echo '--- raw outcome comparison inventory ---'
           grep -RInE 'outcome[[:space:]]*(in|==)|get\("outcome"\).*WIN|outcome.*LOSS' --include='*.py' backend oracle tests || true
-
-      - name: Commit authorized repair if source changed
-        working-directory: .
-        env:
-          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add senecio_polymarket scripts/score002_autofix.py
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            echo 'No repair commit required.'
-            exit 0
-          fi
-          git diff --cached --stat
-          git commit -m 'fix(score-002): enforce proof-qualified scoring and safe reconciliation [score-002-autofix]'
-          git push origin "$BRANCH"
