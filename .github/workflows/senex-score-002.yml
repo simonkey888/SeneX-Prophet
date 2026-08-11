@@ -45,7 +45,7 @@ jobs:
       - name: Run deterministic SCORE-002 behavioral tests
         run: python -m unittest discover -s tests -p 'test_senex_score_002.py' -v
 
-      - name: Run full test suite
+      - name: Run repository test suite
         run: python -m unittest discover -s tests -v
 
       - name: Assert repair-only query boundary
