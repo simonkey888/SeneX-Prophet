@@ -66,7 +66,10 @@ def _price_at(exchange, symbol: str, ts_iso: str, window_s: int) -> Optional[flo
     if not candles:
         return None
     candidates = [c for c in candles if c[0] <= target_ms]
-    candle = max(candidates, key=lambda c: c[0]) if candidates else candles[0]
+    if not candidates:
+        log.warning("no historical candle at/before target for %s target_ms=%s", symbol, target_ms)
+        return None
+    candle = max(candidates, key=lambda c: c[0])
     price = float(candle[4])
     return price if price > 0 else None
 
@@ -91,8 +94,6 @@ async def reconcile_once() -> dict[str, int]:
                 "order": "ts.asc,id.asc",
                 "limit": str(BATCH_LIMIT),
             }
-            # Keyset pagination is stable while repaired rows disappear from the
-            # candidate set. Offset pagination would skip rows after each repair.
             if cursor_ts is not None and cursor_id is not None:
                 params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
 
@@ -110,8 +111,6 @@ async def reconcile_once() -> dict[str, int]:
             exchanges: dict[str, Any] = {}
             try:
                 for row in rows:
-                    # Defense in depth: the query is authoritative for selection,
-                    # but a malformed/mock/stale response must never let NULL settle.
                     if row.get("outcome") not in ("WIN", "LOSS"):
                         skipped += 1
                         continue
@@ -125,10 +124,6 @@ async def reconcile_once() -> dict[str, int]:
                     if not isinstance(audit, dict):
                         audit = {}
 
-                    # Any existing outcomes_dual is treated as an authoritative
-                    # boundary, including malformed/inconsistent evidence. SCORE-002
-                    # is repair-only for the NULL dual-evidence case; it must never
-                    # overwrite an existing proof record.
                     if "outcomes_dual" in audit and audit.get("outcomes_dual") is not None:
                         skipped += 1
                         continue
@@ -151,10 +146,17 @@ async def reconcile_once() -> dict[str, int]:
                         exchanges[exchange_name] = getattr(ccxt, exchange_name)({"enableRateLimit": True})
                     ex = exchanges[exchange_name]
 
-                    p15 = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_15M_S)
-                    p1h = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_1H_S)
+                    try:
+                        p15 = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_15M_S)
+                        p1h = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_1H_S)
+                    except Exception as exc:
+                        errors += 1
+                        log.warning("reconcile price lookup failed id=%s symbol=%s: %s", row.get("id"), symbol, exc)
+                        continue
+
                     if not p15 or not p1h:
                         errors += 1
+                        log.warning("reconcile missing historical evidence id=%s", row.get("id"))
                         continue
 
                     o15 = _outcome(direction, origin, p15)
@@ -166,7 +168,12 @@ async def reconcile_once() -> dict[str, int]:
                     stored_outcome = row.get("outcome")
                     conflict = stored_outcome != o1h
                     if conflict:
-                        audit["reconciliation_conflict"] = {"stored_outcome": stored_outcome, "computed_outcome_1h": o1h, "detected_at": datetime.now(timezone.utc).isoformat(), "action": "NO_OUTCOME_OVERWRITE"}
+                        audit["reconciliation_conflict"] = {
+                            "stored_outcome": stored_outcome,
+                            "computed_outcome_1h": o1h,
+                            "detected_at": datetime.now(timezone.utc).isoformat(),
+                            "action": "NO_OUTCOME_OVERWRITE",
+                        }
                     else:
                         audit.pop("reconciliation_conflict", None)
                     audit["outcomes_dual"] = {
@@ -181,7 +188,11 @@ async def reconcile_once() -> dict[str, int]:
                     patch = {"price_15m_later": p15, "audit": audit}
                     pr = await client.patch(
                         f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                        params={"id": f"eq.{row['id']}", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
+                        params={
+                            "id": f"eq.{row['id']}",
+                            "outcome": f"eq.{stored_outcome}",
+                            "audit->outcomes_dual": "is.null",
+                        },
                         json=patch,
                     )
                     try:
@@ -191,16 +202,23 @@ async def reconcile_once() -> dict[str, int]:
                     if pr.status_code in (200, 204) and isinstance(body, list) and body:
                         if conflict:
                             conflicts += 1
-                            log.warning("reconciliation conflict id=%s stored=%s computed_1h=%s; outcome unchanged", row["id"], stored_outcome, o1h)
+                            log.warning(
+                                "reconciliation conflict id=%s stored=%s computed_1h=%s; outcome unchanged",
+                                row["id"], stored_outcome, o1h,
+                            )
                         else:
                             repaired += 1
-                            log.info("reconciled evidence id=%s stored=%s dual15=%s dual1h=%s", row["id"], stored_outcome, o15, o1h)
+                            log.info(
+                                "reconciled evidence id=%s stored=%s dual15=%s dual1h=%s",
+                                row["id"], stored_outcome, o15, o1h,
+                            )
                     else:
                         errors += 1
-                        log.error("reconcile update failed/no-op id=%s status=%s body=%r", row["id"], pr.status_code, body)
+                        log.error(
+                            "reconcile update failed/no-op id=%s status=%s body=%r",
+                            row["id"], pr.status_code, body,
+                        )
 
-                    # Advance the cursor only after this row has been examined.
-                    # The database row's ts/id are immutable for this repair path.
                 last = rows[-1]
                 cursor_ts = str(last.get("ts"))
                 try:
@@ -219,7 +237,13 @@ async def reconcile_once() -> dict[str, int]:
             if len(rows) < BATCH_LIMIT:
                 break
 
-    result = {"scanned": total_scanned, "repaired": repaired, "skipped": skipped, "errors": errors, "conflicts": conflicts}
+    result = {
+        "scanned": total_scanned,
+        "repaired": repaired,
+        "skipped": skipped,
+        "errors": errors,
+        "conflicts": conflicts,
+    }
     log.info("settlement reconciliation complete: %s", result)
     return result
 
