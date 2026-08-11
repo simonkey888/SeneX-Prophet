@@ -34,13 +34,17 @@ jobs:
         run: |
           grep -q '"outcome": "in.(WIN,LOSS)"' senecio_polymarket/backend/settlement_reconciler.py
           ! grep -q '"outcome": "is.null"' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q '"audit->outcomes_dual": "is.null"' senecio_polymarket/backend/settlement_reconciler.py
           grep -q 'outcomes_dual' senecio_polymarket/backend/settlement_reconciler.py
           grep -q 'primary_window.*1h' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' senecio_polymarket/backend/settlement_reconciler.py
 
       - name: Assert single authority launcher
         run: |
           grep -q 'backend.settlement_reconciler' senecio_polymarket/start_single_authority.sh
           grep -q 'backend.main:app' senecio_polymarket/start_single_authority.sh
+          grep -q 'kill -0 "$RECONCILER_PID"' senecio_polymarket/start_single_authority.sh
           ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
           grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
           grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
