@@ -33,12 +33,7 @@ WINDOW_1H_S = 3600
 def _headers() -> dict[str, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be provided by the runtime environment")
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "return=representation"}
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -65,8 +60,6 @@ def _price_at(exchange, symbol: str, ts_iso: str, window_s: int) -> Optional[flo
     candles = exchange.fetch_ohlcv(symbol, timeframe="1m", since=target_ms - 60_000, limit=2)
     if not candles:
         return None
-    # Never substitute a future candle for a missing historical candle. That
-    # would introduce look-ahead bias into settlement evidence.
     candidates = [c for c in candles if c[0] <= target_ms]
     if not candidates:
         return None
@@ -87,7 +80,6 @@ def _validate_runtime_config() -> None:
 async def reconcile_once() -> dict[str, int]:
     """Repair only already-settled rows that lack dual-window evidence."""
     _validate_runtime_config()
-
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=WINDOW_1H_S)).isoformat()
     async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
         cursor_ts: Optional[str] = None
@@ -111,7 +103,6 @@ async def reconcile_once() -> dict[str, int]:
                 log.error("reconcile fetch failed: %s %s", r.status_code, r.text[:300])
                 errors += 1
                 break
-
             rows = r.json() or []
             if not rows:
                 break
@@ -123,7 +114,6 @@ async def reconcile_once() -> dict[str, int]:
                     if row.get("outcome") not in ("WIN", "LOSS"):
                         skipped += 1
                         continue
-
                     audit = row.get("audit") or {}
                     if isinstance(audit, str):
                         try:
@@ -135,7 +125,6 @@ async def reconcile_once() -> dict[str, int]:
                     if "outcomes_dual" in audit and audit.get("outcomes_dual") is not None:
                         skipped += 1
                         continue
-
                     direction = (row.get("prediction") or "").upper()
                     try:
                         origin = float(row.get("price_now") or 0)
@@ -153,13 +142,11 @@ async def reconcile_once() -> dict[str, int]:
                     if exchange_name not in exchanges:
                         exchanges[exchange_name] = getattr(ccxt, exchange_name)({"enableRateLimit": True})
                     ex = exchanges[exchange_name]
-
                     p15 = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_15M_S)
                     p1h = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_1H_S)
                     if not p15 or not p1h:
                         errors += 1
                         continue
-
                     o15 = _outcome(direction, origin, p15)
                     o1h = _outcome(direction, origin, p1h)
                     if not o15 or not o1h:
@@ -172,20 +159,12 @@ async def reconcile_once() -> dict[str, int]:
                         audit["reconciliation_conflict"] = {"stored_outcome": stored_outcome, "computed_outcome_1h": o1h, "detected_at": datetime.now(timezone.utc).isoformat(), "action": "NO_OUTCOME_OVERWRITE"}
                     else:
                         audit.pop("reconciliation_conflict", None)
-                    audit["outcomes_dual"] = {
-                        "outcome_15m": o15,
-                        "outcome_1h": o1h,
-                        "price_15m_later": p15,
-                        "price_1h_later": p1h,
-                        "primary_window": "1h",
-                        "reconciled_by": "SENEX-SCORE-002",
-                        "reconciled_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    audit["outcomes_dual"] = {"outcome_15m": o15, "outcome_1h": o1h, "price_15m_later": p15, "price_1h_later": p1h, "primary_window": "1h", "reconciled_by": "SENEX-SCORE-002", "reconciled_at": datetime.now(timezone.utc).isoformat()}
                     patch = {"price_15m_later": p15, "audit": audit}
                     try:
                         pr = await client.patch(
                             f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                            params={"id": f"eq.{row['id']", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
+                            params={"id": f"eq.{row['id']}", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
                             json=patch,
                         )
                         try:
@@ -221,7 +200,6 @@ async def reconcile_once() -> dict[str, int]:
                         ex.close()
                     except Exception:
                         pass
-
             if len(rows) < BATCH_LIMIT:
                 break
 
