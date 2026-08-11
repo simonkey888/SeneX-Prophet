@@ -345,7 +345,11 @@ async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = W
                     if best is None or candle[0] > best[0]:
                         best = candle
             if best is None:
-                best = ohlcv[0]
+                log.warning(
+                    "_fetch_price_at_time: no candle at/before target for %s @ %s (window=%ss)",
+                    symbol, settle_ts.isoformat(), window_seconds,
+                )
+                return None
             close_price = float(best[4])  # index 4 = close
             if close_price <= 0:
                 log.warning(
