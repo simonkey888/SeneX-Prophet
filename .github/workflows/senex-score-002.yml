@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, 'fix/senex-score-002-authoritative-reconciliation']
 
 permissions:
   contents: read
@@ -13,6 +13,9 @@ jobs:
   score-002:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: senecio_polymarket
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,28 +26,36 @@ jobs:
           python-version: '3.11'
 
       - name: Install oracle dependencies
-        run: pip install -r senecio_polymarket/requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Compile reconciliation guard
+      - name: Compile reconciliation and proof gates
         run: |
-          python -m py_compile senecio_polymarket/backend/settlement_reconciler.py
-          sh -n senecio_polymarket/start_single_authority.sh
+          python -m py_compile backend/settlement_reconciler.py
+          python -m py_compile backend/settlement_proof.py
+          python -m py_compile backend/supabase_client.py
+          sh -n start_single_authority.sh
+
+      - name: Run deterministic SCORE-002 behavioral tests
+        run: python -m unittest discover -s tests -p 'test_senex_score_002.py' -v
 
       - name: Assert repair-only query boundary
         run: |
-          grep -q '"outcome": "in.(WIN,LOSS)"' senecio_polymarket/backend/settlement_reconciler.py
-          ! grep -q '"outcome": "is.null"' senecio_polymarket/backend/settlement_reconciler.py
-          grep -q '"audit->outcomes_dual": "is.null"' senecio_polymarket/backend/settlement_reconciler.py
-          grep -q 'outcomes_dual' senecio_polymarket/backend/settlement_reconciler.py
-          grep -q 'primary_window.*1h' senecio_polymarket/backend/settlement_reconciler.py
-          grep -q 'SUPABASE_URL.*os.environ.get' senecio_polymarket/backend/settlement_reconciler.py
-          grep -q 'SUPABASE_KEY.*os.environ.get' senecio_polymarket/backend/settlement_reconciler.py
+          grep -q '"outcome": "in.(WIN,LOSS)"' backend/settlement_reconciler.py
+          ! grep -q '"outcome": "is.null"' backend/settlement_reconciler.py
+          grep -q '"audit->outcomes_dual": "is.null"' backend/settlement_reconciler.py
+          grep -q 'outcomes_dual' backend/settlement_reconciler.py
+          grep -q 'primary_window.*1h' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/supabase_client.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/supabase_client.py
+          ! grep -q 'supabase.co")' backend/supabase_client.py
 
       - name: Assert single authority launcher
         run: |
-          grep -q 'backend.settlement_reconciler' senecio_polymarket/start_single_authority.sh
-          grep -q 'backend.main:app' senecio_polymarket/start_single_authority.sh
-          grep -q 'kill -0 "$RECONCILER_PID"' senecio_polymarket/start_single_authority.sh
-          ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
-          grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
-          grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
+          grep -q 'backend.settlement_reconciler' start_single_authority.sh
+          grep -q 'backend.main:app' start_single_authority.sh
+          grep -q 'kill -0 "$RECONCILER_PID"' start_single_authority.sh
+          ! grep -q 'oracle_verifier.py' Dockerfile
+          grep -q 'start_single_authority.sh /start.sh' Dockerfile
+          grep -q 'start_single_authority.sh /app/start.sh' Dockerfile
