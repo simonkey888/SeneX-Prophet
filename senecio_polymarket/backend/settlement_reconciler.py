@@ -65,16 +65,28 @@ def _price_at(exchange, symbol: str, ts_iso: str, window_s: int) -> Optional[flo
     candles = exchange.fetch_ohlcv(symbol, timeframe="1m", since=target_ms - 60_000, limit=2)
     if not candles:
         return None
+    # Never substitute a future candle for a missing historical candle. That
+    # would introduce look-ahead bias into settlement evidence.
     candidates = [c for c in candles if c[0] <= target_ms]
-    candle = max(candidates, key=lambda c: c[0]) if candidates else candles[0]
+    if not candidates:
+        return None
+    candle = max(candidates, key=lambda c: c[0])
     price = float(candle[4])
     return price if price > 0 else None
 
 
-async def reconcile_once() -> dict[str, int]:
-    """Repair only already-settled rows that lack dual-window evidence."""
+def _validate_runtime_config() -> None:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be provided by the runtime environment")
+    if BATCH_LIMIT <= 0:
+        raise RuntimeError("SETTLEMENT_RECONCILE_BATCH must be > 0")
+    if INTERVAL_S <= 0:
+        raise RuntimeError("SETTLEMENT_RECONCILE_INTERVAL_SEC must be > 0")
+
+
+async def reconcile_once() -> dict[str, int]:
+    """Repair only already-settled rows that lack dual-window evidence."""
+    _validate_runtime_config()
 
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=WINDOW_1H_S)).isoformat()
     async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
@@ -91,8 +103,6 @@ async def reconcile_once() -> dict[str, int]:
                 "order": "ts.asc,id.asc",
                 "limit": str(BATCH_LIMIT),
             }
-            # Keyset pagination is stable while repaired rows disappear from the
-            # candidate set. Offset pagination would skip rows after each repair.
             if cursor_ts is not None and cursor_id is not None:
                 params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
 
@@ -110,8 +120,6 @@ async def reconcile_once() -> dict[str, int]:
             exchanges: dict[str, Any] = {}
             try:
                 for row in rows:
-                    # Defense in depth: the query is authoritative for selection,
-                    # but a malformed/mock/stale response must never let NULL settle.
                     if row.get("outcome") not in ("WIN", "LOSS"):
                         skipped += 1
                         continue
@@ -124,11 +132,6 @@ async def reconcile_once() -> dict[str, int]:
                             audit = {}
                     if not isinstance(audit, dict):
                         audit = {}
-
-                    # Any existing outcomes_dual is treated as an authoritative
-                    # boundary, including malformed/inconsistent evidence. SCORE-002
-                    # is repair-only for the NULL dual-evidence case; it must never
-                    # overwrite an existing proof record.
                     if "outcomes_dual" in audit and audit.get("outcomes_dual") is not None:
                         skipped += 1
                         continue
@@ -179,15 +182,20 @@ async def reconcile_once() -> dict[str, int]:
                         "reconciled_at": datetime.now(timezone.utc).isoformat(),
                     }
                     patch = {"price_15m_later": p15, "audit": audit}
-                    pr = await client.patch(
-                        f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                        params={"id": f"eq.{row['id']}", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
-                        json=patch,
-                    )
                     try:
-                        body = pr.json() if pr.content else []
-                    except Exception:
-                        body = []
+                        pr = await client.patch(
+                            f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+                            params={"id": f"eq.{row['id']", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
+                            json=patch,
+                        )
+                        try:
+                            body = pr.json() if pr.content else []
+                        except Exception:
+                            body = []
+                    except Exception as exc:
+                        errors += 1
+                        log.error("reconcile update exception id=%s: %s", row.get("id"), exc)
+                        continue
                     if pr.status_code in (200, 204) and isinstance(body, list) and body:
                         if conflict:
                             conflicts += 1
@@ -199,8 +207,6 @@ async def reconcile_once() -> dict[str, int]:
                         errors += 1
                         log.error("reconcile update failed/no-op id=%s status=%s body=%r", row["id"], pr.status_code, body)
 
-                    # Advance the cursor only after this row has been examined.
-                    # The database row's ts/id are immutable for this repair path.
                 last = rows[-1]
                 cursor_ts = str(last.get("ts"))
                 try:
@@ -225,6 +231,7 @@ async def reconcile_once() -> dict[str, int]:
 
 
 async def daemon() -> None:
+    _validate_runtime_config()
     log.info("SENEX-SCORE-002 reconciliation guard started interval=%ss", INTERVAL_S)
     while True:
         try:
