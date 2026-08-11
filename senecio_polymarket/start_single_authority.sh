@@ -1,11 +1,14 @@
 #!/bin/sh
-# SENECIO ORACLE — FIX SENEX-SCORE-001
-# Production launcher with exactly one settlement authority:
-# backend.oracle_runner (1h primary + 15m/1h dual-window evidence).
-# The legacy oracle_verifier.py is intentionally not started.
+# SENECIO ORACLE — SENEX-SCORE-002
+# Production settlement authority remains backend.oracle_runner.
+# settlement_reconciler is repair-only: it may repair already-populated
+# WIN/LOSS rows that lack dual 15m/1h evidence, but it never settles NULL rows.
 set -u
 
-echo "[start_single_authority.sh] launching uvicorn (oracle_runner owns settlement)..."
+echo "[start_single_authority.sh] launching settlement authority + reconciliation guard..."
+python -m backend.settlement_reconciler &
+RECONCILER_PID=$!
+
 uvicorn backend.main:app \
   --host 0.0.0.0 \
   --port 8080 \
@@ -15,8 +18,10 @@ uvicorn backend.main:app \
 UVICORN_PID=$!
 
 cleanup() {
-  echo "[start_single_authority.sh] cleanup: stopping uvicorn ($UVICORN_PID)"
+  echo "[start_single_authority.sh] cleanup: stopping reconciler ($RECONCILER_PID) and uvicorn ($UVICORN_PID)"
+  kill -TERM "$RECONCILER_PID" 2>/dev/null || true
   kill -TERM "$UVICORN_PID" 2>/dev/null || true
+  wait "$RECONCILER_PID" 2>/dev/null || true
   wait "$UVICORN_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
