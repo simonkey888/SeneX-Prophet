@@ -25,8 +25,8 @@ ELECTION_KW = ["election", "president", "vote", "candidate", "congress",
                "senate", "governor", "parliament", "mayor", "prime minister"]
 P_THRESHOLD = 0.70       # H-010 signal threshold
 MIN_VOLUME = 10_000      # H-010 minimum volume (USD)
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://okgxqapbldtldmvjvzfh.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_ND41HJx4ef7JtjoDetI7RQ_P9JU-Y7Z")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 
 # ═══════════════════════════════════════════════════════════════════════

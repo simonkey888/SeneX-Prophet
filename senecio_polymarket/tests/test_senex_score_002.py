@@ -166,7 +166,80 @@ class ProofQualificationTests(unittest.TestCase):
         }
         self.assertFalse(is_proof_qualified(row))
         self.assertEqual(proof_status(row), "RAW_UNVERIFIED")
-\n\nclass AuthoritativeBoundaryTests(unittest.TestCase):\n    def qualified(self):\n        return {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": {"origin_price_v1": {"version": "origin-price-v1", "price": 100, "timestamp": TS, "source": "okx"}, "outcomes_dual": {"outcome_15m": "WIN", "outcome_1h": "WIN", "price_15m_later": 101, "price_1h_later": 102, "primary_window": "1h"}}}\n\n    def test_scorer_counts_only_proof_qualified(self):\n        q = self.qualified()\n        raw = {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": None}\n        dual = {"ts": TS, "prediction": "LONG", "outcome": "LOSS", "audit": {"outcomes_dual": {"outcome_15m": "LOSS", "outcome_1h": "LOSS", "price_15m_later": 99, "price_1h_later": 98, "primary_window": "1h"}}}\n        score = score_qualified_rows([q, raw, dual])\n        self.assertEqual((score["verified"], score["wins"], score["losses"], score["win_rate_pct"]), (1, 1, 0, 100.0))\n        self.assertEqual(len(filter_proof_qualified([q, raw, dual])), 1)\n\n    def test_missing_origin_is_raw_unverified(self):\n        row = self.qualified()\n        row["audit"].pop("origin_price_v1")\n        self.assertFalse(is_proof_qualified(row))\n        self.assertEqual(proof_status(row), "RAW_UNVERIFIED")\n\n    def test_conflict_does_not_overwrite_outcome(self):\n        rows = [{"id": 6, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]\n        client = FakeClient(rows)\n        old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT\n        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50\n        try:\n            with patch.object(reconciler.httpx, "AsyncClient", return_value=client), patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()), patch.object(reconciler, "_price_at", side_effect=lambda *args: 101.0 if args[-1] == reconciler.WINDOW_15M_S else 99.0):\n                result = asyncio.run(reconciler.reconcile_once())\n        finally:\n            reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = old\n        self.assertEqual(result["repaired"], 0)\n        self.assertEqual(result["conflicts"], 1)\n        payload = client.patch_calls[0][2]\n        self.assertNotIn("outcome", payload)\n        self.assertEqual(payload["audit"]["reconciliation_conflict"]["action"], "NO_OUTCOME_OVERWRITE")\n\n    def test_race_conditional_noop_is_not_repaired(self):\n        rows = [{"id": 7, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]\n        result, client = run_reconcile(rows, patch_status=200, patch_body=[])\n        self.assertEqual(result["repaired"], 0)\n        self.assertEqual(result["errors"], 1)\n        self.assertEqual(client.patch_calls[0][1]["audit->outcomes_dual"], "is.null")\n\n    def test_patch_failure_retries_next_cycle(self):\n        rows = [{"id": 8, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]\n        first, first_client = run_reconcile(rows, patch_status=500)\n        second, second_client = run_reconcile(rows, patch_status=500)\n        self.assertEqual((first["repaired"], second["repaired"], first["errors"], second["errors"]), (0, 0, 1, 1))\n        self.assertEqual((len(first_client.patch_calls), len(second_client.patch_calls)), (1, 1))\n\n    def test_multi_batch_repairs_all_eligible_rows(self):\n        rows = [{"id": i, "ts": f"2026-08-10T00:{i:02d}:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"} for i in range(51)]\n        pages = [rows[:50], rows[50:]]\n        class PagedClient(FakeClient):\n            def __init__(self, pages):\n                super().__init__([], patch_status=200)\n                self.pages, self.page_index = pages, 0\n            async def get(self, url, params=None):\n                self.get_calls.append((url, dict(params or {})))\n                page = self.pages[self.page_index] if self.page_index < len(self.pages) else []\n                self.page_index += 1\n                return FakeResponse(200, list(page))\n        client = PagedClient(pages)\n        old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT\n        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50\n        try:\n            with patch.object(reconciler.httpx, "AsyncClient", return_value=client), patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()), patch.object(reconciler, "_price_at", return_value=101.0):\n                result = asyncio.run(reconciler.reconcile_once())\n        finally:\n            reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = old\n        self.assertEqual(result["repaired"], 51)\n        self.assertEqual(len(client.get_calls), 3)\n\n
+
+
+class AuthoritativeBoundaryTests(unittest.TestCase):
+    def qualified(self):
+        return {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": {"origin_price_v1": {"version": "origin-price-v1", "price": 100, "timestamp": TS, "source": "okx"}, "outcomes_dual": {"outcome_15m": "WIN", "outcome_1h": "WIN", "price_15m_later": 101, "price_1h_later": 102, "primary_window": "1h"}}}
+
+    def test_scorer_counts_only_proof_qualified(self):
+        q = self.qualified()
+        raw = {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": None}
+        dual = {"ts": TS, "prediction": "LONG", "outcome": "LOSS", "audit": {"outcomes_dual": {"outcome_15m": "LOSS", "outcome_1h": "LOSS", "price_15m_later": 99, "price_1h_later": 98, "primary_window": "1h"}}}
+        score = score_qualified_rows([q, raw, dual])
+        self.assertEqual((score["verified"], score["wins"], score["losses"], score["win_rate_pct"]), (1, 1, 0, 100.0))
+        self.assertEqual(len(filter_proof_qualified([q, raw, dual])), 1)
+
+    def test_missing_origin_is_raw_unverified(self):
+        row = self.qualified()
+        row["audit"].pop("origin_price_v1")
+        self.assertFalse(is_proof_qualified(row))
+        self.assertEqual(proof_status(row), "RAW_UNVERIFIED")
+
+    def test_conflict_does_not_overwrite_outcome(self):
+        rows = [{"id": 6, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        client = FakeClient(rows)
+        old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
+        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
+        try:
+            with patch.object(reconciler.httpx, "AsyncClient", return_value=client), patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()), patch.object(reconciler, "_price_at", side_effect=lambda *args: 101.0 if args[-1] == reconciler.WINDOW_15M_S else 99.0):
+                result = asyncio.run(reconciler.reconcile_once())
+        finally:
+            reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = old
+        self.assertEqual(result["repaired"], 0)
+        self.assertEqual(result["conflicts"], 1)
+        payload = client.patch_calls[0][2]
+        self.assertNotIn("outcome", payload)
+        self.assertEqual(payload["audit"]["reconciliation_conflict"]["action"], "NO_OUTCOME_OVERWRITE")
+
+    def test_race_conditional_noop_is_not_repaired(self):
+        rows = [{"id": 7, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        result, client = run_reconcile(rows, patch_status=200, patch_body=[])
+        self.assertEqual(result["repaired"], 0)
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(client.patch_calls[0][1]["audit->outcomes_dual"], "is.null")
+
+    def test_patch_failure_retries_next_cycle(self):
+        rows = [{"id": 8, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        first, first_client = run_reconcile(rows, patch_status=500)
+        second, second_client = run_reconcile(rows, patch_status=500)
+        self.assertEqual((first["repaired"], second["repaired"], first["errors"], second["errors"]), (0, 0, 1, 1))
+        self.assertEqual((len(first_client.patch_calls), len(second_client.patch_calls)), (1, 1))
+
+    def test_multi_batch_repairs_all_eligible_rows(self):
+        rows = [{"id": i, "ts": f"2026-08-10T00:{i:02d}:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"} for i in range(51)]
+        pages = [rows[:50], rows[50:]]
+        class PagedClient(FakeClient):
+            def __init__(self, pages):
+                super().__init__([], patch_status=200)
+                self.pages, self.page_index = pages, 0
+            async def get(self, url, params=None):
+                self.get_calls.append((url, dict(params or {})))
+                page = self.pages[self.page_index] if self.page_index < len(self.pages) else []
+                self.page_index += 1
+                return FakeResponse(200, list(page))
+        client = PagedClient(pages)
+        old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
+        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
+        try:
+            with patch.object(reconciler.httpx, "AsyncClient", return_value=client), patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()), patch.object(reconciler, "_price_at", return_value=101.0):
+                result = asyncio.run(reconciler.reconcile_once())
+        finally:
+            reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = old
+        self.assertEqual(result["repaired"], 51)
+        self.assertEqual(len(client.get_calls), 3)
+
+
 
 if __name__ == "__main__":
     unittest.main()
