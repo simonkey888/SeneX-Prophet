@@ -7,7 +7,7 @@ if not branch:
 
 subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
 subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
-subprocess.run(["git", "add", "senecio_polymarket", "scripts"], check=True)
+subprocess.run(["git", "add", "senecio_polymarket", "polymarket", "scripts"], check=True)
 if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode == 0:
     print("No repair changes to persist")
 else:
