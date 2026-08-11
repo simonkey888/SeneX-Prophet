@@ -42,12 +42,8 @@ except ImportError:  # pragma: no cover
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL", "https://okgxqapbldtldmvjvzfh.supabase.co"
-)
-SUPABASE_KEY = os.environ.get(
-    "SUPABASE_KEY", "sb_publishable_ND41HJx4ef7JtjoDetI7RQ_P9JU-Y7Z"
-)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SUPABASE_TABLE = os.environ.get("SUPABASE_TABLE", "oracle_predictions")
 
 VERIFIER_INTERVAL_SEC = int(os.environ.get("VERIFIER_INTERVAL_SEC", "900"))

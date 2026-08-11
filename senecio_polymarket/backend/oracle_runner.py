@@ -36,6 +36,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+from .settlement_proof import is_proof_qualified
+
 # Make oracle modules importable
 ORACLE_DIR = Path(__file__).resolve().parent.parent / "oracle"
 sys.path.insert(0, str(ORACLE_DIR))
@@ -188,6 +190,18 @@ async def _run_one_prediction(symbol: str) -> Optional[dict]:
         prediction["exchange_used"] = exchange_used
         if "_audit" in prediction:
             prediction["_audit"]["exchange_used"] = exchange_used
+
+        # SCORE-002: immutable origin witness captured at prediction creation.
+        audit = prediction.setdefault("_audit", {})
+        if not isinstance(audit, dict):
+            audit = {}
+            prediction["_audit"] = audit
+        audit["origin_price_v1"] = {
+            "version": "origin-price-v1",
+            "price": float(prediction.get("price_now") or 0),
+            "timestamp": prediction.get("timestamp"),
+            "source": exchange_used,
+        }
 
         # ── ACT FINAL_AUDIT (A2) — STRICT_ADDITIVE audit enrichment ──
         # Adds 30+ derived fields to _audit.enriched (hour, weekday, session,
@@ -712,6 +726,8 @@ async def _refresh_directional_stats() -> None:
         direction = (r.get("prediction") or "").upper()
         if direction not in ("LONG", "SHORT", "FLAT"):
             continue
+        if not is_proof_qualified(r):
+            continue
         # 1h outcome = primary outcome column
         outcome_1h = r.get("outcome")
         if outcome_1h in ("WIN", "LOSS"):
@@ -751,6 +767,7 @@ async def _refresh_directional_stats() -> None:
         }
 
     _state["directional_stats"]["by_window"] = by_window
+    _state["verified_total"] = by_window["1h"]["global"]["verified"]
 
     # Apply gates (1h window only — that's the gating source of truth)
     g = _state["gates"]

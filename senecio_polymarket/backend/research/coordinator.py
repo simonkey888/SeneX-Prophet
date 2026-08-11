@@ -42,6 +42,7 @@ from .drift_detector import DriftMonitor, DEFAULTS as DRIFT_DEFAULTS
 from .research_metrics import compute_research_metrics, DEFAULTS as RM_DEFAULTS
 from .explainability import fit_explainer, Explainer, DEFAULTS as EXPL_DEFAULTS
 from .observability import get_registry, timed
+from ..settlement_proof import is_proof_qualified
 
 log = logging.getLogger("senecio.research.coordinator")
 
@@ -187,9 +188,9 @@ class ResearchCoordinator:
         confs: list[float] = []
         ts_vals: list[Any] = []
         for rec in self.predictions:
-            outcome = (rec.get("outcome") or "").upper()
-            if outcome not in ("WIN", "LOSS"):
+            if not is_proof_qualified(rec):
                 continue
+            outcome = (rec.get("outcome") or "").upper()
             row: list[float] = []
             for fname in self.feature_names:
                 v = rec.get(fname)

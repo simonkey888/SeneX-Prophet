@@ -80,7 +80,7 @@ async def reconcile_once() -> dict[str, int]:
     async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
         cursor_ts: Optional[str] = None
         cursor_id: Optional[int] = None
-        total_scanned = repaired = skipped = errors = 0
+        total_scanned = repaired = skipped = errors = conflicts = 0
 
         while True:
             params: dict[str, str] = {
@@ -163,6 +163,12 @@ async def reconcile_once() -> dict[str, int]:
                         skipped += 1
                         continue
 
+                    stored_outcome = row.get("outcome")
+                    conflict = stored_outcome != o1h
+                    if conflict:
+                        audit["reconciliation_conflict"] = {"stored_outcome": stored_outcome, "computed_outcome_1h": o1h, "detected_at": datetime.now(timezone.utc).isoformat(), "action": "NO_OUTCOME_OVERWRITE"}
+                    else:
+                        audit.pop("reconciliation_conflict", None)
                     audit["outcomes_dual"] = {
                         "outcome_15m": o15,
                         "outcome_1h": o1h,
@@ -172,10 +178,10 @@ async def reconcile_once() -> dict[str, int]:
                         "reconciled_by": "SENEX-SCORE-002",
                         "reconciled_at": datetime.now(timezone.utc).isoformat(),
                     }
-                    patch = {"outcome": o1h, "price_15m_later": p15, "audit": audit}
+                    patch = {"price_15m_later": p15, "audit": audit}
                     pr = await client.patch(
                         f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                        params={"id": f"eq.{row['id']}"},
+                        params={"id": f"eq.{row['id']}", "outcome": f"eq.{stored_outcome}", "audit->outcomes_dual": "is.null"},
                         json=patch,
                     )
                     try:
@@ -183,11 +189,15 @@ async def reconcile_once() -> dict[str, int]:
                     except Exception:
                         body = []
                     if pr.status_code in (200, 204) and isinstance(body, list) and body:
-                        repaired += 1
-                        log.info("reconciled id=%s primary=%s dual15=%s dual1h=%s", row["id"], o1h, o15, o1h)
+                        if conflict:
+                            conflicts += 1
+                            log.warning("reconciliation conflict id=%s stored=%s computed_1h=%s; outcome unchanged", row["id"], stored_outcome, o1h)
+                        else:
+                            repaired += 1
+                            log.info("reconciled evidence id=%s stored=%s dual15=%s dual1h=%s", row["id"], stored_outcome, o15, o1h)
                     else:
                         errors += 1
-                        log.error("reconcile update failed id=%s status=%s body=%r", row["id"], pr.status_code, body)
+                        log.error("reconcile update failed/no-op id=%s status=%s body=%r", row["id"], pr.status_code, body)
 
                     # Advance the cursor only after this row has been examined.
                     # The database row's ts/id are immutable for this repair path.
@@ -209,7 +219,7 @@ async def reconcile_once() -> dict[str, int]:
             if len(rows) < BATCH_LIMIT:
                 break
 
-    result = {"scanned": total_scanned, "repaired": repaired, "skipped": skipped, "errors": errors}
+    result = {"scanned": total_scanned, "repaired": repaired, "skipped": skipped, "errors": errors, "conflicts": conflicts}
     log.info("settlement reconciliation complete: %s", result)
     return result
 

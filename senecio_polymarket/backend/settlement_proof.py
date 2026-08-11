@@ -83,6 +83,19 @@ def is_proof_qualified(row: dict[str, Any]) -> bool:
     return dual.get("outcome_15m") == expected_15m and dual.get("outcome_1h") == expected_1h
 
 
+def filter_proof_qualified(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only rows satisfying the complete authoritative proof contract."""
+    return [row for row in rows if is_proof_qualified(row)]
+
+
+def score_qualified_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute the authoritative score from proof-qualified rows only."""
+    verified = filter_proof_qualified(rows)
+    wins = sum(1 for row in verified if row.get("outcome") == "WIN")
+    losses = sum(1 for row in verified if row.get("outcome") == "LOSS")
+    return {"rows": verified, "verified": len(verified), "wins": wins, "losses": losses, "win_rate_pct": (wins / len(verified) * 100) if verified else 0.0}
+
+
 def proof_status(row: dict[str, Any]) -> str:
     """Return the explicit scoring status required by the SENEX contract."""
     return "PROOF_QUALIFIED" if is_proof_qualified(row) else "RAW_UNVERIFIED"

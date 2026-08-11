@@ -38,6 +38,7 @@ from .execution_simulator import ExecutionSimulator
 from .scheduler import Scheduler
 from .ws_server import make_router as make_ws_router
 from . import oracle_runner
+from .settlement_proof import filter_proof_qualified, is_proof_qualified
 # ACT-XXVII: research layer (lazy-initialized to avoid import-time failures
 # if optional deps like shap are missing)
 try:
@@ -213,7 +214,7 @@ async def oracle_score():
     from . import oracle_runner
     # Get all predictions with outcome filled
     rows = await supabase_client.fetch_predictions(limit=500)
-    verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS")]
+    verified = filter_proof_qualified(rows)
     wins = sum(1 for r in verified if r.get("outcome") == "WIN")
     losses = sum(1 for r in verified if r.get("outcome") == "LOSS")
     win_rate = (wins / len(verified) * 100) if verified else 0.0
@@ -406,7 +407,7 @@ async def portfolio_live_gate():
     try:
         from . import supabase_client
         rows = await supabase_client.fetch_predictions(limit=500)
-        verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS")]
+        verified = filter_proof_qualified(rows)
         wins = sum(1 for r in verified if r.get("outcome") == "WIN")
         win_rate = (wins / len(verified) * 100) if verified else 0.0
         oracle_score = {
@@ -724,6 +725,10 @@ def _derive_returns_from_predictions() -> tuple[list[float], list[int], list[flo
     ys:   list[float] = []
     yp:   list[float] = []
     for rec in _research_coord.predictions:
+        if not is_proof_qualified(rec):
+            continue
+        if not is_proof_qualified(rec):
+            continue
         outcome = (rec.get("outcome") or "").upper()
         if outcome in ("WIN", "CORRECT"):
             y_v = 1.0
