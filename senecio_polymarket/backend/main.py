@@ -735,6 +735,8 @@ def _derive_returns_from_predictions() -> tuple[list[float], list[int], list[flo
             continue
         if not is_proof_qualified(rec):
             continue
+        if not is_proof_qualified(rec):
+            continue
         outcome = (rec.get("outcome") or "").upper()
         if outcome in ("WIN", "CORRECT"):
             y_v = 1.0
