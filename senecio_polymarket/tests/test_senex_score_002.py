@@ -162,7 +162,7 @@ class SettlementReconcilerTests(unittest.TestCase):
             def fetch_ohlcv(self, *args, **kwargs):
                 target = 1000000
                 return [[target + 2000000, 1, 1, 1, 101, 1], [target + 3000000, 1, 1, 1, 102, 1]]
-        self.assertIsNone(reconciler._price_at(FutureExchange(), "1970-01-01T00:16:40+00:00", 900))
+        self.assertIsNone(reconciler._price_at(FutureExchange(), "1970-01-01T00:16:40+00:00", 900, 900))
 
     def test_multi_batch_repairs_all_eligible_rows(self):
         rows = [{"id": i, "ts": f"2026-08-10T00:{i:02d}:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"} for i in range(51)]
