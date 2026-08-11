@@ -31,6 +31,10 @@ while true; do
     echo "[start_single_authority.sh] uvicorn exited — shutting down container"
     break
   fi
+  if ! kill -0 "$RECONCILER_PID" 2>/dev/null; then
+    echo "[start_single_authority.sh] reconciler exited — shutting down container"
+    break
+  fi
   sleep 1
 done
 exit 1
