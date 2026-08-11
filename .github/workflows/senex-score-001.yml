@@ -1,0 +1,49 @@
+name: SENEX SCORE-001 Regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  score-001:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install oracle dependencies
+        run: pip install -r senecio_polymarket/requirements.txt
+
+      - name: Shell syntax check
+        run: sh -n senecio_polymarket/start_single_authority.sh
+
+      - name: Python compile check
+        run: |
+          python -m py_compile \
+            senecio_polymarket/backend/oracle_runner.py \
+            senecio_polymarket/backend/supabase_client.py \
+            senecio_polymarket/oracle/oracle_verifier.py
+
+      - name: Single-settlement-authority invariant
+        run: |
+          ! grep -q 'oracle_verifier.py' senecio_polymarket/start_single_authority.sh
+          grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
+          grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
+          grep -q 'WINDOW_1H_S' senecio_polymarket/backend/oracle_runner.py
+          grep -q 'update_outcome_dual' senecio_polymarket/backend/oracle_runner.py
+
+      - name: Legacy launcher isolation invariant
+        run: |
+          ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
+          test -f senecio_polymarket/oracle/oracle_verifier.py
