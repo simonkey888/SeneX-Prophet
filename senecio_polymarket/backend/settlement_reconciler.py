@@ -5,9 +5,6 @@ It only repairs rows that already contain WIN/LOSS but lack the
 single-authority `audit.outcomes_dual` evidence. The production oracle
 runner remains the authority for NULL -> settled transitions.
 
-Purpose: close the race/legacy gap where another historical writer can leave
-an outcome populated without the dual 15m/1h proof required by SCORE-001.
-
 Safety: public market reads only; paper-only; no wallet, signing or orders.
 """
 from __future__ import annotations
@@ -75,27 +72,31 @@ def _price_at(exchange, symbol: str, ts_iso: str, window_s: int) -> Optional[flo
 
 
 async def reconcile_once() -> dict[str, int]:
-    """Repair already-settled rows that lack dual-window evidence."""
+    """Repair only already-settled rows that lack dual-window evidence."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be provided by the runtime environment")
 
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=WINDOW_1H_S)).isoformat()
     async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
-        offset = 0
+        cursor_ts: Optional[str] = None
+        cursor_id: Optional[int] = None
         total_scanned = repaired = skipped = errors = 0
+
         while True:
-            r = await client.get(
-                f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                params={
-                    "select": "id,ts,symbol,prediction,price_now,outcome,audit,exchange_used",
-                    "outcome": "in.(WIN,LOSS)",
-                    "audit->outcomes_dual": "is.null",
-                    "ts": f"lt.{cutoff}",
-                    "order": "ts.asc,id.asc",
-                    "limit": str(BATCH_LIMIT),
-                    "offset": str(offset),
-                },
-            )
+            params: dict[str, str] = {
+                "select": "id,ts,symbol,prediction,price_now,outcome,audit,exchange_used",
+                "outcome": "in.(WIN,LOSS)",
+                "audit->outcomes_dual": "is.null",
+                "ts": f"lt.{cutoff}",
+                "order": "ts.asc,id.asc",
+                "limit": str(BATCH_LIMIT),
+            }
+            # Keyset pagination is stable while repaired rows disappear from the
+            # candidate set. Offset pagination would skip rows after each repair.
+            if cursor_ts is not None and cursor_id is not None:
+                params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
+
+            r = await client.get(f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}", params=params)
             if r.status_code != 200:
                 log.error("reconcile fetch failed: %s %s", r.status_code, r.text[:300])
                 errors += 1
@@ -109,19 +110,34 @@ async def reconcile_once() -> dict[str, int]:
             exchanges: dict[str, Any] = {}
             try:
                 for row in rows:
+                    # Defense in depth: the query is authoritative for selection,
+                    # but a malformed/mock/stale response must never let NULL settle.
+                    if row.get("outcome") not in ("WIN", "LOSS"):
+                        skipped += 1
+                        continue
+
                     audit = row.get("audit") or {}
                     if isinstance(audit, str):
                         try:
                             audit = json.loads(audit)
                         except Exception:
                             audit = {}
-                    dual = audit.get("outcomes_dual") if isinstance(audit, dict) else None
-                    if isinstance(dual, dict) and dual.get("outcome_15m") in ("WIN", "LOSS") and dual.get("outcome_1h") in ("WIN", "LOSS"):
+                    if not isinstance(audit, dict):
+                        audit = {}
+
+                    # Any existing outcomes_dual is treated as an authoritative
+                    # boundary, including malformed/inconsistent evidence. SCORE-002
+                    # is repair-only for the NULL dual-evidence case; it must never
+                    # overwrite an existing proof record.
+                    if "outcomes_dual" in audit and audit.get("outcomes_dual") is not None:
                         skipped += 1
                         continue
 
                     direction = (row.get("prediction") or "").upper()
-                    origin = float(row.get("price_now") or 0)
+                    try:
+                        origin = float(row.get("price_now") or 0)
+                    except (TypeError, ValueError):
+                        origin = 0.0
                     ts_iso = row.get("ts")
                     if direction not in ("LONG", "SHORT") or origin <= 0 or not ts_iso:
                         skipped += 1
@@ -147,7 +163,6 @@ async def reconcile_once() -> dict[str, int]:
                         skipped += 1
                         continue
 
-                    audit = dict(audit) if isinstance(audit, dict) else {}
                     audit["outcomes_dual"] = {
                         "outcome_15m": o15,
                         "outcome_1h": o1h,
@@ -173,6 +188,17 @@ async def reconcile_once() -> dict[str, int]:
                     else:
                         errors += 1
                         log.error("reconcile update failed id=%s status=%s body=%r", row["id"], pr.status_code, body)
+
+                    # Advance the cursor only after this row has been examined.
+                    # The database row's ts/id are immutable for this repair path.
+                last = rows[-1]
+                cursor_ts = str(last.get("ts"))
+                try:
+                    cursor_id = int(last.get("id"))
+                except (TypeError, ValueError):
+                    log.error("reconcile pagination cursor invalid id=%r", last.get("id"))
+                    errors += 1
+                    break
             finally:
                 for ex in exchanges.values():
                     try:
@@ -182,7 +208,6 @@ async def reconcile_once() -> dict[str, int]:
 
             if len(rows) < BATCH_LIMIT:
                 break
-            offset += len(rows)
 
     result = {"scanned": total_scanned, "repaired": repaired, "skipped": skipped, "errors": errors}
     log.info("settlement reconciliation complete: %s", result)
