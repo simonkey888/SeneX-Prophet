@@ -12,9 +12,8 @@ ACT XXIII changes:
   - `price_15m_later` column keeps its original meaning (price at ts+15min).
   - `update_outcome_dual()` fetches existing audit, merges `outcomes_dual` sub-dict,
     then PATCHes (avoids clobbering existing audit signal metadata).
-  - `fetch_pending_outcomes_dual()` fetches predictions older than 1h (the gating
+  - `fetch_pending_outcomes()` fetches predictions older than 1h (the gating
     window) so the verifier can settle both 15m and 1h outcomes atomically.
-  - Backward-compat: `update_outcome()` kept for callers that only have 1h data.
 
 Only depends on httpx (already in requirements.txt).
 """
@@ -148,32 +147,6 @@ async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100
     except Exception as e:
         log.error("supabase fetch_pending_outcomes error: %s", e)
         return []
-
-
-async def update_outcome(prediction_id: int, outcome: str, price_15m_later: float) -> bool:
-    """Legacy single-window update retained for backward compatibility."""
-    try:
-        c = _get_client()
-        r = await c.patch(
-            f"/{SUPABASE_TABLE}",
-            params={"id": f"eq.{prediction_id}"},
-            json={"outcome": outcome, "price_15m_later": float(price_15m_later)},
-        )
-        if r.status_code in (200, 204):
-            try:
-                body = r.json() if r.content else []
-            except Exception:
-                body = []
-            if isinstance(body, list) and len(body) > 0:
-                log.info("supabase update_outcome OK id=%s outcome=%s", prediction_id, outcome)
-                return True
-            log.error("supabase update_outcome NO-OP id=%s outcome=%s status=%s body=%r", prediction_id, outcome, r.status_code, body)
-            return False
-        log.error("supabase update_outcome failed: %s %s", r.status_code, r.text[:300])
-        return False
-    except Exception as e:
-        log.error("supabase update_outcome error: %s", e)
-        return False
 
 
 async def update_outcome_dual(
