@@ -15,9 +15,11 @@ WORKDIR /app
 COPY senecio_polymarket/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend + frontend from senecio_polymarket/
+# Copy backend + frontend + the production single-authority launcher
 COPY senecio_polymarket/backend ./backend
 COPY senecio_polymarket/frontend ./frontend
+COPY senecio_polymarket/start_single_authority.sh ./start_single_authority.sh
+RUN chmod +x /app/start_single_authority.sh
 
 # Ensure data dir exists (audit JSONL writes here)
 RUN mkdir -p /app/data/audit && chmod -R 777 /app/data
@@ -33,5 +35,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -fsS http://localhost:8080/api/health || exit 1
 
-# Run uvicorn
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--log-level", "info", "--no-access-log"]
+# Single production entrypoint: oracle service + repair-only reconciler
+CMD ["/app/start_single_authority.sh"]
