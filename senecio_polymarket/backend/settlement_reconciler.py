@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 import ccxt
@@ -26,6 +27,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 SUPABASE_TABLE = os.environ.get("SUPABASE_TABLE", "oracle_predictions")
 INTERVAL_S = int(os.environ.get("SETTLEMENT_RECONCILE_INTERVAL_SEC", "900"))
 BATCH_LIMIT = int(os.environ.get("SETTLEMENT_RECONCILE_BATCH", "200"))
+HEARTBEAT_FILE = Path(os.environ.get("SENEX_RECONCILER_HEARTBEAT_FILE", "/tmp/senex-reconciler-heartbeat"))
 WINDOW_15M_S = 900
 WINDOW_1H_S = 3600
 
@@ -186,6 +188,7 @@ async def reconcile_once() -> dict[str, int]:
                         "reconciled_at": datetime.now(timezone.utc).isoformat(),
                     }
                     patch = {"price_15m_later": p15, "audit": audit}
+                    # Absolute URL is intentional: this client has no base_url.
                     pr = await client.patch(
                         f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
                         params={
@@ -255,8 +258,11 @@ async def daemon() -> None:
             "SENEX-SCORE-002 reconciler requires SUPABASE_URL and SUPABASE_KEY"
         )
     log.info("SENEX-SCORE-002 reconciliation guard started interval=%ss", INTERVAL_S)
+    HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     while True:
-        await reconcile_once()
+        result = await reconcile_once()
+        HEARTBEAT_FILE.touch()
+        log.info("SENEX-SCORE-002 reconciliation heartbeat updated: %s", result)
         await asyncio.sleep(INTERVAL_S)
 
 
