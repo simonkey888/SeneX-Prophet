@@ -6,6 +6,11 @@ set -u
 
 echo "[start_single_authority.sh] launching settlement authority + reconciliation guard..."
 
+if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_KEY:-}" ]; then
+  echo "[start_single_authority.sh] FATAL: SUPABASE_URL and SUPABASE_KEY are required" >&2
+  exit 78
+fi
+
 start_reconciler() {
   echo "[start_single_authority.sh] launching reconciliation guard..."
   python -m backend.settlement_reconciler &
