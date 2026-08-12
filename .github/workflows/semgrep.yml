@@ -16,4 +16,3 @@ jobs:
       - uses: semgrep/semgrep-action@v1
         with:
           config: p/python
-          generateSarif: "1"
