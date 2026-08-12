@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.event.before == 'b1b9655d2384b6d6e4a104d9bac48c59c250d86c'
+    if: ${{ !startsWith(github.event.head_commit.message, 'fix(score-002): enforce immutable settlement') && !startsWith(github.event.head_commit.message, 'chore(score-002): remove one-shot') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
