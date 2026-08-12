@@ -249,12 +249,14 @@ async def reconcile_once() -> dict[str, int]:
 
 
 async def daemon() -> None:
+    """Run the repair-only reconciler and fail fast on invalid configuration."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError(
+            "SENEX-SCORE-002 reconciler requires SUPABASE_URL and SUPABASE_KEY"
+        )
     log.info("SENEX-SCORE-002 reconciliation guard started interval=%ss", INTERVAL_S)
     while True:
-        try:
-            await reconcile_once()
-        except Exception:
-            log.exception("settlement reconciliation cycle failed")
+        await reconcile_once()
         await asyncio.sleep(INTERVAL_S)
 
 
