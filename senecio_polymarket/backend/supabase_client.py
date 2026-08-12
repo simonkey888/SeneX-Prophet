@@ -157,7 +157,12 @@ async def update_outcome_dual(
     price_1h_later: float,
     primary_window: str = "1h",
 ) -> bool:
-    """Settle a prediction with BOTH 15m and 1h outcomes."""
+    """Settle a prediction with BOTH 15m and 1h outcomes.
+
+    The final PATCH is compare-and-set style: only a still-unsettled row with
+    no dual evidence may be changed. This makes the writer safe against
+    restart/backfill races and prevents WIN/LOSS or proof evidence rewrites.
+    """
     try:
         c = _get_client()
         r_get = await c.get(
@@ -191,7 +196,15 @@ async def update_outcome_dual(
             "price_15m_later": float(price_15m_later) if price_15m_later is not None else None,
             "audit": existing_audit,
         }
-        r = await c.patch(f"/{SUPABASE_TABLE}", params={"id": f"eq.{prediction_id}"}, json=patch_body)
+        r = await c.patch(
+            f"/{SUPABASE_TABLE}",
+            params={
+                "id": f"eq.{prediction_id}",
+                "outcome": "is.null",
+                "audit->outcomes_dual": "is.null",
+            },
+            json=patch_body,
+        )
         if r.status_code in (200, 204):
             try:
                 body = r.json() if r.content else []
