@@ -1,0 +1,76 @@
+name: SENEX SCORE-002 Reconciliation Regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'fix/senex-score-002-authoritative-reconciliation']
+
+permissions:
+  contents: read
+
+jobs:
+  score-002:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: senecio_polymarket
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install oracle dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile reconciliation and proof gates
+        run: |
+          python -m py_compile backend/settlement_reconciler.py
+          python -m py_compile backend/settlement_proof.py
+          python -m py_compile backend/supabase_client.py
+          python -m py_compile backend/oracle_runner.py
+          python -m py_compile backend/main.py
+          python -m py_compile backend/forensics/pipeline.py
+          python -m py_compile backend/research/coordinator.py
+          sh -n start_single_authority.sh
+
+      - name: Run deterministic SCORE-002 behavioral tests
+        run: python -m unittest discover -s tests -p 'test_senex_score_002.py' -v
+
+      - name: Run repository test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Assert repair-only query boundary
+        run: |
+          grep -q '"outcome": "in.(WIN,LOSS)"' backend/settlement_reconciler.py
+          ! grep -q '"outcome": "is.null"' backend/settlement_reconciler.py
+          grep -q '"audit->outcomes_dual": "is.null"' backend/settlement_reconciler.py
+          grep -q 'outcomes_dual' backend/settlement_reconciler.py
+          grep -q 'primary_window.*1h' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/supabase_client.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/supabase_client.py
+          ! grep -RInE 'supabase\.co|sb_publishable_[A-Za-z0-9_-]+' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' .
+          grep -q 'origin-price-v1' backend/oracle_runner.py
+          grep -q 'filter_proof_qualified' backend/main.py
+          grep -q 'is_proof_qualified' backend/oracle_runner.py
+          grep -q 'is_proof_qualified' backend/forensics/pipeline.py
+          grep -q 'is_proof_qualified' backend/research/coordinator.py
+          ! grep -n 'patch = {"outcome"' backend/settlement_reconciler.py
+
+      - name: Compile full Python tree
+        run: python -m compileall -q .
+
+      - name: Repo-wide raw outcome audit
+        run: |
+          echo '--- raw outcome comparison inventory ---'
+          grep -RInE 'outcome[[:space:]]*(in|==)|get\("outcome"\).*WIN|outcome.*LOSS' --include='*.py' backend oracle tests || true

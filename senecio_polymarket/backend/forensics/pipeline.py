@@ -39,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from ..settlement_proof import is_proof_qualified
+
 log = logging.getLogger("senecio.forensics")
 
 # Output location — append-only forensic runs
@@ -201,7 +203,7 @@ async def _fetch_verified(limit: int = 1000) -> list:
         # Filter to verified rows
         out = []
         for r in rows:
-            if r.get("outcome") in ("WIN", "LOSS"):
+            if is_proof_qualified(r):
                 out.append(r)
         return out
     except Exception as e:

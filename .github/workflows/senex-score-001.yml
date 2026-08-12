@@ -32,8 +32,7 @@ jobs:
         run: |
           python -m py_compile \
             senecio_polymarket/backend/oracle_runner.py \
-            senecio_polymarket/backend/supabase_client.py \
-            senecio_polymarket/oracle/oracle_verifier.py
+            senecio_polymarket/backend/supabase_client.py
 
       - name: Single-settlement-authority invariant
         run: |
@@ -42,8 +41,9 @@ jobs:
           grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
           grep -q 'WINDOW_1H_S' senecio_polymarket/backend/oracle_runner.py
           grep -q 'update_outcome_dual' senecio_polymarket/backend/oracle_runner.py
+          ! test -e senecio_polymarket/oracle/oracle_verifier.py
 
       - name: Legacy launcher isolation invariant
         run: |
           ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
-          test -f senecio_polymarket/oracle/oracle_verifier.py
+          ! test -e senecio_polymarket/oracle/oracle_verifier.py
