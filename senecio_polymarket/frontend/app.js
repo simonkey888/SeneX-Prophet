@@ -6,6 +6,7 @@
   const pct = (v, d=1) => v == null || !Number.isFinite(Number(v)) ? '—' : `${(Number(v)*100).toFixed(d)}%`;
   const num = (v, d=3) => v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(d);
   const apr = (v) => v == null || !Number.isFinite(Number(v)) ? '—' : `${(Number(v)*100).toFixed(2)}%`;
+  const money = (v, d=0) => v == null || !Number.isFinite(Number(v)) ? '—' : `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:d})}`;
   const clock = (value) => {
     if (!value) return '—';
     let n = Number(value);
@@ -40,6 +41,7 @@
   function renderContext(ctx) {
     state.context = ctx;
     const poly = ctx.polymarket || {};
+    const kalshi = ctx.kalshi || {};
     const boros = ctx.boros || {};
     const oracle = ctx.oracle || {};
     setConn(poly);
@@ -64,6 +66,7 @@
     $('#poly-book-meta').textContent = poly.ws_connected ? 'WS subscribed' : 'REST bootstrap';
     renderBook(poly);
     renderPolyFeed(poly.recent_events || []);
+    renderKalshi(kalshi);
     renderBoros(boros);
 
     const safety = ctx.safety || {};
@@ -77,11 +80,12 @@
       ['Polymarket discovery', poly.market ? 'REAL · Gamma API' : 'UNAVAILABLE'],
       ['Polymarket orderbook', poly.status || 'UNAVAILABLE'],
       ['CLOB WebSocket', poly.ws_connected ? 'CONNECTED' : 'NOT CONNECTED'],
+      ['Kalshi KXBTC15M', kalshi.status || 'UNAVAILABLE'],
       ['Boros funding context', boros.status || 'UNAVAILABLE'],
       ['Synthetic feed', ctx.synthetic_demo_enabled ? 'ENABLED' : 'DISABLED'],
       ['Execution', 'PAPER / LIVE LOCKED'],
     ].map(([k,v]) => `<div class="check"><span class="name">${esc(k)}</span><span class="detail">${esc(v)}</span></div>`).join('');
-    $('#footer-freshness').textContent = `Polymarket freshness: ${poly.freshness_s ?? '—'}s`;
+    $('#footer-freshness').textContent = `Poly ${poly.freshness_s ?? '—'}s · Kalshi ${kalshi.freshness_s ?? '—'}s · Boros ${boros.freshness_s ?? '—'}s`;
   }
 
   function renderBook(poly) {
@@ -110,6 +114,18 @@
     }).join('');
   }
 
+  function renderKalshi(kalshi) {
+    const m = kalshi.market || {};
+    $('#kalshi-meta').textContent = `${kalshi.status || '—'} · 15m diagnostic`;
+    $('#kalshi-yes').textContent = pct(m.yes_probability);
+    $('#kalshi-no').textContent = pct(m.no_probability);
+    $('#kalshi-volume').textContent = m.volume != null ? Number(m.volume).toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+    $('#kalshi-oi').textContent = m.open_interest != null ? Number(m.open_interest).toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
+    $('#kalshi-title').textContent = m.title || 'No open KXBTC15M market';
+    $('#kalshi-ticker').textContent = m.ticker || 'KXBTC15M';
+    $('#kalshi-status').textContent = `exchange=${m.exchange_active ?? '—'} trading=${m.trading_active ?? '—'} · closes ${countdown(m.seconds_to_close)}`;
+  }
+
   function renderBoros(boros) {
     $('#boros-meta').textContent = `${boros.status || '—'} · non-directional`;
     const rows = Array.isArray(boros.markets) ? boros.markets : [];
@@ -119,13 +135,13 @@
       return;
     }
     body.innerHTML = rows.slice(0,20).map(m => `<tr>
-      <td class="sym">${esc(m.symbol)}</td>
-      <td>${esc(m.exchange)}</td>
+      <td class="sym">${esc(m.underlying_symbol || m.symbol)}</td>
+      <td>${esc(m.name || m.market_id)}</td>
       <td class="num">${apr(m.mid_apr)}</td>
       <td class="num">${apr(m.mark_apr)}</td>
-      <td class="num">${apr(m.underlying_apr)}</td>
-      <td class="num">${apr(m.best_bid_apr)}</td>
-      <td class="num">${apr(m.best_ask_apr)}</td>
+      <td class="num">${money(m.asset_mark_price,2)}</td>
+      <td class="num">${money(m.volume_24h,0)}</td>
+      <td class="num">${money(m.open_interest_notional,0)}</td>
     </tr>`).join('');
   }
 
@@ -163,6 +179,8 @@
     const s2 = step2Of(row);
     const learn = s2.learning_state_v1 || {};
     const poly = s2.polymarket_context_v1 || {};
+    const ext = auditOf(row).external_markets_v1 || {};
+    const kalshiMarket = ext.kalshi?.market || {};
     $('#learn-state').textContent = learn.status || '—';
     $('#learn-n').textContent = learn.proof_qualified_n ?? '—';
     $('#learn-mutations').textContent = learn.mutations ?? '—';
@@ -170,7 +188,8 @@
       ['Prediction', `${row.prediction || '—'} · conf ${pct(row.confidence)}`],
       ['Spot pressure', s2.base_total_pressure ?? s2.total_pressure ?? '—'],
       ['Polymarket pressure', poly.pressure_component ?? '—'],
-      ['Polymarket UP', poly.up_probability != null ? pct(poly.up_probability) : '—'],
+      ['Polymarket UP 5m', poly.up_probability != null ? pct(poly.up_probability) : '—'],
+      ['Kalshi YES 15m', kalshiMarket.yes_probability != null ? pct(kalshiMarket.yes_probability) : '—'],
       ['Polymarket eligible', poly.eligible ? 'YES' : 'NO'],
       ['Learning', `${learn.status || '—'} n=${learn.proof_qualified_n ?? 0}`],
     ].map(([k,v]) => `<div class="check"><span class="name">${esc(k)}</span><span class="detail">${esc(v)}</span></div>`).join('');
