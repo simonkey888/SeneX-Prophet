@@ -1,0 +1,29 @@
+name: AUD-058 Northflank team credential check
+
+on:
+  push:
+    branches:
+      - ops/aud-058-northflank
+
+permissions:
+  contents: read
+
+jobs:
+  verify-team:
+    runs-on: ubuntu-latest
+    environment: northflank-readonly-audit
+    env:
+      NF_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+    steps:
+      - name: Verify team-scoped Northflank access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${NF_TOKEN:-}"
+          echo "::add-mask::$NF_TOKEN"
+          code=$(curl -sS -o /tmp/service.json -w '%{http_code}' \
+            -H "Authorization: Bearer $NF_TOKEN" \
+            https://api.northflank.com/v1/teams/6a32fd953f19ee4079ccf395/projects/seneciobot/services/senecio-h011)
+          echo "NORTHFLANK_TEAM_GET_HTTP=$code"
+          test "$code" = "200"
+          jq -r '.data | "SERVICE_ID=\(.id)\nSERVICE_TYPE=\(.serviceType)\nDISABLED_CD=\(.disabledCD)\nACTIVE_SHA=\(.deployment.internal.buildSHA // \"UNKNOWN\")"' /tmp/service.json
