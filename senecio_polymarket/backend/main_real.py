@@ -7,6 +7,10 @@ Production starts only:
 - public read-only Polymarket market adapter
 - public read-only Boros context adapter
 - public read-only Kalshi BTC 15m context adapter
+
+AUD-055/R1 replaces the legacy public score route with a truth-safe,
+instrument-scoped version whose authoritative score remains null until all
+proof, evidence, and calibration/quality gates pass.
 """
 from __future__ import annotations
 
@@ -15,8 +19,12 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from fastapi import Query
+from fastapi.routing import APIRoute
+
 from . import main as legacy
 from . import oracle_runner
+from .authoritative_score import build_authoritative_score
 from .boros_market_adapter import get_boros_adapter
 from .kalshi_market_adapter import get_kalshi_adapter
 from .polymarket_market_adapter import get_polymarket_adapter
@@ -71,6 +79,41 @@ async def real_lifespan(app):
 
 # Replace the legacy app lifespan before uvicorn starts it.
 app.router.lifespan_context = real_lifespan
+
+
+async def authoritative_oracle_score(symbol: str | None = Query(default=None)):
+    """Truth-safe 1h score; authority is always scoped to one instrument."""
+    from . import supabase_client
+
+    normalized_symbol = (
+        str(symbol).upper().replace("/", "").replace("-", "").strip()
+        if symbol else None
+    )
+    rows = await supabase_client.fetch_predictions(limit=500, symbol=normalized_symbol)
+    return build_authoritative_score(
+        rows,
+        oracle_runner.get_state(),
+        symbol=normalized_symbol,
+    )
+
+
+def _install_authoritative_score_route() -> None:
+    """Replace the legacy /api/oracle/score route rather than shadowing it."""
+    retained = []
+    for route in app.router.routes:
+        if isinstance(route, APIRoute) and route.path == "/api/oracle/score" and "GET" in route.methods:
+            continue
+        retained.append(route)
+    app.router.routes[:] = retained
+    app.add_api_route(
+        "/api/oracle/score",
+        authoritative_oracle_score,
+        methods=["GET"],
+        name="oracle_score_authoritative_aud055",
+    )
+
+
+_install_authoritative_score_route()
 
 
 @app.get("/api/market-context")

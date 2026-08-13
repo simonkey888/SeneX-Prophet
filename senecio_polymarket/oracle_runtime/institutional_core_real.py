@@ -1,16 +1,15 @@
 """REAL-market decision bridge layered on authoritative learning.
 
-Polymarket is allowed to influence BTC direction only when the public adapter
-marks the current 5-minute market fresh and eligible. The contribution is fixed,
-bounded, and fully recorded in step2_features. It is intentionally not a
-learnable weight in v1, preventing feedback from silently amplifying the market's
-own consensus signal.
-
-Boros remains audit/context only and is not consumed here.
+AUD-055 safety contract:
+- Polymarket real data remains available and fully audited.
+- Polymarket does not change SENEX direction/conviction by default.
+- Non-zero fusion requires an explicit PAPER experiment flag.
+- Kalshi and Boros remain audit/context only and are not consumed here.
 """
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 from oracle_runtime import institutional_core as _learning
@@ -22,6 +21,7 @@ for _name in dir(_learning):
 
 LearningSingleDecisionCore = _learning.SingleDecisionCore
 POLYMARKET_PRESSURE_WEIGHT = 0.25
+POLYMARKET_EXPERIMENT_FLAG = "SENEX_PAPER_POLYMARKET_DIRECTIONAL_EXPERIMENT"
 
 
 def _sigmoid(x: float) -> float:
@@ -35,8 +35,15 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
+def polymarket_experiment_enabled() -> bool:
+    """Explicit PAPER-only opt-in. Default is false / zero decision effect."""
+    return (os.environ.get(POLYMARKET_EXPERIMENT_FLAG) or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 class SingleDecisionCore(LearningSingleDecisionCore):
-    """Authoritative-learning SDC plus bounded real Polymarket confirmation."""
+    """Authoritative-learning SDC with isolated Polymarket audit context."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -54,26 +61,64 @@ class SingleDecisionCore(LearningSingleDecisionCore):
 
         ctx = self._senex_polymarket_context
         eligible = bool(ctx.get("eligible_for_prediction"))
+        experiment_enabled = polymarket_experiment_enabled()
         try:
             raw_pressure = float(ctx.get("directional_pressure") or 0.0)
         except (TypeError, ValueError):
             raw_pressure = 0.0
         raw_pressure = max(-1.0, min(1.0, raw_pressure)) if eligible else 0.0
-        component = raw_pressure * POLYMARKET_PRESSURE_WEIGHT
+
+        # AUD-055: real Polymarket data is diagnostic-only by default.
+        # The configured 0.25 research weight has NO effect unless an explicit
+        # PAPER experiment opt-in is present in the runtime environment.
+        effective_weight = POLYMARKET_PRESSURE_WEIGHT if (eligible and experiment_enabled) else 0.0
+        component = raw_pressure * effective_weight
 
         try:
             base_total = float(features.get("total_pressure") or 0.0)
         except (TypeError, ValueError):
             base_total = 0.0
+
+        pressures = features.get("pressures")
+        if not isinstance(pressures, dict):
+            pressures = {}
+            features["pressures"] = pressures
+        pressures["polymarket"] = round(component, 6)
+
+        # When the experiment is OFF, preserve the base feature result exactly.
+        # No recomputation of direction, conviction, noise or probability is
+        # allowed, eliminating horizon-mismatch influence on the 1h target.
+        if effective_weight == 0.0:
+            features["base_total_pressure"] = round(base_total, 6)
+            features["polymarket_context_v1"] = {
+                "version": "polymarket-pressure-v2",
+                "status": ctx.get("status"),
+                "eligible": eligible,
+                "slug": ctx.get("slug"),
+                "up_probability": ctx.get("up_probability"),
+                "down_probability": ctx.get("down_probability"),
+                "raw_directional_pressure": round(raw_pressure, 6),
+                "configured_weight": POLYMARKET_PRESSURE_WEIGHT,
+                "effective_weight": 0.0,
+                "pressure_component": 0.0,
+                "directional_use": False,
+                "experiment_enabled": False,
+                "experiment_flag": POLYMARKET_EXPERIMENT_FLAG,
+                "seconds_to_close": ctx.get("seconds_to_close"),
+                "freshness_s": ctx.get("freshness_s"),
+                "ws_connected": ctx.get("ws_connected"),
+            }
+            return features
+
         combined = base_total + component
 
-        # Agreement reduces noise modestly; contradiction increases it. The
-        # adjustment is deliberately small so Polymarket cannot dominate spot.
+        # Experimental branch only. Agreement reduces noise modestly;
+        # contradiction increases it. This branch is unreachable by default.
         try:
             noise = float(features.get("noise") or 0.05)
         except (TypeError, ValueError):
             noise = 0.05
-        if eligible and abs(raw_pressure) > 1e-12 and abs(base_total) > 1e-12:
+        if abs(raw_pressure) > 1e-12 and abs(base_total) > 1e-12:
             same_sign = (raw_pressure > 0) == (base_total > 0)
             if same_sign:
                 noise = _clamp(noise - 0.05 * abs(raw_pressure), 0.05, 1.0)
@@ -90,7 +135,7 @@ class SingleDecisionCore(LearningSingleDecisionCore):
         else:
             direction = "NEUTRAL"
 
-        # Preserve ACT XXIII's higher-timeframe LONG guard after external fusion.
+        # Preserve ACT XXIII's higher-timeframe LONG guard after experimental fusion.
         regime_4h = str(features.get("regime_4h") or "NEUTRAL")
         long_suppressed = False
         if direction == "LONG" and regime_4h == "BEAR":
@@ -98,12 +143,6 @@ class SingleDecisionCore(LearningSingleDecisionCore):
             if conviction < bypass:
                 direction = "NEUTRAL"
                 long_suppressed = True
-
-        pressures = features.get("pressures")
-        if not isinstance(pressures, dict):
-            pressures = {}
-            features["pressures"] = pressures
-        pressures["polymarket"] = round(component, 6)
 
         features.update({
             "direction": direction,
@@ -115,15 +154,19 @@ class SingleDecisionCore(LearningSingleDecisionCore):
             "down_prob": round(down, 6),
             "long_suppressed_by_regime": long_suppressed or bool(features.get("long_suppressed_by_regime")),
             "polymarket_context_v1": {
-                "version": "polymarket-pressure-v1",
+                "version": "polymarket-pressure-v2",
                 "status": ctx.get("status"),
                 "eligible": eligible,
                 "slug": ctx.get("slug"),
                 "up_probability": ctx.get("up_probability"),
                 "down_probability": ctx.get("down_probability"),
                 "raw_directional_pressure": round(raw_pressure, 6),
-                "fixed_weight": POLYMARKET_PRESSURE_WEIGHT,
+                "configured_weight": POLYMARKET_PRESSURE_WEIGHT,
+                "effective_weight": effective_weight,
                 "pressure_component": round(component, 6),
+                "directional_use": True,
+                "experiment_enabled": True,
+                "experiment_flag": POLYMARKET_EXPERIMENT_FLAG,
                 "seconds_to_close": ctx.get("seconds_to_close"),
                 "freshness_s": ctx.get("freshness_s"),
                 "ws_connected": ctx.get("ws_connected"),

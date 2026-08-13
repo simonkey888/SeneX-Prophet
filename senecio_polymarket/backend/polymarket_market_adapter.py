@@ -5,6 +5,12 @@ Public sources only:
 - Gamma API for event/market discovery
 - CLOB REST for initial order books
 - CLOB public market WebSocket for live book / BBO / trade updates
+
+AUD-055 synchronization guarantees:
+- latest WS BBO always overrides older REST/full-book top levels;
+- price_change deltas update depth when possible;
+- BBO-only updates explicitly mark cached depth non-current;
+- prediction freshness is based on the market data actually used for metrics.
 """
 from __future__ import annotations
 
@@ -67,45 +73,105 @@ def _levels(raw: Any, *, bids: bool) -> list[dict[str, float]]:
         return out
     for item in raw:
         if isinstance(item, dict):
-            p = _float(item.get("price"), None)
-            s = _float(item.get("size"), None)
+            price = _float(item.get("price"), None)
+            size = _float(item.get("size"), None)
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            p, s = _float(item[0], None), _float(item[1], None)
+            price, size = _float(item[0], None), _float(item[1], None)
         else:
             continue
-        if p is None or s is None:
+        if price is None or size is None:
             continue
-        out.append({"price": p, "size": s})
-    out.sort(key=lambda x: x["price"], reverse=bids)
+        out.append({"price": price, "size": size})
+    out.sort(key=lambda level: level["price"], reverse=bids)
     return out
+
+
+def _apply_price_change(book: dict[str, Any], change: dict[str, Any]) -> bool:
+    """Apply one public CLOB price_change delta to cached depth.
+
+    Returns True when a concrete BUY/SELL level was updated or removed. When
+    the event does not contain a usable delta, callers must mark depth stale.
+    """
+    side = str(change.get("side") or "").upper()
+    key = "bids" if side == "BUY" else ("asks" if side == "SELL" else None)
+    price = _float(change.get("price"), None)
+    size = _float(change.get("size"), None)
+    if key is None or price is None or size is None:
+        return False
+
+    levels = _levels(book.get(key), bids=(key == "bids"))
+    by_price = {float(level["price"]): float(level["size"]) for level in levels}
+    if size <= 0:
+        by_price.pop(float(price), None)
+    else:
+        by_price[float(price)] = float(size)
+    updated = [{"price": p, "size": s} for p, s in by_price.items()]
+    updated.sort(key=lambda level: level["price"], reverse=(key == "bids"))
+    book[key] = updated
+    return True
+
+
+def _stamp_metric_update(
+    book: dict[str, Any],
+    *,
+    source: str,
+    depth_current: bool | None = None,
+    timestamp: Any = None,
+) -> None:
+    book["_metric_update_monotonic"] = time.monotonic()
+    book["_metric_source"] = source
+    if depth_current is not None:
+        book["depth_current"] = bool(depth_current)
+    if timestamp is not None:
+        book["metric_timestamp"] = timestamp
 
 
 def book_metrics(book: dict[str, Any] | None) -> dict[str, Any]:
     book = book or {}
     bids = _levels(book.get("bids"), bids=True)
     asks = _levels(book.get("asks"), bids=False)
-    best_bid = bids[0]["price"] if bids else _float(book.get("best_bid"), None)
-    best_ask = asks[0]["price"] if asks else _float(book.get("best_ask"), None)
+
+    # Latest scalar BBO from WS always wins over older bootstrap arrays.
+    scalar_bid = _float(book.get("best_bid"), None)
+    scalar_ask = _float(book.get("best_ask"), None)
+    best_bid = scalar_bid if scalar_bid is not None else (bids[0]["price"] if bids else None)
+    best_ask = scalar_ask if scalar_ask is not None else (asks[0]["price"] if asks else None)
+
     mid = None
     spread = None
     if best_bid is not None and best_ask is not None:
         mid = (best_bid + best_ask) / 2.0
         spread = max(0.0, best_ask - best_bid)
-    bid_depth = sum(x["size"] for x in bids[:5])
-    ask_depth = sum(x["size"] for x in asks[:5])
-    denom = bid_depth + ask_depth
-    imbalance = (bid_depth - ask_depth) / denom if denom > 0 else 0.0
+
+    depth_current = bool(book.get("depth_current", bool(bids or asks)))
+    if depth_current:
+        bid_depth = sum(level["size"] for level in bids[:5])
+        ask_depth = sum(level["size"] for level in asks[:5])
+        denom = bid_depth + ask_depth
+        imbalance = (bid_depth - ask_depth) / denom if denom > 0 else 0.0
+        bid_depth_out: float | None = round(bid_depth, 6)
+        ask_depth_out: float | None = round(ask_depth, 6)
+        imbalance_out: float | None = round(imbalance, 6)
+    else:
+        # Do not present stale bootstrap depth as current after a BBO-only event.
+        bid_depth_out = None
+        ask_depth_out = None
+        imbalance_out = None
+
     return {
         "best_bid": best_bid,
         "best_ask": best_ask,
         "mid": mid,
         "spread": spread,
-        "bid_depth_5": round(bid_depth, 6),
-        "ask_depth_5": round(ask_depth, 6),
-        "depth_imbalance": round(imbalance, 6),
+        "bid_depth_5": bid_depth_out,
+        "ask_depth_5": ask_depth_out,
+        "depth_imbalance": imbalance_out,
+        "depth_current": depth_current,
         "last_trade_price": _float(book.get("last_trade_price"), None),
-        "timestamp": book.get("timestamp"),
+        "timestamp": book.get("metric_timestamp") or book.get("timestamp"),
         "hash": book.get("hash"),
+        "metric_source": book.get("_metric_source"),
+        "_metric_update_monotonic": book.get("_metric_update_monotonic"),
     }
 
 
@@ -271,10 +337,20 @@ class PolymarketMarketAdapter:
                 bootstrap: dict[str, dict[str, Any]] = {}
                 for label, token_id in (("UP", found["up_token_id"]), ("DOWN", found["down_token_id"])):
                     try:
-                        book_response = await client.get(f"{CLOB_BASE}/book", params={"token_id": token_id})
-                        bootstrap[label] = book_response.json() if book_response.status_code == 200 else {}
+                        response = await client.get(f"{CLOB_BASE}/book", params={"token_id": token_id})
+                        book = response.json() if response.status_code == 200 else {}
                     except Exception:
-                        bootstrap[label] = {}
+                        book = {}
+                    if not isinstance(book, dict):
+                        book = {}
+                    _stamp_metric_update(
+                        book,
+                        source="rest_book",
+                        depth_current=bool(book.get("bids") or book.get("asks")),
+                        timestamp=book.get("timestamp"),
+                    )
+                    bootstrap[label] = book
+
                 with self._lock:
                     self._market = found
                     self._books = bootstrap
@@ -346,13 +422,21 @@ class PolymarketMarketAdapter:
 
     def _handle_ws_message(self, msg: dict[str, Any], token_to_label: dict[str, str]) -> None:
         event_type = str(msg.get("event_type") or "unknown")
-        now = datetime.now(timezone.utc).isoformat()
+        event_ts = msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
         with self._lock:
             if event_type == "book":
                 asset = str(msg.get("asset_id") or "")
                 label = token_to_label.get(asset)
                 if label:
-                    self._books[label] = msg
+                    book = dict(msg)
+                    _stamp_metric_update(
+                        book,
+                        source="ws_book",
+                        depth_current=True,
+                        timestamp=event_ts,
+                    )
+                    self._books[label] = book
+
             elif event_type == "best_bid_ask":
                 asset = str(msg.get("asset_id") or "")
                 label = token_to_label.get(asset)
@@ -360,7 +444,16 @@ class PolymarketMarketAdapter:
                     book = dict(self._books.get(label) or {})
                     book["best_bid"] = msg.get("best_bid")
                     book["best_ask"] = msg.get("best_ask")
+                    # Arrays are older than this BBO. Keep them only for a future
+                    # delta merge, never present their depth as current now.
+                    _stamp_metric_update(
+                        book,
+                        source="ws_best_bid_ask",
+                        depth_current=False,
+                        timestamp=event_ts,
+                    )
                     self._books[label] = book
+
             elif event_type == "price_change":
                 changes = msg.get("price_changes") or []
                 if isinstance(changes, list):
@@ -369,24 +462,36 @@ class PolymarketMarketAdapter:
                             continue
                         asset = str(change.get("asset_id") or "")
                         label = token_to_label.get(asset)
-                        if label:
-                            book = dict(self._books.get(label) or {})
-                            if change.get("best_bid") is not None:
-                                book["best_bid"] = change.get("best_bid")
-                            if change.get("best_ask") is not None:
-                                book["best_ask"] = change.get("best_ask")
-                            self._books[label] = book
+                        if not label:
+                            continue
+                        book = dict(self._books.get(label) or {})
+                        depth_updated = _apply_price_change(book, change)
+                        if change.get("best_bid") is not None:
+                            book["best_bid"] = change.get("best_bid")
+                        if change.get("best_ask") is not None:
+                            book["best_ask"] = change.get("best_ask")
+                        _stamp_metric_update(
+                            book,
+                            source="ws_price_change",
+                            depth_current=depth_updated,
+                            timestamp=change.get("timestamp") or event_ts,
+                        )
+                        self._books[label] = book
+
             elif event_type == "last_trade_price":
                 asset = str(msg.get("asset_id") or "")
                 label = token_to_label.get(asset)
                 if label:
                     book = dict(self._books.get(label) or {})
                     book["last_trade_price"] = msg.get("price")
+                    # Do not refresh BBO/depth freshness from a trade event unless
+                    # a later book/BBO event updates the metrics actually consumed.
                     self._books[label] = book
+
             self._events.appendleft({
                 "event_type": event_type,
                 "outcome": token_to_label.get(str(msg.get("asset_id") or "")),
-                "timestamp": msg.get("timestamp") or now,
+                "timestamp": event_ts,
                 "best_bid": msg.get("best_bid"),
                 "best_ask": msg.get("best_ask"),
                 "price": msg.get("price"),
@@ -400,7 +505,6 @@ class PolymarketMarketAdapter:
             books = copy.deepcopy(self._books)
             events = list(copy.deepcopy(self._events))
             ws_connected = self._ws_connected
-            last_update = self._last_update_monotonic
             last_error = self._last_error
 
         now_ts = int(time.time())
@@ -421,16 +525,37 @@ class PolymarketMarketAdapter:
         down_mid = down.get("mid")
         if up_mid is None:
             up_mid = up.get("last_trade_price") or market.get("gamma_last_trade")
+        down_is_inferred = False
         if down_mid is None and up_mid is not None:
             down_mid = max(0.0, min(1.0, 1.0 - float(up_mid)))
+            down_is_inferred = True
         denom = float(up_mid or 0) + float(down_mid or 0)
         up_probability = float(up_mid) / denom if up_mid is not None and denom > 0 else None
         down_probability = 1.0 - up_probability if up_probability is not None else None
 
         prob_pressure = (2.0 * up_probability - 1.0) if up_probability is not None else 0.0
-        depth_pressure = (float(up.get("depth_imbalance") or 0) - float(down.get("depth_imbalance") or 0)) / 2.0
+        if up.get("depth_current") and down.get("depth_current"):
+            depth_pressure = (
+                float(up.get("depth_imbalance") or 0.0)
+                - float(down.get("depth_imbalance") or 0.0)
+            ) / 2.0
+            depth_used = True
+        else:
+            depth_pressure = 0.0
+            depth_used = False
         directional_pressure = max(-1.0, min(1.0, 0.75 * prob_pressure + 0.25 * depth_pressure))
-        freshness_s = (time.monotonic() - last_update) if last_update is not None else None
+
+        # Freshness follows the BBO/depth metrics actually consumed, not any WS event.
+        metric_times: list[float] = []
+        up_metric_ts = up.get("_metric_update_monotonic")
+        down_metric_ts = down.get("_metric_update_monotonic")
+        if isinstance(up_metric_ts, (int, float)):
+            metric_times.append(float(up_metric_ts))
+        if not down_is_inferred and isinstance(down_metric_ts, (int, float)):
+            metric_times.append(float(down_metric_ts))
+        metric_anchor = min(metric_times) if metric_times else None
+        freshness_s = (time.monotonic() - metric_anchor) if metric_anchor is not None else None
+
         seconds_to_close = max(0, int(market["end_ts"] - now_ts)) if market.get("end_ts") else None
         live = (
             bool(market.get("active"))
@@ -442,9 +567,14 @@ class PolymarketMarketAdapter:
         eligible = bool(
             live
             and up_probability is not None
-            and (freshness_s is None or freshness_s <= 45)
+            and freshness_s is not None
+            and freshness_s <= 45
             and (seconds_to_close is None or seconds_to_close >= 20)
         )
+
+        # Internal monotonic values are not part of the public audit payload.
+        up.pop("_metric_update_monotonic", None)
+        down.pop("_metric_update_monotonic", None)
 
         return {
             "source": "POLYMARKET_PUBLIC",
@@ -457,6 +587,7 @@ class PolymarketMarketAdapter:
             "up_probability": round(up_probability, 6) if up_probability is not None else None,
             "down_probability": round(down_probability, 6) if down_probability is not None else None,
             "directional_pressure": round(directional_pressure, 6),
+            "depth_used_for_pressure": depth_used,
             "eligible_for_prediction": eligible,
             "seconds_to_close": seconds_to_close,
             "freshness_s": round(freshness_s, 3) if freshness_s is not None else None,
