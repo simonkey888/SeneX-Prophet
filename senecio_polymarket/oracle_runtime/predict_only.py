@@ -7,9 +7,11 @@ function is re-exported unchanged except ``run_prediction``.
 Production additions:
 - bind the proof-qualified learning + real-market SingleDecisionCore;
 - inject a bounded read-only Polymarket BTC 5m snapshot before decision time;
-- attach Polymarket + Boros real-market evidence to the prediction audit.
+- attach Polymarket + Kalshi + Boros real-market evidence to prediction audit.
 
-No trading/authentication surface is added.
+Kalshi (15m) and Boros (funding/APR) are context-only in v1 because their
+horizons differ from the canonical SENEX 1h score. No trading/authentication
+surface is added.
 """
 from __future__ import annotations
 
@@ -26,8 +28,6 @@ _ROOT_DIR = _THIS_DIR.parent
 _ORACLE_DIR = _ROOT_DIR / "oracle"
 _BASE_PATH = _ORACLE_DIR / "predict_only_base.py"
 if not _BASE_PATH.exists():
-    # Source-tree / CI path. In the Docker image the original is renamed to
-    # predict_only_base.py before this bridge is copied into /app/oracle.
     _BASE_PATH = _ORACLE_DIR / "predict_only.py"
 
 _spec = importlib.util.spec_from_file_location("_senex_predict_only_base", _BASE_PATH)
@@ -85,6 +85,27 @@ def _poly_snapshot_for_prediction() -> dict[str, Any]:
     }
 
 
+def _kalshi_snapshot_for_audit() -> dict[str, Any]:
+    try:
+        from backend.kalshi_market_adapter import get_kalshi_snapshot
+        raw = get_kalshi_snapshot()
+    except Exception:
+        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
+    if not isinstance(raw, dict):
+        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
+    return {
+        "source": "KALSHI_PUBLIC_REST",
+        "version": "kalshi-btc-15m-context-v1",
+        "status": raw.get("status"),
+        "directional_use": False,
+        "purpose": "cross_venue_prediction_market_context",
+        "horizon": "15m",
+        "freshness_s": raw.get("freshness_s"),
+        "market": raw.get("market") if isinstance(raw.get("market"), dict) else None,
+        "last_error": raw.get("last_error"),
+    }
+
+
 def _boros_snapshot_for_audit() -> dict[str, Any]:
     try:
         from backend.boros_market_adapter import get_boros_snapshot
@@ -116,8 +137,16 @@ def run_prediction(market_data: dict) -> dict:
         "status": "NOT_APPLICABLE",
         "eligible_for_prediction": False,
     }
+    kalshi = _kalshi_snapshot_for_audit() if symbol == "BTCUSDT" else {
+        "source": "KALSHI_PUBLIC_REST",
+        "version": "kalshi-btc-15m-context-v1",
+        "status": "NOT_APPLICABLE",
+        "directional_use": False,
+        "horizon": "15m",
+    }
     boros = _boros_snapshot_for_audit()
     working["polymarket_context"] = poly
+    working["kalshi_context"] = kalshi
     working["boros_context"] = boros
 
     previous = sys.modules.get("institutional_core")
@@ -135,6 +164,7 @@ def run_prediction(market_data: dict) -> dict:
         external = {
             "version": "real-market-context-v1",
             "polymarket": poly,
+            "kalshi": kalshi,
             "boros": boros,
         }
         pipeline = audit.get("pipeline") if isinstance(audit.get("pipeline"), dict) else {}
@@ -148,6 +178,20 @@ def run_prediction(market_data: dict) -> dict:
                     "market_up": round(float(market_up), 6),
                     "up_edge": round(float(model_up) - float(market_up), 6),
                     "diagnostic_only": True,
+                }
+        except (TypeError, ValueError):
+            pass
+
+        kalshi_market = kalshi.get("market") if isinstance(kalshi.get("market"), dict) else {}
+        kalshi_yes = kalshi_market.get("yes_probability")
+        try:
+            if kalshi_yes is not None and model_up is not None:
+                external["kalshi_cross_venue_v1"] = {
+                    "model_up": round(float(model_up), 6),
+                    "kalshi_15m_yes": round(float(kalshi_yes), 6),
+                    "difference": round(float(model_up) - float(kalshi_yes), 6),
+                    "diagnostic_only": True,
+                    "horizon_mismatch": True,
                 }
         except (TypeError, ValueError):
             pass
