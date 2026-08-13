@@ -1,9 +1,10 @@
-/* SENEX REAL-MARKET-V1 — no synthetic dashboard sources */
+/* SENEX REAL-MARKET-V1 / AUD-055 — no synthetic dashboard sources */
 (() => {
   'use strict';
   const $ = (s) => document.querySelector(s);
   const esc = (v) => String(v ?? '—').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const pct = (v, d=1) => v == null || !Number.isFinite(Number(v)) ? '—' : `${(Number(v)*100).toFixed(d)}%`;
+  const pctAlready = (v, d=1) => v == null || !Number.isFinite(Number(v)) ? '—' : `${Number(v).toFixed(d)}%`;
   const num = (v, d=3) => v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(d);
   const apr = (v) => v == null || !Number.isFinite(Number(v)) ? '—' : `${(Number(v)*100).toFixed(2)}%`;
   const money = (v, d=0) => v == null || !Number.isFinite(Number(v)) ? '—' : `$${Number(v).toLocaleString(undefined,{maximumFractionDigits:d})}`;
@@ -55,15 +56,15 @@
     $('#poly-up').textContent = pct(upP);
     $('#poly-down').textContent = pct(downP);
     const pressure = Number(poly.directional_pressure || 0);
-    $('#poly-pressure').textContent = `${pressure >= 0 ? '+' : ''}${pressure.toFixed(3)}`;
+    $('#poly-pressure').textContent = `${pressure >= 0 ? '+' : ''}${pressure.toFixed(3)} DIAG`;
     $('#poly-pressure').className = `value ${pressure > 0.05 ? 'pos' : pressure < -0.05 ? 'neg' : ''}`;
     $('#poly-close').textContent = countdown(poly.seconds_to_close);
     const market = poly.market || {};
     $('#poly-question').textContent = market.question || 'No current BTC 5m market discovered';
     $('#poly-slug').textContent = market.slug || '—';
     $('#poly-resolution').textContent = `resolution: ${market.resolution_source || '—'}`;
-    $('#poly-meta').textContent = `${poly.status || '—'} · fresh ${poly.freshness_s ?? '—'}s`;
-    $('#poly-book-meta').textContent = poly.ws_connected ? 'WS subscribed' : 'REST bootstrap';
+    $('#poly-meta').textContent = `${poly.status || '—'} · fresh ${poly.freshness_s ?? '—'}s · directional default OFF`;
+    $('#poly-book-meta').textContent = `${poly.ws_connected ? 'WS subscribed' : 'REST bootstrap'} · depth ${poly.depth_used_for_pressure ? 'CURRENT' : 'NOT USED'}`;
     renderBook(poly);
     renderPolyFeed(poly.recent_events || []);
     renderKalshi(kalshi);
@@ -80,6 +81,7 @@
       ['Polymarket discovery', poly.market ? 'REAL · Gamma API' : 'UNAVAILABLE'],
       ['Polymarket orderbook', poly.status || 'UNAVAILABLE'],
       ['CLOB WebSocket', poly.ws_connected ? 'CONNECTED' : 'NOT CONNECTED'],
+      ['Poly directional fusion', 'OFF BY DEFAULT'],
       ['Kalshi KXBTC15M', kalshi.status || 'UNAVAILABLE'],
       ['Boros funding context', boros.status || 'UNAVAILABLE'],
       ['Synthetic feed', ctx.synthetic_demo_enabled ? 'ENABLED' : 'DISABLED'],
@@ -96,9 +98,9 @@
       <td class="num">${num(b.best_bid,3)}</td>
       <td class="num">${num(b.best_ask,3)}</td>
       <td class="num">${num(b.spread,3)}</td>
-      <td class="num">${num(b.bid_depth_5,1)}</td>
-      <td class="num">${num(b.ask_depth_5,1)}</td>
-      <td class="num">${num(b.depth_imbalance,3)}</td>
+      <td class="num">${b.depth_current ? num(b.bid_depth_5,1) : 'STALE'}</td>
+      <td class="num">${b.depth_current ? num(b.ask_depth_5,1) : 'STALE'}</td>
+      <td class="num">${b.depth_current ? num(b.depth_imbalance,3) : 'STALE'}</td>
     </tr>`).join('');
   }
 
@@ -116,7 +118,7 @@
 
   function renderKalshi(kalshi) {
     const m = kalshi.market || {};
-    $('#kalshi-meta').textContent = `${kalshi.status || '—'} · 15m diagnostic`;
+    $('#kalshi-meta').textContent = `${kalshi.status || '—'} · 15m diagnostic · directional OFF`;
     $('#kalshi-yes').textContent = pct(m.yes_probability);
     $('#kalshi-no').textContent = pct(m.no_probability);
     $('#kalshi-volume').textContent = m.volume != null ? Number(m.volume).toLocaleString(undefined,{maximumFractionDigits:0}) : '—';
@@ -160,13 +162,16 @@
       const s2 = step2Of(r);
       const learn = s2.learning_state_v1 || {};
       const poly = s2.polymarket_context_v1 || {};
+      const polyText = poly.eligible
+        ? `${pct(poly.up_probability)} · applied=${num(poly.pressure_component,3)}`
+        : '—';
       return `<tr>
         <td>${clock(r.ts || r.created_at)}</td>
         <td class="sym">${esc(r.symbol)}</td>
         <td style="font-weight:700">${esc(r.prediction)}</td>
         <td class="num">${pct(r.confidence)}</td>
         <td>${esc(learn.status || '—')} ${learn.proof_qualified_n != null ? `n=${learn.proof_qualified_n}` : ''}</td>
-        <td>${poly.eligible ? `${pct(poly.up_probability)} · p=${num(poly.pressure_component,3)}` : '—'}</td>
+        <td>${polyText}</td>
         <td>${esc(r.outcome || 'PENDING')}</td>
       </tr>`;
     }).join('') || '<tr><td colspan="7" class="placeholder">no predictions</td></tr>';
@@ -184,22 +189,31 @@
     $('#learn-state').textContent = learn.status || '—';
     $('#learn-n').textContent = learn.proof_qualified_n ?? '—';
     $('#learn-mutations').textContent = learn.mutations ?? '—';
+    $('#learn-poly-weight').textContent = poly.directional_use
+      ? `${num(poly.effective_weight,2)} PAPER EXP`
+      : 'OFF · 0.00';
     $('#decision-context').innerHTML = [
       ['Prediction', `${row.prediction || '—'} · conf ${pct(row.confidence)}`],
       ['Spot pressure', s2.base_total_pressure ?? s2.total_pressure ?? '—'],
-      ['Polymarket pressure', poly.pressure_component ?? '—'],
+      ['Polymarket raw pressure', poly.raw_directional_pressure ?? '—'],
+      ['Polymarket applied', poly.pressure_component ?? '0'],
+      ['Polymarket directional use', poly.directional_use ? 'PAPER EXPERIMENT' : 'OFF'],
       ['Polymarket UP 5m', poly.up_probability != null ? pct(poly.up_probability) : '—'],
       ['Kalshi YES 15m', kalshiMarket.yes_probability != null ? pct(kalshiMarket.yes_probability) : '—'],
-      ['Polymarket eligible', poly.eligible ? 'YES' : 'NO'],
       ['Learning', `${learn.status || '—'} n=${learn.proof_qualified_n ?? 0}`],
     ].map(([k,v]) => `<div class="check"><span class="name">${esc(k)}</span><span class="detail">${esc(v)}</span></div>`).join('');
   }
 
   function renderScore(s) {
     state.score = s;
+    const status = s.score_status || 'UNKNOWN';
     $('#score-total').textContent = s.total_predictions ?? '—';
     $('#score-verified').textContent = s.verified ?? '—';
-    $('#score-winrate').textContent = s.verified ? `${Number(s.win_rate_pct || 0).toFixed(1)}%` : 'UNKNOWN';
+    $('#score-winrate').textContent = s.authoritative_score_pct == null
+      ? '—'
+      : pctAlready(s.authoritative_score_pct);
+    const observed = s.observed_win_rate_pct == null ? 'no observed rate' : `observed ${pctAlready(s.observed_win_rate_pct)} · diagnostic only`;
+    $('#oracle-score-meta').textContent = `${status} · ${observed}`;
   }
 
   async function refreshContext() {
