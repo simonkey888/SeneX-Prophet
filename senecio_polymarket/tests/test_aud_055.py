@@ -170,10 +170,10 @@ class R1CalibrationQualityTests(unittest.TestCase):
 
     def test_brier_at_or_above_ceiling_is_rejected(self):
         score = build_authoritative_score(
-            _rows(50, 50, long_wins=35, short_wins=35, confidence=0.90),
+            _rows(50, 50, long_wins=35, short_wins=35, confidence=1.00),
             symbol="BTCUSDT",
         )
-        self.assertGreaterEqual(score["quality"]["raw_confidence_brier"], MAX_BRIER)
+        self.assertGreater(score["quality"]["raw_confidence_brier"], MAX_BRIER)
         self.assertFalse(score["quality"]["gates"]["brier"]["pass"])
         self.assertEqual(score["score_status"], "REJECTED")
         self.assertIsNone(score["authoritative_score_pct"])
