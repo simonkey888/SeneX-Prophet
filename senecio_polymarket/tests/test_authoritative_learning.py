@@ -1,9 +1,12 @@
 import os
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from oracle_runtime import institutional_core as learning
+from oracle_runtime import predict_only as runtime_predictor
 
 
 BASE_TS = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
@@ -149,6 +152,26 @@ class AuthoritativeLearningTests(unittest.TestCase):
         self.assertEqual(state["status"], "ACTIVE")
         self.assertEqual(state["proof_qualified_n"], 10)
         self.assertNotIn("sb_secret_test", repr(state))
+
+    def test_runtime_predictor_forces_learning_core_for_base_import(self):
+        previous = sys.modules.get("institutional_core")
+        observed = {}
+
+        def fake_base_run_prediction(_market):
+            observed["core_module"] = sys.modules.get("institutional_core")
+            return {"prediction": "FLAT"}
+
+        with mock.patch.object(runtime_predictor._base, "run_prediction", side_effect=fake_base_run_prediction):
+            result = runtime_predictor.run_prediction({"symbol": "BTC/USDT"})
+
+        self.assertEqual(result, {"prediction": "FLAT"})
+        self.assertIs(observed["core_module"], learning)
+        self.assertIs(sys.modules.get("institutional_core"), previous)
+
+    def test_dockerfile_installs_bridge_at_historical_predictor_path(self):
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("mv /app/oracle/predict_only.py /app/oracle/predict_only_base.py", dockerfile)
+        self.assertIn("cp /app/oracle_runtime/predict_only.py /app/oracle/predict_only.py", dockerfile)
 
 
 if __name__ == "__main__":

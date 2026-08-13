@@ -17,6 +17,13 @@ COPY senecio_polymarket/frontend ./frontend
 COPY senecio_polymarket/oracle ./oracle
 COPY senecio_polymarket/oracle_runtime ./oracle_runtime
 
+# Preserve the canonical predictor implementation and install a minimal runtime
+# bridge at the historical import path. This is explicit because the original
+# predict_only.py prepends /app/oracle to sys.path, so PYTHONPATH precedence
+# alone cannot guarantee that the learning-aware institutional_core is used.
+RUN mv /app/oracle/predict_only.py /app/oracle/predict_only_base.py \
+    && cp /app/oracle_runtime/predict_only.py /app/oracle/predict_only.py
+
 # Northflank customCommand="./start.sh" remains unchanged.
 # Install the single-authority launcher at both expected runtime paths.
 COPY senecio_polymarket/start_single_authority.sh /start.sh
@@ -27,10 +34,7 @@ RUN mkdir -p /app/data/audit && chmod -R 777 /app/data
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-# oracle_runtime intentionally precedes /app/oracle so its institutional_core
-# wrapper can replay proof-qualified PAPER outcomes before delegating to the
-# unchanged original SingleDecisionCore implementation.
-ENV PYTHONPATH=/app/oracle_runtime:/app:/app/oracle
+ENV PYTHONPATH=/app:/app/oracle
 
 EXPOSE 8080
 
