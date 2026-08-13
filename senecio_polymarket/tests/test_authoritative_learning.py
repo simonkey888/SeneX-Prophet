@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from oracle_runtime import institutional_core as learning
+from oracle_runtime import institutional_core_real as real_learning
 from oracle_runtime import predict_only as runtime_predictor
 
 
@@ -153,7 +154,7 @@ class AuthoritativeLearningTests(unittest.TestCase):
         self.assertEqual(state["proof_qualified_n"], 10)
         self.assertNotIn("sb_secret_test", repr(state))
 
-    def test_runtime_predictor_forces_learning_core_for_base_import(self):
+    def test_runtime_predictor_forces_real_learning_core_for_base_import(self):
         previous = sys.modules.get("institutional_core")
         observed = {}
 
@@ -164,8 +165,9 @@ class AuthoritativeLearningTests(unittest.TestCase):
         with mock.patch.object(runtime_predictor._base, "run_prediction", side_effect=fake_base_run_prediction):
             result = runtime_predictor.run_prediction({"symbol": "BTC/USDT"})
 
-        self.assertEqual(result, {"prediction": "FLAT"})
-        self.assertIs(observed["core_module"], learning)
+        self.assertEqual(result["prediction"], "FLAT")
+        self.assertIn("external_markets_v1", result["_audit"])
+        self.assertIs(observed["core_module"], real_learning)
         self.assertIs(sys.modules.get("institutional_core"), previous)
 
     def test_dockerfile_installs_bridge_at_historical_predictor_path(self):
