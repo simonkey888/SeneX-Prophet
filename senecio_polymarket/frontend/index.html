@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#07090d" />
 <title>SENEX ORACLE — REAL Market Cockpit</title>
-<meta name="oracle-version" content="REAL-MARKET-V1" />
+<meta name="oracle-version" content="REAL-MARKET-V1-AUD055" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -32,12 +32,12 @@
       <div class="panel">
         <div class="panel-head">
           <h2>Authoritative score · 1h gate</h2>
-          <span id="oracle-score-meta" class="meta">proof-qualified only</span>
+          <span id="oracle-score-meta" class="meta">UNKNOWN · awaiting evidence</span>
         </div>
         <div class="oracle-score-grid">
           <div class="score-card"><div class="score-label">Total</div><div class="score-value" id="score-total">—</div></div>
-          <div class="score-card"><div class="score-label">Verified</div><div class="score-value" id="score-verified">—</div></div>
-          <div class="score-card score-win"><div class="score-label">Win rate</div><div class="score-value" id="score-winrate">—</div></div>
+          <div class="score-card"><div class="score-label">Proof-qualified</div><div class="score-value" id="score-verified">—</div></div>
+          <div class="score-card score-win"><div class="score-label">Authoritative</div><div class="score-value" id="score-winrate">—</div></div>
           <div class="score-card"><div class="score-label">Next cycle</div><div class="score-value" id="score-next" style="font-size:13px">—</div></div>
         </div>
       </div>
@@ -55,11 +55,11 @@
 
     <section class="col col-left">
       <div class="panel">
-        <div class="panel-head"><h2>Polymarket · BTC Up/Down 5m</h2><span id="poly-meta" class="meta">public read-only</span></div>
+        <div class="panel-head"><h2>Polymarket · BTC Up/Down 5m</h2><span id="poly-meta" class="meta">public read-only · directional default OFF</span></div>
         <div class="risk-grid">
           <div class="risk-cell"><div class="label">UP probability</div><div class="value pos" id="poly-up">—</div></div>
           <div class="risk-cell"><div class="label">DOWN probability</div><div class="value neg" id="poly-down">—</div></div>
-          <div class="risk-cell"><div class="label">Directional pressure</div><div class="value" id="poly-pressure">—</div></div>
+          <div class="risk-cell"><div class="label">Diagnostic pressure</div><div class="value" id="poly-pressure">—</div></div>
           <div class="risk-cell"><div class="label">Closes in</div><div class="value" id="poly-close">—</div></div>
         </div>
         <div class="panel-body" style="padding:10px 12px;font-family:var(--mono);font-size:11px">
@@ -87,7 +87,7 @@
 
     <section class="col col-mid">
       <div class="panel">
-        <div class="panel-head"><h2>Kalshi · BTC Up/Down 15m</h2><span id="kalshi-meta" class="meta">cross-venue only</span></div>
+        <div class="panel-head"><h2>Kalshi · BTC Up/Down 15m</h2><span id="kalshi-meta" class="meta">cross-venue only · directional OFF</span></div>
         <div class="risk-grid">
           <div class="risk-cell"><div class="label">YES / Up</div><div class="value pos" id="kalshi-yes">—</div></div>
           <div class="risk-cell"><div class="label">NO / Down</div><div class="value neg" id="kalshi-no">—</div></div>
@@ -102,7 +102,7 @@
       </div>
 
       <div class="panel" style="flex:1">
-        <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">informational</span></div>
+        <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">informational · directional OFF</span></div>
         <div class="table-wrap">
           <table class="table">
             <thead><tr><th>PAIR</th><th>MARKET</th><th>MID APR</th><th>MARK APR</th><th>ASSET PX</th><th>VOL 24H</th><th>OI</th></tr></thead>
@@ -134,7 +134,7 @@
           <div class="risk-cell"><div class="label">BTC state</div><div class="value" id="learn-state">—</div></div>
           <div class="risk-cell"><div class="label">Qualified N</div><div class="value" id="learn-n">—</div></div>
           <div class="risk-cell"><div class="label">Mutations</div><div class="value" id="learn-mutations">—</div></div>
-          <div class="risk-cell"><div class="label">Poly weight</div><div class="value" id="learn-poly-weight">0.25 FIXED</div></div>
+          <div class="risk-cell"><div class="label">Poly directional</div><div class="value" id="learn-poly-weight">OFF · 0.00</div></div>
         </div>
       </div>
 
