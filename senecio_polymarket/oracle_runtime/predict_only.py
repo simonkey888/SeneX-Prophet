@@ -5,7 +5,7 @@ and installs this module at ``/app/oracle/predict_only.py``. Every original
 function is re-exported unchanged except ``run_prediction``.
 
 Production additions:
-- bind the proof-qualified learning SingleDecisionCore;
+- bind the proof-qualified learning + real-market SingleDecisionCore;
 - inject a bounded read-only Polymarket BTC 5m snapshot before decision time;
 - attach Polymarket + Boros real-market evidence to the prediction audit.
 
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from oracle_runtime import institutional_core as _learning_core
+from oracle_runtime import institutional_core_real as _learning_core
 
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
