@@ -3,7 +3,7 @@ SENECIO ORACLE — Supabase Client (ACT XXIII)
 =============================================
 
 Lightweight async REST client for Supabase PostgREST.
-Uses the publishable (anon) key — table is RLS-protected for INSERT+SELECT.
+Supports modern opaque API keys and legacy JWT-based API keys.
 
 ACT XXIII changes:
   - Dual-window outcome support: stores outcome_15m + outcome_1h side-by-side
@@ -40,6 +40,30 @@ def _require_config() -> tuple[str, str]:
     return SUPABASE_URL, SUPABASE_KEY
 
 
+def build_supabase_headers(
+    supabase_key: str,
+    *,
+    prefer: str = "return=representation",
+) -> dict[str, str]:
+    """Build PostgREST headers for modern opaque or legacy JWT API keys.
+
+    Modern ``sb_secret_``/``sb_publishable_`` keys are opaque and must be sent
+    through ``apikey`` only. Legacy anon/service_role API keys are JWTs; keep
+    the historical Bearer header for compatibility with those deployments.
+    """
+    if not supabase_key:
+        raise RuntimeError("SUPABASE_KEY must be provided by the runtime environment")
+
+    headers = {
+        "apikey": supabase_key,
+        "Content-Type": "application/json",
+        "Prefer": prefer,
+    }
+    if supabase_key.startswith("eyJ") and supabase_key.count(".") == 2:
+        headers["Authorization"] = f"Bearer {supabase_key}"
+    return headers
+
+
 # Single reusable client (connection pooling)
 _client: Optional[httpx.AsyncClient] = None
 
@@ -50,12 +74,7 @@ def _get_client() -> httpx.AsyncClient:
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(
             base_url=f"{supabase_url}/rest/v1",
-            headers={
-                "apikey": supabase_key,
-                "Authorization": f"Bearer {supabase_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=representation",
-            },
+            headers=build_supabase_headers(supabase_key),
             timeout=httpx.Timeout(15.0, connect=5.0),
         )
     return _client
