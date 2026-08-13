@@ -226,7 +226,7 @@
   async function refreshOracle() {
     try {
       const [score, preds] = await Promise.all([
-        getJSON('/api/oracle/score'),
+        getJSON('/api/oracle/score?symbol=BTCUSDT'),
         getJSON('/api/oracle/predictions/db?limit=50'),
       ]);
       renderScore(score); renderPredictions(preds);
