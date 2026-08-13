@@ -69,19 +69,18 @@ _state: dict[str, Any] = {
     "bogus_backfill_done": False,     # set True after _backfill_bogus_outcomes() runs once
     "bogus_backfill_count": None,     # how many rows re-settled with historical price
     "bogus_backfill_errors": None,    # how many rows we couldn't re-settle (no historical price)
-    # ACT XXIII: directional gate state
-    "directional_stats": {            # populated by _compute_directional_stats()
-        "by_window": {
-            "15m": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
-            "1h":  {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
+    # AUD-057: proof-qualified directional stats and gates are symbol-scoped.
+    # Any cross-symbol view is explicitly diagnostic and must never configure
+    # a symbol-specific score, Kelly input, or PAPER portfolio gate.
+    "directional_stats": {
+        "per_symbol": {},
+        "aggregate_diagnostic": {
+            "by_window": {
+                "15m": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
+                "1h": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
+            },
         },
     },
-    "gates": {
-        "long_1h":  {"pass": False, "win_rate_pct": 0.0, "n": 0, "threshold_pct": 50.0, "min_n": 30},
-        "short_1h": {"pass": False, "win_rate_pct": 0.0, "n": 0, "threshold_pct": 55.0, "min_n": 30},
-        "global_1h": {"pass": False, "win_rate_pct": 0.0, "n": 0, "threshold_pct": 52.0, "min_n": 100},
-    },
-    "short_only_paper_mode": False,   # True when SHORT passes 1h gate but LONG fails
     "trade_mode": "PAPER",            # ACT XXIII directive 5: never "LIVE" until long side improves
     "live_capital_locked": True,      # Hard guard — even if gates pass, do NOT unlock real money
 }
@@ -97,6 +96,11 @@ MAX_CONCURRENT_PREDICTIONS = 1  # serialize to keep memory bounded
 WINDOW_15M_S = 900
 WINDOW_1H_S = 3600
 PRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1
+
+
+def _normalize_symbol(value: Any) -> str:
+    """Normalize runtime symbols for proof/gate/portfolio isolation."""
+    return str(value or "").upper().replace("/", "").replace("-", "").strip()
 
 
 def _count_predictions() -> int:
@@ -697,14 +701,12 @@ async def _backfill_bogus_outcomes() -> int:
 
 
 async def _refresh_directional_stats() -> None:
-    """Recompute per-direction × per-window win rates from Supabase rows.
+    """Recompute proof-qualified directional stats independently per symbol.
 
-    Populates _state['directional_stats']['by_window'] and _state['gates'].
-    Called after every verifier batch and after backfill.
-
-    Reads both the primary `outcome` column (= outcome_1h) AND the
-    `audit.outcomes_dual.outcome_15m` field to compute the 15m breakdown.
-    If the audit field is missing (very old rows), only the 1h column is used.
+    AUD-057 invariant: BTC evidence must never modify ETH gates and ETH
+    evidence must never modify BTC gates. A cross-symbol aggregate is retained
+    only under ``aggregate_diagnostic`` and is not consumed by portfolio or
+    authoritative score routing.
     """
     try:
         from . import supabase_client
@@ -718,105 +720,126 @@ async def _refresh_directional_stats() -> None:
         log.warning("directional stats fetch failed: %s", e)
         return
 
-    # Partition rows by window+direction
-    # For 1h: read primary `outcome` column (which mirrors outcome_1h after ACT XXIII)
-    # For 15m: read audit.outcomes_dual.outcome_15m if present, else None (skip from 15m stats)
-    buckets: dict[str, dict[str, dict[str, int]]] = {
-        "15m": {"LONG": {"WIN": 0, "LOSS": 0}, "SHORT": {"WIN": 0, "LOSS": 0}, "FLAT": {"WIN": 0, "LOSS": 0}},
-        "1h":  {"LONG": {"WIN": 0, "LOSS": 0}, "SHORT": {"WIN": 0, "LOSS": 0}, "FLAT": {"WIN": 0, "LOSS": 0}},
-    }
+    def build_by_window(source_rows: list[dict[str, Any]]) -> dict[str, dict]:
+        buckets: dict[str, dict[str, dict[str, int]]] = {
+            "15m": {
+                "LONG": {"WIN": 0, "LOSS": 0},
+                "SHORT": {"WIN": 0, "LOSS": 0},
+                "FLAT": {"WIN": 0, "LOSS": 0},
+            },
+            "1h": {
+                "LONG": {"WIN": 0, "LOSS": 0},
+                "SHORT": {"WIN": 0, "LOSS": 0},
+                "FLAT": {"WIN": 0, "LOSS": 0},
+            },
+        }
 
-    for r in rows:
-        direction = (r.get("prediction") or "").upper()
-        if direction not in ("LONG", "SHORT", "FLAT"):
-            continue
-        if not is_proof_qualified(r):
-            continue
-        # 1h outcome = primary outcome column
-        outcome_1h = r.get("outcome")
-        if outcome_1h in ("WIN", "LOSS"):
-            buckets["1h"][direction][outcome_1h] += 1
-        # 15m outcome = audit.outcomes_dual.outcome_15m (only present after ACT XXIII)
-        audit = r.get("audit") or {}
-        if isinstance(audit, dict):
-            dual = audit.get("outcomes_dual") or {}
+        for row in source_rows:
+            direction = (row.get("prediction") or "").upper()
+            if direction not in ("LONG", "SHORT", "FLAT"):
+                continue
+            outcome_1h = row.get("outcome")
+            if outcome_1h in ("WIN", "LOSS"):
+                buckets["1h"][direction][outcome_1h] += 1
+
+            audit = row.get("audit") or {}
+            dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}
             if isinstance(dual, dict):
                 outcome_15m = dual.get("outcome_15m")
                 if outcome_15m in ("WIN", "LOSS"):
                     buckets["15m"][direction][outcome_15m] += 1
 
-    # Build stats dict
-    by_window: dict[str, dict] = {}
-    for window in ("15m", "1h"):
-        by_window[window] = {}
-        total_w = total_l = 0
-        for direction in ("LONG", "SHORT", "FLAT"):
-            w = buckets[window][direction]["WIN"]
-            l = buckets[window][direction]["LOSS"]
-            n = w + l
-            total_w += w
-            total_l += l
-            by_window[window][direction] = {
-                "verified": n,
-                "wins": w,
-                "losses": l,
-                "win_rate_pct": round((w / n * 100) if n > 0 else 0.0, 2),
+        by_window: dict[str, dict] = {}
+        for window in ("15m", "1h"):
+            by_window[window] = {}
+            total_w = total_l = 0
+            for direction in ("LONG", "SHORT", "FLAT"):
+                wins = buckets[window][direction]["WIN"]
+                losses = buckets[window][direction]["LOSS"]
+                verified = wins + losses
+                total_w += wins
+                total_l += losses
+                by_window[window][direction] = {
+                    "verified": verified,
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate_pct": round((wins / verified * 100) if verified else 0.0, 2),
+                }
+            total = total_w + total_l
+            by_window[window]["global"] = {
+                "verified": total,
+                "wins": total_w,
+                "losses": total_l,
+                "win_rate_pct": round((total_w / total * 100) if total else 0.0, 2),
             }
-        n_global = total_w + total_l
-        by_window[window]["global"] = {
-            "verified": n_global,
-            "wins": total_w,
-            "losses": total_l,
-            "win_rate_pct": round((total_w / n_global * 100) if n_global > 0 else 0.0, 2),
+        return by_window
+
+    def build_gates(by_window: dict[str, dict]) -> dict[str, dict[str, Any]]:
+        specs = {
+            "long_1h": ("LONG", 50.0, 30),
+            "short_1h": ("SHORT", 55.0, 30),
+            "global_1h": ("global", 52.0, 100),
         }
+        result: dict[str, dict[str, Any]] = {}
+        for gate_name, (bucket_name, threshold_pct, min_n) in specs.items():
+            bucket = (by_window.get("1h") or {}).get(bucket_name) or {}
+            verified = int(bucket.get("verified") or 0)
+            win_rate_pct = float(bucket.get("win_rate_pct") or 0.0)
+            result[gate_name] = {
+                "pass": bool(verified >= min_n and win_rate_pct >= threshold_pct),
+                "win_rate_pct": win_rate_pct,
+                "n": verified,
+                "threshold_pct": threshold_pct,
+                "min_n": min_n,
+            }
+        return result
 
-    _state["directional_stats"]["by_window"] = by_window
-    _state["verified_total"] = by_window["1h"]["global"]["verified"]
+    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    all_qualified: list[dict[str, Any]] = []
+    for row in rows:
+        if not is_proof_qualified(row):
+            continue
+        symbol = _normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        qualified_by_symbol.setdefault(symbol, []).append(row)
+        all_qualified.append(row)
 
-    # Apply gates (1h window only — that's the gating source of truth)
-    g = _state["gates"]
-    long_1h = by_window["1h"]["LONG"]
-    short_1h = by_window["1h"]["SHORT"]
-    global_1h = by_window["1h"]["global"]
+    configured_symbols = {_normalize_symbol(symbol) for symbol in SYMBOLS}
+    symbols = sorted(configured_symbols | set(qualified_by_symbol))
+    per_symbol: dict[str, dict[str, Any]] = {}
 
-    g["long_1h"]["win_rate_pct"] = long_1h["win_rate_pct"]
-    g["long_1h"]["n"] = long_1h["verified"]
-    g["long_1h"]["pass"] = (
-        long_1h["verified"] >= g["long_1h"]["min_n"]
-        and long_1h["win_rate_pct"] >= g["long_1h"]["threshold_pct"]
-    )
+    for symbol in symbols:
+        by_window = build_by_window(qualified_by_symbol.get(symbol, []))
+        gates = build_gates(by_window)
+        short_only = bool(
+            gates["short_1h"]["pass"] and not gates["long_1h"]["pass"]
+        )
+        per_symbol[symbol] = {
+            "by_window": by_window,
+            "gates": gates,
+            "short_only_paper_mode": short_only,
+        }
+        log.info(
+            "directional gates symbol=%s LONG_1h=%s(wr=%.1f%% n=%d) "
+            "SHORT_1h=%s(wr=%.1f%% n=%d) GLOBAL_1h=%s(wr=%.1f%% n=%d) "
+            "short_only_paper_mode=%s",
+            symbol,
+            "PASS" if gates["long_1h"]["pass"] else "FAIL",
+            gates["long_1h"]["win_rate_pct"], gates["long_1h"]["n"],
+            "PASS" if gates["short_1h"]["pass"] else "FAIL",
+            gates["short_1h"]["win_rate_pct"], gates["short_1h"]["n"],
+            "PASS" if gates["global_1h"]["pass"] else "FAIL",
+            gates["global_1h"]["win_rate_pct"], gates["global_1h"]["n"],
+            short_only,
+        )
 
-    g["short_1h"]["win_rate_pct"] = short_1h["win_rate_pct"]
-    g["short_1h"]["n"] = short_1h["verified"]
-    g["short_1h"]["pass"] = (
-        short_1h["verified"] >= g["short_1h"]["min_n"]
-        and short_1h["win_rate_pct"] >= g["short_1h"]["threshold_pct"]
-    )
-
-    g["global_1h"]["win_rate_pct"] = global_1h["win_rate_pct"]
-    g["global_1h"]["n"] = global_1h["verified"]
-    g["global_1h"]["pass"] = (
-        global_1h["verified"] >= g["global_1h"]["min_n"]
-        and global_1h["win_rate_pct"] >= g["global_1h"]["threshold_pct"]
-    )
-
-    # SHORT_ONLY_PAPER_MODE: SHORT passes 1h gate, LONG fails 1h gate
-    _state["short_only_paper_mode"] = bool(
-        g["short_1h"]["pass"] and not g["long_1h"]["pass"]
-    )
-
-    log.info(
-        "directional gates: LONG_1h=%s(wr=%.1f%% n=%d) SHORT_1h=%s(wr=%.1f%% n=%d) "
-        "GLOBAL_1h=%s(wr=%.1f%% n=%d) short_only_paper_mode=%s",
-        "PASS" if g["long_1h"]["pass"] else "FAIL",
-        g["long_1h"]["win_rate_pct"], g["long_1h"]["n"],
-        "PASS" if g["short_1h"]["pass"] else "FAIL",
-        g["short_1h"]["win_rate_pct"], g["short_1h"]["n"],
-        "PASS" if g["global_1h"]["pass"] else "FAIL",
-        g["global_1h"]["win_rate_pct"], g["global_1h"]["n"],
-        _state["short_only_paper_mode"],
-    )
-
+    aggregate_by_window = build_by_window(all_qualified)
+    _state["directional_stats"] = {
+        "per_symbol": per_symbol,
+        "aggregate_diagnostic": {"by_window": aggregate_by_window},
+    }
+    _state["verified_total"] = aggregate_by_window["1h"]["global"]["verified"]
 
 async def _oracle_loop() -> None:
     """Main loop: every CYCLE_INTERVAL_S, run predictions for all symbols."""
@@ -920,19 +943,23 @@ async def _route_to_portfolio(prediction: dict, market_data: dict) -> None:
     except Exception:
         pass
 
-    # Win-rate-by-direction passthrough (for Kelly)
-    by_window = _state.get("directional_stats", {}).get("by_window", {}) or {}
+    # AUD-057: Kelly and short-only configuration are scoped to the
+    # current prediction symbol. Cross-symbol aggregate diagnostics are never
+    # consumed here.
+    symbol = _normalize_symbol(prediction.get("symbol"))
+    symbol_stats = (
+        (_state.get("directional_stats") or {}).get("per_symbol") or {}
+    ).get(symbol) or {}
+    by_window = symbol_stats.get("by_window") or {}
     win_rate_by_dir = {}
     try:
-        for d in ("LONG", "SHORT"):
-            d_stat = (by_window.get("1h") or {}).get(d) or {}
-            wr = d_stat.get("win_rate_pct", 0) / 100.0
-            win_rate_by_dir[d] = wr
+        for direction in ("LONG", "SHORT"):
+            direction_stat = (by_window.get("1h") or {}).get(direction) or {}
+            win_rate_by_dir[direction] = float(direction_stat.get("win_rate_pct") or 0.0) / 100.0
     except Exception:
-        pass
+        win_rate_by_dir = {}
 
-    # SHORT_ONLY_PAPER_MODE passthrough
-    short_only = _state.get("short_only_paper_mode", False)
+    short_only = bool(symbol_stats.get("short_only_paper_mode", False))
     coord.portfolio_engine.update_config(short_only_paper_mode=short_only)
     coord.risk_kernel.update_config(
         short_only_paper_mode=short_only,

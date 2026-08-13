@@ -95,6 +95,46 @@ def _bucket(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _window_outcome(row: dict[str, Any], window: str) -> str | None:
+    if window == "1h":
+        return row.get("outcome")
+    audit = row.get("audit") or {}
+    dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}
+    return dual.get("outcome_15m") if isinstance(dual, dict) else None
+
+
+def _by_window(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build dual-window diagnostics from one already-scoped proof cohort."""
+    result: dict[str, dict[str, Any]] = {}
+    for window in ("15m", "1h"):
+        result[window] = {}
+        total_wins = total_losses = 0
+        for direction in ("LONG", "SHORT", "FLAT"):
+            direction_rows = [
+                row for row in rows
+                if str(row.get("prediction") or "").upper() == direction
+            ]
+            wins = sum(1 for row in direction_rows if _window_outcome(row, window) == "WIN")
+            losses = sum(1 for row in direction_rows if _window_outcome(row, window) == "LOSS")
+            verified = wins + losses
+            total_wins += wins
+            total_losses += losses
+            result[window][direction] = {
+                "verified": verified,
+                "wins": wins,
+                "losses": losses,
+                "win_rate_pct": round((wins / verified * 100.0) if verified else 0.0, 2),
+            }
+        total = total_wins + total_losses
+        result[window]["global"] = {
+            "verified": total,
+            "wins": total_wins,
+            "losses": total_losses,
+            "win_rate_pct": round((total_wins / total * 100.0) if total else 0.0, 2),
+        }
+    return result
+
+
 def _gate(bucket: dict[str, Any], *, min_n: int, threshold_pct: float) -> dict[str, Any]:
     n = int(bucket.get("verified") or 0)
     win_rate_pct = float(bucket.get("win_rate_pct") or 0.0)
@@ -281,12 +321,16 @@ def build_authoritative_score(
     }
 
     requested_symbol = _normalize_symbol(symbol) if symbol else None
+    selected_rows: list[dict[str, Any]] = []
     if requested_symbol:
+        selected_rows = grouped.get(requested_symbol, [])
         selected = by_symbol.get(requested_symbol) or _empty_symbol_score(requested_symbol)
         report_status = selected["score_status"]
         authoritative_score_pct = selected["authoritative_score_pct"]
     elif len(by_symbol) == 1:
-        selected = next(iter(by_symbol.values()))
+        single_symbol = next(iter(by_symbol))
+        selected_rows = grouped.get(single_symbol, [])
+        selected = by_symbol[single_symbol]
         report_status = selected["score_status"]
         authoritative_score_pct = selected["authoritative_score_pct"]
     else:
@@ -294,12 +338,14 @@ def build_authoritative_score(
         report_status = "MULTI_INSTRUMENT_REPORT" if by_symbol else "UNKNOWN"
         authoritative_score_pct = None
 
-    directional_stats = runner_state.get("directional_stats") if isinstance(runner_state, dict) else {}
-    by_window = directional_stats.get("by_window", {}) if isinstance(directional_stats, dict) else {}
+    # AUD-057: public by_window diagnostics are derived from the same
+    # symbol-scoped proof cohort as the selected score. runner_state remains
+    # accepted for API compatibility but cannot inject cross-symbol statistics.
+    by_window = _by_window(selected_rows) if selected is not None else {}
 
     selected_payload = selected or _empty_symbol_score(requested_symbol)
     return {
-        "version": "AUD-055-R1-score-truth-v2",
+        "version": "AUD-057-score-truth-v3",
         "score_scope": "PER_SYMBOL",
         "requested_symbol": requested_symbol,
         "score_status": report_status,
@@ -313,7 +359,7 @@ def build_authoritative_score(
             if requested_symbol is None or _normalize_symbol(row.get("symbol")) == requested_symbol
         ),
         "input_rows": len(input_rows),
-        "proof_qualified_rows": len(proof_qualified),
+        "proof_qualified_rows": len(selected_rows) if selected is not None else len(proof_qualified),
         "verified": selected_payload["verified"] if selected else 0,
         "wins": selected_payload["wins"] if selected else 0,
         "losses": selected_payload["losses"] if selected else 0,
