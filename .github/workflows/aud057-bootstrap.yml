@@ -1,308 +1,31 @@
-name: AUD057 corrective patch bootstrap
+name: AUD057 Corrective Patch Bootstrap
 
 on:
   push:
-    branches: [fix/aud-057-symbol-scope]
+    branches:
+      - fix/aud-057-symbol-scope
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'chore(aud057): bootstrap corrective patch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout AUD-057 branch
+        uses: actions/checkout@v4
         with:
           ref: fix/aud-057-symbol-scope
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Apply AUD-057 minimal delta
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          runner_path = Path('senecio_polymarket/backend/oracle_runner.py')
-          text = runner_path.read_text(encoding='utf-8')
-
-          primary = 'PRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1\n'
-          if 'def _normalize_symbol(value: Any)' not in text:
-              assert primary in text
-              text = text.replace(
-                  primary,
-                  primary + '\n\ndef _normalize_symbol(value: Any) -> str:\n'
-                  '    """Normalize runtime symbols for proof/gate/portfolio isolation."""\n'
-                  '    return str(value or "").upper().replace("/", "").replace("-", "").strip()\n',
-                  1,
-              )
-
-          state_start = text.index('    # ACT XXIII: directional gate state')
-          state_end = text.index('    "trade_mode": "PAPER",', state_start)
-          state_replacement = '''    # AUD-057: proof-qualified directional stats and gates are symbol-scoped.\n    # Any cross-symbol view is explicitly diagnostic and must never configure\n    # a symbol-specific score, Kelly input, or PAPER portfolio gate.\n    "directional_stats": {\n        "per_symbol": {},\n        "aggregate_diagnostic": {\n            "by_window": {\n                "15m": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},\n                "1h": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},\n            },\n        },\n    },\n'''
-          text = text[:state_start] + state_replacement + text[state_end:]
-
-          refresh_start = text.index('async def _refresh_directional_stats() -> None:')
-          refresh_end = text.index('\nasync def _oracle_loop() -> None:', refresh_start)
-          refresh_replacement = '''async def _refresh_directional_stats() -> None:\n    """Recompute proof-qualified directional stats independently per symbol.\n\n    AUD-057 invariant: BTC evidence must never modify ETH gates and ETH\n    evidence must never modify BTC gates. A cross-symbol aggregate is retained\n    only under ``aggregate_diagnostic`` and is not consumed by portfolio or\n    authoritative score routing.\n    """\n    try:\n        from . import supabase_client\n    except Exception as e:\n        log.warning("supabase_client unavailable for directional stats: %s", e)\n        return\n\n    try:\n        rows = await supabase_client.fetch_predictions(limit=500)\n    except Exception as e:\n        log.warning("directional stats fetch failed: %s", e)\n        return\n\n    def build_by_window(source_rows: list[dict[str, Any]]) -> dict[str, dict]:\n        buckets: dict[str, dict[str, dict[str, int]]] = {\n            "15m": {\n                "LONG": {"WIN": 0, "LOSS": 0},\n                "SHORT": {"WIN": 0, "LOSS": 0},\n                "FLAT": {"WIN": 0, "LOSS": 0},\n            },\n            "1h": {\n                "LONG": {"WIN": 0, "LOSS": 0},\n                "SHORT": {"WIN": 0, "LOSS": 0},\n                "FLAT": {"WIN": 0, "LOSS": 0},\n            },\n        }\n\n        for row in source_rows:\n            direction = (row.get("prediction") or "").upper()\n            if direction not in ("LONG", "SHORT", "FLAT"):\n                continue\n            outcome_1h = row.get("outcome")\n            if outcome_1h in ("WIN", "LOSS"):\n                buckets["1h"][direction][outcome_1h] += 1\n\n            audit = row.get("audit") or {}\n            dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}\n            if isinstance(dual, dict):\n                outcome_15m = dual.get("outcome_15m")\n                if outcome_15m in ("WIN", "LOSS"):\n                    buckets["15m"][direction][outcome_15m] += 1\n\n        by_window: dict[str, dict] = {}\n        for window in ("15m", "1h"):\n            by_window[window] = {}\n            total_w = total_l = 0\n            for direction in ("LONG", "SHORT", "FLAT"):\n                wins = buckets[window][direction]["WIN"]\n                losses = buckets[window][direction]["LOSS"]\n                verified = wins + losses\n                total_w += wins\n                total_l += losses\n                by_window[window][direction] = {\n                    "verified": verified,\n                    "wins": wins,\n                    "losses": losses,\n                    "win_rate_pct": round((wins / verified * 100) if verified else 0.0, 2),\n                }\n            total = total_w + total_l\n            by_window[window]["global"] = {\n                "verified": total,\n                "wins": total_w,\n                "losses": total_l,\n                "win_rate_pct": round((total_w / total * 100) if total else 0.0, 2),\n            }\n        return by_window\n\n    def build_gates(by_window: dict[str, dict]) -> dict[str, dict[str, Any]]:\n        specs = {\n            "long_1h": ("LONG", 50.0, 30),\n            "short_1h": ("SHORT", 55.0, 30),\n            "global_1h": ("global", 52.0, 100),\n        }\n        result: dict[str, dict[str, Any]] = {}\n        for gate_name, (bucket_name, threshold_pct, min_n) in specs.items():\n            bucket = (by_window.get("1h") or {}).get(bucket_name) or {}\n            verified = int(bucket.get("verified") or 0)\n            win_rate_pct = float(bucket.get("win_rate_pct") or 0.0)\n            result[gate_name] = {\n                "pass": bool(verified >= min_n and win_rate_pct >= threshold_pct),\n                "win_rate_pct": win_rate_pct,\n                "n": verified,\n                "threshold_pct": threshold_pct,\n                "min_n": min_n,\n            }\n        return result\n\n    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}\n    all_qualified: list[dict[str, Any]] = []\n    for row in rows:\n        if not is_proof_qualified(row):\n            continue\n        symbol = _normalize_symbol(row.get("symbol"))\n        if not symbol:\n            continue\n        qualified_by_symbol.setdefault(symbol, []).append(row)\n        all_qualified.append(row)\n\n    configured_symbols = {_normalize_symbol(symbol) for symbol in SYMBOLS}\n    symbols = sorted(configured_symbols | set(qualified_by_symbol))\n    per_symbol: dict[str, dict[str, Any]] = {}\n\n    for symbol in symbols:\n        by_window = build_by_window(qualified_by_symbol.get(symbol, []))\n        gates = build_gates(by_window)\n        short_only = bool(\n            gates["short_1h"]["pass"] and not gates["long_1h"]["pass"]\n        )\n        per_symbol[symbol] = {\n            "by_window": by_window,\n            "gates": gates,\n            "short_only_paper_mode": short_only,\n        }\n        log.info(\n            "directional gates symbol=%s LONG_1h=%s(wr=%.1f%% n=%d) "\n            "SHORT_1h=%s(wr=%.1f%% n=%d) GLOBAL_1h=%s(wr=%.1f%% n=%d) "\n            "short_only_paper_mode=%s",\n            symbol,\n            "PASS" if gates["long_1h"]["pass"] else "FAIL",\n            gates["long_1h"]["win_rate_pct"], gates["long_1h"]["n"],\n            "PASS" if gates["short_1h"]["pass"] else "FAIL",\n            gates["short_1h"]["win_rate_pct"], gates["short_1h"]["n"],\n            "PASS" if gates["global_1h"]["pass"] else "FAIL",\n            gates["global_1h"]["win_rate_pct"], gates["global_1h"]["n"],\n            short_only,\n        )\n\n    aggregate_by_window = build_by_window(all_qualified)\n    _state["directional_stats"] = {\n        "per_symbol": per_symbol,\n        "aggregate_diagnostic": {"by_window": aggregate_by_window},\n    }\n    _state["verified_total"] = aggregate_by_window["1h"]["global"]["verified"]\n'''
-          text = text[:refresh_start] + refresh_replacement + text[refresh_end:]
-
-          route_anchor = text.index('async def _route_to_portfolio(prediction: dict, market_data: dict) -> None:')
-          route_start = text.index('    # Win-rate-by-direction passthrough (for Kelly)', route_anchor)
-          route_end = text.index('    # ACT-XXVI: extract ohlcv + funding + OI', route_start)
-          route_replacement = '''    # AUD-057: Kelly and short-only configuration are scoped to the\n    # current prediction symbol. Cross-symbol aggregate diagnostics are never\n    # consumed here.\n    symbol = _normalize_symbol(prediction.get("symbol"))\n    symbol_stats = (\n        (_state.get("directional_stats") or {}).get("per_symbol") or {}\n    ).get(symbol) or {}\n    by_window = symbol_stats.get("by_window") or {}\n    win_rate_by_dir = {}\n    try:\n        for direction in ("LONG", "SHORT"):\n            direction_stat = (by_window.get("1h") or {}).get(direction) or {}\n            win_rate_by_dir[direction] = float(direction_stat.get("win_rate_pct") or 0.0) / 100.0\n    except Exception:\n        win_rate_by_dir = {}\n\n    short_only = bool(symbol_stats.get("short_only_paper_mode", False))\n    coord.portfolio_engine.update_config(short_only_paper_mode=short_only)\n    coord.risk_kernel.update_config(\n        short_only_paper_mode=short_only,\n        trade_mode=_state.get("trade_mode", "PAPER"),\n        live_capital_locked=_state.get("live_capital_locked", True),\n    )\n    coord.execution_engine.update_config(\n        trade_mode=_state.get("trade_mode", "PAPER"),\n        allow_live=not _state.get("live_capital_locked", True),\n    )\n\n'''
-          text = text[:route_start] + route_replacement + text[route_end:]
-          runner_path.write_text(text, encoding='utf-8')
-
-          score_path = Path('senecio_polymarket/backend/authoritative_score.py')
-          score = score_path.read_text(encoding='utf-8')
-
-          gate_marker = '\n\ndef _gate(bucket: dict[str, Any], *, min_n: int, threshold_pct: float) -> dict[str, Any]:\n'
-          assert gate_marker in score
-          window_helpers = '''\n\ndef _window_outcome(row: dict[str, Any], window: str) -> str | None:\n    if window == "1h":\n        return row.get("outcome")\n    audit = row.get("audit") or {}\n    dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}\n    return dual.get("outcome_15m") if isinstance(dual, dict) else None\n\n\ndef _by_window(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:\n    """Build dual-window diagnostics from one already-scoped proof cohort."""\n    result: dict[str, dict[str, Any]] = {}\n    for window in ("15m", "1h"):\n        result[window] = {}\n        total_wins = total_losses = 0\n        for direction in ("LONG", "SHORT", "FLAT"):\n            direction_rows = [\n                row for row in rows\n                if str(row.get("prediction") or "").upper() == direction\n            ]\n            wins = sum(1 for row in direction_rows if _window_outcome(row, window) == "WIN")\n            losses = sum(1 for row in direction_rows if _window_outcome(row, window) == "LOSS")\n            verified = wins + losses\n            total_wins += wins\n            total_losses += losses\n            result[window][direction] = {\n                "verified": verified,\n                "wins": wins,\n                "losses": losses,\n                "win_rate_pct": round((wins / verified * 100.0) if verified else 0.0, 2),\n            }\n        total = total_wins + total_losses\n        result[window]["global"] = {\n            "verified": total,\n            "wins": total_wins,\n            "losses": total_losses,\n            "win_rate_pct": round((total_wins / total * 100.0) if total else 0.0, 2),\n        }\n    return result\n'''
-          score = score.replace(gate_marker, window_helpers + gate_marker, 1)
-
-          selection_start = score.index('    requested_symbol = _normalize_symbol(symbol) if symbol else None')
-          selection_end = score.index('    selected_payload = selected or _empty_symbol_score(requested_symbol)', selection_start)
-          selection = '''    requested_symbol = _normalize_symbol(symbol) if symbol else None\n    selected_rows: list[dict[str, Any]] = []\n    if requested_symbol:\n        selected_rows = grouped.get(requested_symbol, [])\n        selected = by_symbol.get(requested_symbol) or _empty_symbol_score(requested_symbol)\n        report_status = selected["score_status"]\n        authoritative_score_pct = selected["authoritative_score_pct"]\n    elif len(by_symbol) == 1:\n        single_symbol = next(iter(by_symbol))\n        selected_rows = grouped.get(single_symbol, [])\n        selected = by_symbol[single_symbol]\n        report_status = selected["score_status"]\n        authoritative_score_pct = selected["authoritative_score_pct"]\n    else:\n        selected = None\n        report_status = "MULTI_INSTRUMENT_REPORT" if by_symbol else "UNKNOWN"\n        authoritative_score_pct = None\n\n    # AUD-057: public by_window diagnostics are derived from the same\n    # symbol-scoped proof cohort as the selected score. runner_state remains\n    # accepted for API compatibility but cannot inject cross-symbol statistics.\n    by_window = _by_window(selected_rows) if selected is not None else {}\n\n'''
-          score = score[:selection_start] + selection + score[selection_end:]
-          score = score.replace('"version": "AUD-055-R1-score-truth-v2",', '"version": "AUD-057-score-truth-v3",', 1)
-          score = score.replace(
-              '        "proof_qualified_rows": len(proof_qualified),',
-              '        "proof_qualified_rows": len(selected_rows) if selected is not None else len(proof_qualified),',
-              1,
-          )
-          score_path.write_text(score, encoding='utf-8')
-
-          test_path = Path('senecio_polymarket/tests/test_aud_057.py')
-          test_path.write_text(r'''from __future__ import annotations
-
-import asyncio
-import copy
-import unittest
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-from backend import oracle_runner, supabase_client
-from backend.authoritative_score import build_authoritative_score
-
-BASE_TS = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
-
-
-def _proof_row(idx: int, symbol: str, direction: str, outcome: str, *, confidence: float = 0.60) -> dict:
-    ts = (BASE_TS + timedelta(minutes=idx)).isoformat()
-    origin = 100.0
-    if direction == "LONG":
-        later = 101.0 if outcome == "WIN" else 99.0
-    elif direction == "SHORT":
-        later = 99.0 if outcome == "WIN" else 101.0
-    else:
-        raise ValueError(direction)
-    return {
-        "id": idx,
-        "ts": ts,
-        "symbol": symbol,
-        "prediction": direction,
-        "confidence": confidence,
-        "price_now": origin,
-        "outcome": outcome,
-        "audit": {
-            "origin_price_v1": {
-                "version": "origin-price-v1",
-                "price": origin,
-                "timestamp": ts,
-                "source": "okx",
-            },
-            "outcomes_dual": {
-                "outcome_15m": outcome,
-                "outcome_1h": outcome,
-                "price_15m_later": later,
-                "price_1h_later": later,
-                "primary_window": "1h",
-            },
-        },
-    }
-
-
-def _cohort(symbol: str, long_outcomes: list[str], short_outcomes: list[str], start: int) -> list[dict]:
-    rows: list[dict] = []
-    idx = start
-    for outcome in long_outcomes:
-        rows.append(_proof_row(idx, symbol, "LONG", outcome))
-        idx += 1
-    for outcome in short_outcomes:
-        rows.append(_proof_row(idx, symbol, "SHORT", outcome))
-        idx += 1
-    return rows
-
-
-BTC5 = _cohort("BTCUSDT", ["WIN", "LOSS", "LOSS"], ["WIN", "LOSS"], 1)
-ETH11 = _cohort(
-    "ETHUSDT",
-    ["WIN", "WIN", "LOSS", "LOSS", "LOSS"],
-    ["WIN", "WIN", "WIN", "LOSS", "LOSS", "LOSS"],
-    100,
-)
-
-
-class ScoreByWindowIsolationTests(unittest.TestCase):
-    def test_btc5_eth11_returns_btc_only_by_window(self):
-        poisoned_runner = {
-            "directional_stats": {
-                "aggregate_diagnostic": {"by_window": {"1h": {"global": {"verified": 999}}}}
-            }
-        }
-        score = build_authoritative_score(BTC5 + ETH11, poisoned_runner, symbol="BTCUSDT")
-        self.assertEqual(score["proof_qualified_rows"], 5)
-        self.assertEqual(score["by_window"]["1h"]["global"]["verified"], 5)
-        self.assertEqual(score["by_window"]["1h"]["LONG"]["verified"], 3)
-        self.assertEqual(score["by_window"]["1h"]["SHORT"]["verified"], 2)
-        self.assertEqual(score["by_window"]["15m"]["global"]["verified"], 5)
-
-    def test_eth_rows_cannot_modify_btc_score_or_by_window(self):
-        solo = build_authoritative_score(BTC5, symbol="BTCUSDT")
-        mixed = build_authoritative_score(BTC5 + ETH11, symbol="BTCUSDT")
-        for key in (
-            "score_status",
-            "authoritative_score_pct",
-            "observed_win_rate_pct",
-            "proof_qualified_rows",
-            "verified",
-            "wins",
-            "losses",
-            "posterior_accuracy",
-            "by_direction",
-            "by_window",
-            "gates",
-            "quality",
-            "reasons",
-            "short_only_paper_mode",
-        ):
-            self.assertEqual(solo[key], mixed[key], key)
-
-
-class RuntimeDirectionalIsolationTests(unittest.TestCase):
-    def setUp(self):
-        self._saved_state = copy.deepcopy(oracle_runner._state)
-
-    def tearDown(self):
-        oracle_runner._state.clear()
-        oracle_runner._state.update(self._saved_state)
-
-    def _refresh(self, rows: list[dict]) -> dict:
-        with patch.object(supabase_client, "fetch_predictions", new=AsyncMock(return_value=rows)):
-            asyncio.run(oracle_runner._refresh_directional_stats())
-        return oracle_runner._state["directional_stats"]
-
-    def test_directional_stats_are_partitioned_by_symbol(self):
-        stats = self._refresh(BTC5 + ETH11)
-        self.assertNotIn("by_window", stats)
-        self.assertEqual(stats["per_symbol"]["BTCUSDT"]["by_window"]["1h"]["global"]["verified"], 5)
-        self.assertEqual(stats["per_symbol"]["ETHUSDT"]["by_window"]["1h"]["global"]["verified"], 11)
-        self.assertEqual(stats["aggregate_diagnostic"]["by_window"]["1h"]["global"]["verified"], 16)
-
-    def test_eth_short_only_gate_cannot_trigger_btc_short_only(self):
-        btc = BTC5
-        eth = _cohort("ETHUSDT", ["LOSS"] * 30, ["WIN"] * 30, 500)
-        stats = self._refresh(btc + eth)
-        self.assertFalse(stats["per_symbol"]["BTCUSDT"]["short_only_paper_mode"])
-        self.assertTrue(stats["per_symbol"]["ETHUSDT"]["short_only_paper_mode"])
-        self.assertFalse(stats["per_symbol"]["BTCUSDT"]["gates"]["short_1h"]["pass"])
-        self.assertTrue(stats["per_symbol"]["ETHUSDT"]["gates"]["short_1h"]["pass"])
-
-
-class _ConfigSink:
-    def __init__(self):
-        self.calls: list[dict] = []
-
-    def update_config(self, **kwargs):
-        self.calls.append(dict(kwargs))
-
-
-class _FakeCoordinator:
-    def __init__(self):
-        self.portfolio_engine = _ConfigSink()
-        self.risk_kernel = _ConfigSink()
-        self.execution_engine = _ConfigSink()
-        self.ingested: list[dict] = []
-
-    async def ingest_prediction(self, **kwargs):
-        self.ingested.append(dict(kwargs))
-        return {"skipped": "fixture", "reason": "AUD-057"}
-
-
-class PortfolioSymbolIsolationTests(unittest.TestCase):
-    def setUp(self):
-        self._saved_state = copy.deepcopy(oracle_runner._state)
-        oracle_runner._state["trade_mode"] = "PAPER"
-        oracle_runner._state["live_capital_locked"] = True
-        oracle_runner._state["directional_stats"] = {
-            "per_symbol": {
-                "BTCUSDT": {
-                    "by_window": {"1h": {"LONG": {"win_rate_pct": 33.33}, "SHORT": {"win_rate_pct": 50.0}}},
-                    "short_only_paper_mode": False,
-                },
-                "ETHUSDT": {
-                    "by_window": {"1h": {"LONG": {"win_rate_pct": 40.0}, "SHORT": {"win_rate_pct": 70.0}}},
-                    "short_only_paper_mode": True,
-                },
-            },
-            "aggregate_diagnostic": {
-                "by_window": {"1h": {"LONG": {"win_rate_pct": 99.0}, "SHORT": {"win_rate_pct": 99.0}}}
-            },
-        }
-
-    def tearDown(self):
-        oracle_runner._state.clear()
-        oracle_runner._state.update(self._saved_state)
-
-    def _route(self, symbol: str) -> _FakeCoordinator:
-        coord = _FakeCoordinator()
-        with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
-            asyncio.run(oracle_runner._route_to_portfolio({"symbol": symbol, "price_now": 100.0}, {}))
-        return coord
-
-    def test_btc_portfolio_uses_only_btc_stats_and_remains_paper_locked(self):
-        coord = self._route("BTCUSDT")
-        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.3333, "SHORT": 0.5})
-        self.assertFalse(coord.portfolio_engine.calls[-1]["short_only_paper_mode"])
-        self.assertEqual(coord.risk_kernel.calls[-1]["trade_mode"], "PAPER")
-        self.assertTrue(coord.risk_kernel.calls[-1]["live_capital_locked"])
-        self.assertEqual(coord.execution_engine.calls[-1], {"trade_mode": "PAPER", "allow_live": False})
-
-    def test_eth_portfolio_uses_only_eth_stats(self):
-        coord = self._route("ETHUSDT")
-        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.4, "SHORT": 0.7})
-        self.assertTrue(coord.portfolio_engine.calls[-1]["short_only_paper_mode"])
-
-
-class ContractPreservationTests(unittest.TestCase):
-    def test_learning_per_symbol_guards_remain_in_source(self):
-        root = Path(__file__).resolve().parents[1]
-        learning = (root / "oracle_runtime" / "institutional_core.py").read_text(encoding="utf-8")
-        self.assertIn('"symbol": f"eq.{normalized}"', learning)
-        self.assertIn('_normalize_symbol(str(row.get("symbol") or "")) == normalized', learning)
-        self.assertIn('and _proof_gate(row)', learning)
-
-    def test_semgrep_workflow_remains_absent(self):
-        repo_root = Path(__file__).resolve().parents[2]
-        self.assertFalse((repo_root / ".github" / "workflows" / "semgrep.yml").exists())
-
-    def test_global_paper_lock_defaults_remain_closed(self):
-        self.assertEqual(oracle_runner._state["trade_mode"], "PAPER")
-        self.assertTrue(oracle_runner._state["live_capital_locked"])
-
-
-if __name__ == "__main__":
-    unittest.main()
-''', encoding='utf-8')
-          PY
+        run: python tools/aud057_apply.py
 
       - name: Install dependencies
         run: pip install -r senecio_polymarket/requirements.txt
@@ -312,7 +35,6 @@ if __name__ == "__main__":
         run: python -m unittest discover -s tests -p 'test_aud_057.py' -v
 
       - name: Commit corrective source changes
-        shell: bash
         run: |
           git config user.name 'AUD-057 automation'
           git config user.email 'aud057@users.noreply.github.com'
