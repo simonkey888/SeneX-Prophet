@@ -12,7 +12,6 @@ import asyncio
 import copy
 import json
 import logging
-import math
 import threading
 import time
 from collections import deque
@@ -29,6 +28,7 @@ CLOB_BASE = "https://clob.polymarket.com"
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 WINDOW_S = 300
 DISCOVERY_INTERVAL_S = 15
+TEXT_HEARTBEAT_S = 9
 
 
 def _jsonish(value: Any) -> list[Any]:
@@ -57,9 +57,7 @@ def current_window_start(now_ts: int | None = None) -> int:
 
 def candidate_slugs(now_ts: int | None = None) -> list[str]:
     start = current_window_start(now_ts)
-    # Current first; next is often pre-created; previous windows are useful
-    # around activation races / clock skew.
-    offsets = (0, WINDOW_S, -WINDOW_S, -2 * WINDOW_S, 2 * WINDOW_S)
+    offsets = (0, WINDOW_S, -WINDOW_S, -2 * WINDOW_S, 2 * WINDOW_S, -3 * WINDOW_S, 3 * WINDOW_S)
     return [f"btc-updown-5m-{start + offset}" for offset in offsets]
 
 
@@ -111,7 +109,7 @@ def book_metrics(book: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _event_market(event: dict[str, Any], now_ts: int) -> dict[str, Any] | None:
+def _event_market(event: dict[str, Any]) -> dict[str, Any] | None:
     markets = event.get("markets") or []
     if not isinstance(markets, list):
         return None
@@ -119,21 +117,18 @@ def _event_market(event: dict[str, Any], now_ts: int) -> dict[str, Any] | None:
     for market in markets:
         if not isinstance(market, dict):
             continue
-        if market.get("closed") is True:
-            continue
-        if market.get("active") is False:
+        if market.get("closed") is True or market.get("active") is False:
             continue
         candidates.append(market)
     if not candidates:
         return None
-    # A BTC Up/Down event normally has one market. Prefer accepting-orders.
     candidates.sort(key=lambda m: bool(m.get("acceptingOrders") or m.get("accepting_orders")), reverse=True)
     return candidates[0]
 
 
 def normalize_event(event: dict[str, Any], now_ts: int | None = None) -> dict[str, Any] | None:
     now_ts = int(time.time() if now_ts is None else now_ts)
-    market = _event_market(event, now_ts)
+    market = _event_market(event)
     if market is None:
         return None
     outcomes = _jsonish(market.get("outcomes"))
@@ -143,28 +138,31 @@ def normalize_event(event: dict[str, Any], now_ts: int | None = None) -> dict[st
     mapping = {str(label).strip().lower(): str(token_ids[i]) for i, label in enumerate(outcomes[: len(token_ids)])}
     up_id = mapping.get("up") or mapping.get("yes") or str(token_ids[0])
     down_id = mapping.get("down") or mapping.get("no") or str(token_ids[1])
-    end_raw = market.get("endDate") or event.get("endDate")
-    end_ts = None
-    if end_raw:
-        try:
-            end_ts = int(datetime.fromisoformat(str(end_raw).replace("Z", "+00:00")).timestamp())
-        except Exception:
-            end_ts = None
+
     slug = event.get("slug") or market.get("slug")
     suffix_ts = None
     try:
         suffix_ts = int(str(slug).rsplit("-", 1)[1])
     except Exception:
         pass
-    if end_ts is None and suffix_ts is not None:
-        end_ts = suffix_ts + WINDOW_S
+
+    start_ts = suffix_ts
+    end_ts = suffix_ts + WINDOW_S if suffix_ts is not None else None
+    if end_ts is None:
+        end_raw = market.get("endDate") or event.get("endDate")
+        if end_raw:
+            try:
+                end_ts = int(datetime.fromisoformat(str(end_raw).replace("Z", "+00:00")).timestamp())
+            except Exception:
+                end_ts = None
+
     return {
         "event_id": event.get("id"),
         "market_id": market.get("id"),
         "condition_id": market.get("conditionId") or market.get("condition_id"),
         "slug": slug,
         "question": market.get("question") or event.get("title") or "BTC Up or Down - 5 Minutes",
-        "start_ts": suffix_ts,
+        "start_ts": start_ts,
         "end_ts": end_ts,
         "active": market.get("active") is not False and event.get("active") is not False,
         "closed": bool(market.get("closed") or event.get("closed")),
@@ -198,7 +196,6 @@ class PolymarketMarketAdapter:
         if self._running:
             return
         self._running = True
-        # Do one synchronous refresh so the first oracle cycle has context.
         await self._refresh_market()
         self._supervisor_task = asyncio.create_task(self._supervisor(), name="polymarket_market_supervisor")
 
@@ -248,7 +245,10 @@ class PolymarketMarketAdapter:
                 normalized = normalize_event(event, now_ts)
                 if not normalized:
                     continue
+                start_ts = normalized.get("start_ts")
                 end_ts = normalized.get("end_ts")
+                if start_ts is not None and start_ts > now_ts + 30:
+                    continue
                 if end_ts is not None and end_ts < now_ts - 20:
                     continue
                 if normalized.get("closed"):
@@ -261,8 +261,8 @@ class PolymarketMarketAdapter:
                     self._last_error = "NO_CURRENT_BTC_5M_MARKET"
                 return
 
-            previous_tokens = None
             with self._lock:
+                previous_tokens = None
                 if self._market:
                     previous_tokens = (self._market.get("up_token_id"), self._market.get("down_token_id"))
             new_tokens = (found["up_token_id"], found["down_token_id"])
@@ -304,20 +304,24 @@ class PolymarketMarketAdapter:
                 if (current.get("up_token_id"), current.get("down_token_id")) != (up_token_id, down_token_id):
                     return
             try:
-                async with websockets.connect(CLOB_WS, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
+                async with websockets.connect(CLOB_WS, ping_interval=None, close_timeout=5) as ws:
                     await ws.send(json.dumps({
                         "assets_ids": [up_token_id, down_token_id],
                         "type": "market",
                         "custom_feature_enabled": True,
                     }))
+                    last_ping = time.monotonic()
                     with self._lock:
                         self._ws_connected = True
                         self._last_error = None
                     while self._running:
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
-                        except asyncio.TimeoutError:
+                        now = time.monotonic()
+                        if now - last_ping >= TEXT_HEARTBEAT_S:
                             await ws.send("PING")
+                            last_ping = now
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+                        except asyncio.TimeoutError:
                             continue
                         if raw in ("PONG", "PING"):
                             continue
@@ -406,6 +410,7 @@ class PolymarketMarketAdapter:
                 "status": "UNAVAILABLE",
                 "read_only": True,
                 "ws_connected": False,
+                "eligible_for_prediction": False,
                 "last_error": last_error,
                 "recent_events": events[:20],
             }
@@ -418,7 +423,7 @@ class PolymarketMarketAdapter:
             up_mid = up.get("last_trade_price") or market.get("gamma_last_trade")
         if down_mid is None and up_mid is not None:
             down_mid = max(0.0, min(1.0, 1.0 - float(up_mid)))
-        denom = (float(up_mid or 0) + float(down_mid or 0))
+        denom = float(up_mid or 0) + float(down_mid or 0)
         up_probability = float(up_mid) / denom if up_mid is not None and denom > 0 else None
         down_probability = 1.0 - up_probability if up_probability is not None else None
 
@@ -427,7 +432,12 @@ class PolymarketMarketAdapter:
         directional_pressure = max(-1.0, min(1.0, 0.75 * prob_pressure + 0.25 * depth_pressure))
         freshness_s = (time.monotonic() - last_update) if last_update is not None else None
         seconds_to_close = max(0, int(market["end_ts"] - now_ts)) if market.get("end_ts") else None
-        live = bool(market.get("active")) and not bool(market.get("closed")) and (seconds_to_close is None or seconds_to_close > 0)
+        live = (
+            bool(market.get("active"))
+            and not bool(market.get("closed"))
+            and bool(market.get("accepting_orders"))
+            and (seconds_to_close is None or seconds_to_close > 0)
+        )
         status = "LIVE_WS" if live and ws_connected else ("LIVE_REST" if live else "STALE")
         eligible = bool(
             live
