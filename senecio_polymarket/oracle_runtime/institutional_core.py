@@ -1,19 +1,10 @@
 """Runtime learning bridge for SENEX's SingleDecisionCore.
 
-This module intentionally shadows ``oracle/institutional_core.py`` in the
-container PYTHONPATH. It loads the original implementation and subclasses only
-``SingleDecisionCore`` so the production decision code remains unchanged while
-adding one bounded, deterministic feedback seam:
-
-    proof-qualified Supabase WIN/LOSS history
-        -> decision-time feature attribution
-        -> bounded weight replay
-        -> next PAPER prediction
-
-The canonical history remains ``oracle_predictions``. No mutable model-state
-row is required: after a restart, the same proof-qualified rows reconstruct the
-same effective weights. Each decision also receives a ``learning_state_v1``
-audit object inside ``pipeline.step2_features``.
+The production predictor is extended with one bounded, deterministic feedback
+seam sourced only from proof-qualified, symbol-scoped historical evidence.
+AUD-059 adds explicit pre-decision provenance so every new PAPER prediction can
+prove exactly which already-settled rows and effective weights were available
+before the decision was made.
 
 Safety invariants:
 - learning consumes only rows that pass ``is_proof_qualified``;
@@ -26,7 +17,9 @@ Safety invariants:
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import math
 import os
 import sys
@@ -40,9 +33,6 @@ _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
 _ORACLE_DIR = _ROOT_DIR / "oracle"
 _ORIGINAL_PATH = _ORACLE_DIR / "institutional_core.py"
-
-# The original module uses bare imports (survivability, market_ev). Preserve its
-# historical import environment before loading it under a private module name.
 if str(_ORACLE_DIR) not in sys.path:
     sys.path.insert(0, str(_ORACLE_DIR))
 
@@ -54,8 +44,6 @@ if _spec is None or _spec.loader is None:
 _original = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_original)
 
-# Re-export the original module surface, except for SingleDecisionCore which is
-# deliberately replaced below.
 for _name in dir(_original):
     if _name == "SingleDecisionCore" or _name.startswith("__"):
         continue
@@ -63,7 +51,7 @@ for _name in dir(_original):
 
 OriginalSingleDecisionCore = _original.SingleDecisionCore
 
-LEARNING_VERSION = "proof-qualified-replay-v1"
+LEARNING_VERSION = "proof-qualified-replay-v2-aud059"
 MIN_LEARNING_EXAMPLES = 10
 MAX_LEARNING_EXAMPLES = 50
 FETCH_LIMIT = 120
@@ -78,7 +66,6 @@ _PRESSURE_TO_WEIGHT = {
     "oi": "oi_momentum",
     "price_momentum": "price_momentum",
 }
-
 _fetch_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
@@ -95,27 +82,33 @@ def _proof_gate(row: dict[str, Any]) -> bool:
 
 
 def _supabase_headers(key: str) -> dict[str, str]:
-    """Match the modern-key semantics used by backend.supabase_client."""
-    headers = {
-        "apikey": key,
-        "Content-Type": "application/json",
-    }
+    headers = {"apikey": key, "Content-Type": "application/json"}
     if key.startswith("eyJ") and key.count(".") == 2:
         headers["Authorization"] = f"Bearer {key}"
     return headers
 
 
-def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
-    """Fetch recent settled rows for one symbol from the canonical store.
+def _weights_payload(weights: dict[str, Any]) -> dict[str, float]:
+    return {k: round(float(v), 6) for k, v in sorted(weights.items())}
 
-    This function deliberately returns candidate settled rows; the strict
-    proof gate is applied by ``replay_authoritative_learning`` before any row
-    can influence a weight.
+
+def effective_weights_hash(weights: dict[str, Any]) -> str:
+    """Deterministic hash of decision-time effective weights."""
+    payload = json.dumps(
+        _weights_payload(weights), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
+    """Fetch recent settled candidates for one symbol from canonical storage.
+
+    The response is still only a candidate set. Strict proof qualification is
+    applied locally before any row can influence a weight.
     """
     normalized = _normalize_symbol(symbol)
     if not normalized:
         return []
-
     now = time.monotonic()
     cached = _fetch_cache.get(normalized)
     if cached and now - cached[0] <= FETCH_CACHE_TTL_S:
@@ -126,7 +119,6 @@ def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
     table = os.environ.get("SUPABASE_TABLE", "oracle_predictions")
     if not url or not key:
         return []
-
     params = {
         "select": "id,ts,symbol,prediction,confidence,price_now,outcome,audit",
         "symbol": f"eq.{normalized}",
@@ -136,12 +128,9 @@ def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
     }
     with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
         response = client.get(
-            f"{url}/rest/v1/{table}",
-            headers=_supabase_headers(key),
-            params=params,
+            f"{url}/rest/v1/{table}", headers=_supabase_headers(key), params=params
         )
     if response.status_code != 200:
-        # Never include the response body: upstream errors can echo request data.
         raise RuntimeError(f"supabase_learning_http_{response.status_code}")
     data = response.json()
     rows = data if isinstance(data, list) else []
@@ -176,7 +165,6 @@ def _reset_replay_state(core: Any) -> dict[str, float]:
     base = dict(getattr(core, "_senex_base_weights", core.weights))
     core.weights.clear()
     core.weights.update(base)
-
     calibration = getattr(core, "_calibration_window", None)
     if calibration is not None:
         calibration.clear()
@@ -200,28 +188,27 @@ def replay_authoritative_learning(
     rows: list[dict[str, Any]],
     symbol: str,
 ) -> dict[str, Any]:
-    """Deterministically replay proof-qualified examples into ``core``.
+    """Replay only already-settled proof-qualified evidence into ``core``.
 
-    The replay uses the feature pressures captured at decision time, not
-    recomputed features. That makes attribution stable even when code changes.
+    ``rows`` is a pre-decision snapshot. The returned provenance records the
+    number of qualified examples available at that moment, the exact selected
+    IDs (latest 50 maximum), and a deterministic effective-weight hash. No
+    outcome from the prediction being produced can be present in this snapshot.
     """
     normalized = _normalize_symbol(symbol)
     base_weights = _reset_replay_state(core)
-
-    qualified = [
+    available = [
         row
         for row in rows
         if _normalize_symbol(str(row.get("symbol") or "")) == normalized
         and _proof_gate(row)
     ]
-    qualified.sort(key=lambda row: str(row.get("ts") or ""))
-    qualified = qualified[-MAX_LEARNING_EXAMPLES:]
+    available.sort(key=lambda row: (str(row.get("ts") or ""), str(row.get("id") or "")))
+    proof_qualified_available_before_decision = len(available)
+    qualified = available[-MAX_LEARNING_EXAMPLES:]
 
     wins = sum(1 for row in qualified if row.get("outcome") == "WIN")
     losses = sum(1 for row in qualified if row.get("outcome") == "LOSS")
-
-    # Calibration consumes authoritative outcomes immediately. Its own core
-    # logic already requires >=10 examples before size scaling activates.
     for row in qualified:
         correct = row.get("outcome") == "WIN"
         try:
@@ -245,19 +232,24 @@ def replay_authoritative_learning(
 
     state: dict[str, Any] = {
         "version": LEARNING_VERSION,
+        "learning_version": LEARNING_VERSION,
         "symbol": normalized,
         "status": "WARMUP",
+        "evidence_cut": "PRE_DECISION_SNAPSHOT",
+        "uses_only_prior_settled_evidence": True,
+        "proof_qualified_available_before_decision": proof_qualified_available_before_decision,
         "min_examples": MIN_LEARNING_EXAMPLES,
+        "max_replayed_examples": MAX_LEARNING_EXAMPLES,
         "proof_qualified_n": len(qualified),
         "wins": wins,
         "losses": losses,
         "source_prediction_ids": [row.get("id") for row in qualified],
         "max_relative_drift": MAX_RELATIVE_DRIFT,
-        "base_weights": {k: round(float(v), 6) for k, v in base_weights.items()},
-        "effective_weights": {k: round(float(v), 6) for k, v in core.weights.items()},
+        "base_weights": _weights_payload(base_weights),
+        "effective_weights": _weights_payload(core.weights),
+        "effective_weights_hash": effective_weights_hash(core.weights),
         "mutations": 0,
     }
-
     if len(qualified) < MIN_LEARNING_EXAMPLES:
         return state
 
@@ -265,7 +257,6 @@ def replay_authoritative_learning(
     weight_min = float(getattr(core, "weight_min", 0.05))
     weight_max = float(getattr(core, "weight_max", 3.0))
     mutations = 0
-
     for row in qualified:
         audit = row.get("audit") or {}
         pipeline = audit.get("pipeline") if isinstance(audit, dict) else {}
@@ -275,18 +266,15 @@ def replay_authoritative_learning(
         pressures = features.get("pressures") or {}
         if not isinstance(pressures, dict):
             continue
-
         pnl_pct = _directional_return(row)
         if pnl_pct is None:
             continue
-        # One extreme candle must not dominate the whole replay.
         pnl_pct = max(-0.02, min(0.02, pnl_pct))
         conviction = float(features.get("conviction") or row.get("confidence") or 0.0)
         expected = conviction * 0.01
         scaled_signal = math.tanh((pnl_pct - expected) * 100.0)
         correct = row.get("outcome") == "WIN"
         side = (row.get("prediction") or "").upper()
-
         for pressure_name, pressure_value_raw in pressures.items():
             weight_name = _PRESSURE_TO_WEIGHT.get(pressure_name)
             if not weight_name or weight_name not in core.weights:
@@ -297,7 +285,6 @@ def replay_authoritative_learning(
                 continue
             if abs(pressure_value) <= 1e-12:
                 continue
-
             pressure_agreed = (
                 (side == "LONG" and pressure_value > 0)
                 or (side == "SHORT" and pressure_value < 0)
@@ -305,16 +292,13 @@ def replay_authoritative_learning(
             if correct:
                 delta = (
                     learning_rate * abs(scaled_signal) * 0.5
-                    if pressure_agreed
-                    else -learning_rate * 0.1
+                    if pressure_agreed else -learning_rate * 0.1
                 )
             else:
                 delta = (
                     -learning_rate * abs(scaled_signal)
-                    if pressure_agreed
-                    else learning_rate * abs(scaled_signal) * 0.3
+                    if pressure_agreed else learning_rate * abs(scaled_signal) * 0.3
                 )
-
             base = float(base_weights[weight_name])
             low = max(weight_min, base * (1.0 - MAX_RELATIVE_DRIFT))
             high = min(weight_max, base * (1.0 + MAX_RELATIVE_DRIFT))
@@ -326,9 +310,8 @@ def replay_authoritative_learning(
 
     state["status"] = "ACTIVE"
     state["mutations"] = mutations
-    state["effective_weights"] = {
-        k: round(float(v), 6) for k, v in core.weights.items()
-    }
+    state["effective_weights"] = _weights_payload(core.weights)
+    state["effective_weights_hash"] = effective_weights_hash(core.weights)
     return state
 
 
@@ -341,8 +324,13 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         self._authoritative_learning_symbol: str | None = None
         self._authoritative_learning_state: dict[str, Any] = {
             "version": LEARNING_VERSION,
+            "learning_version": LEARNING_VERSION,
             "status": "NOT_LOADED",
             "proof_qualified_n": 0,
+            "proof_qualified_available_before_decision": 0,
+            "evidence_cut": "PRE_DECISION_SNAPSHOT",
+            "uses_only_prior_settled_evidence": True,
+            "effective_weights_hash": effective_weights_hash(self.weights),
         }
 
     def _load_learning_for_symbol(self, symbol: str) -> None:
@@ -350,46 +338,48 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         if self._authoritative_learning_symbol == normalized:
             return
         self._authoritative_learning_symbol = normalized
-
         if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
             self._authoritative_learning_state = {
                 "version": LEARNING_VERSION,
+                "learning_version": LEARNING_VERSION,
                 "symbol": normalized,
                 "status": "DISABLED_NO_CONFIG",
+                "evidence_cut": "PRE_DECISION_SNAPSHOT",
+                "uses_only_prior_settled_evidence": True,
                 "proof_qualified_n": 0,
-                "effective_weights": {
-                    k: round(float(v), 6) for k, v in self.weights.items()
-                },
+                "proof_qualified_available_before_decision": 0,
+                "source_prediction_ids": [],
+                "effective_weights": _weights_payload(self.weights),
+                "effective_weights_hash": effective_weights_hash(self.weights),
             }
             return
-
         try:
             candidates = fetch_authoritative_rows(normalized)
             self._authoritative_learning_state = replay_authoritative_learning(
                 self, candidates, normalized
             )
         except Exception as exc:
-            # Fail open to immutable code-defined base weights. Do not leak HTTP
-            # bodies, request headers, or credentials into logs/audit state.
             self.weights.clear()
             self.weights.update(self._senex_base_weights)
             self._authoritative_learning_state = {
                 "version": LEARNING_VERSION,
+                "learning_version": LEARNING_VERSION,
                 "symbol": normalized,
                 "status": "UNAVAILABLE",
                 "error": type(exc).__name__,
+                "evidence_cut": "PRE_DECISION_SNAPSHOT",
+                "uses_only_prior_settled_evidence": True,
                 "proof_qualified_n": 0,
-                "effective_weights": {
-                    k: round(float(v), 6) for k, v in self.weights.items()
-                },
+                "proof_qualified_available_before_decision": 0,
+                "source_prediction_ids": [],
+                "effective_weights": _weights_payload(self.weights),
+                "effective_weights_hash": effective_weights_hash(self.weights),
             }
 
     def decide(self, market: dict, risk_state: dict, execution_state: dict) -> dict:
+        # Learning snapshot is loaded before the prediction decision.
         self._load_learning_for_symbol(str(market.get("symbol") or ""))
         action_vector = super().decide(market, risk_state, execution_state)
-
-        # Strictly additive audit metadata. The original predictor already
-        # finished its decision before this object is attached.
         pipeline = action_vector.setdefault("pipeline", {})
         step2 = pipeline.setdefault("step2_features", {})
         if isinstance(step2, dict):
