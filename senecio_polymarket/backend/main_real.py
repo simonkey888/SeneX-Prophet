@@ -10,6 +10,7 @@ Production starts only:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -52,20 +53,16 @@ async def real_lifespan(app):
     else:
         log.info("SENEX production mode: synthetic scheduler disabled")
 
-    # Read-only adapters are independent; each internally degrades to
-    # UNAVAILABLE rather than blocking the oracle if an upstream is down.
-    await _poly.start()
-    await _boros.start()
-    await _kalshi.start()
+    # Independent public upstreams start in parallel. Each adapter degrades to
+    # UNAVAILABLE instead of blocking oracle operation when an upstream is down.
+    await asyncio.gather(_poly.start(), _boros.start(), _kalshi.start())
     oracle_runner.start()
     log.info("SENEX REAL market runtime up — Polymarket+CLOB + Kalshi + Boros + authoritative oracle")
 
     yield
 
     await oracle_runner.stop()
-    await _kalshi.stop()
-    await _boros.stop()
-    await _poly.stop()
+    await asyncio.gather(_kalshi.stop(), _boros.stop(), _poly.stop())
     if demo:
         await legacy._scheduler.stop()
     await legacy._bus.close()
