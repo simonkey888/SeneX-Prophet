@@ -23,7 +23,6 @@ class PolymarketAdapterTests(unittest.TestCase):
             "active": True,
             "closed": False,
             "resolutionSource": "https://data.chain.link/streams/btc-usd",
-            # Deliberately coarse/wrong for the 5m window: slug must win.
             "endDate": "2026-07-26T00:00:00Z",
             "markets": [{
                 "id": "market-1",
@@ -56,6 +55,59 @@ class PolymarketAdapterTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["bid_depth_5"], 15.0)
         self.assertAlmostEqual(metrics["ask_depth_5"], 10.0)
         self.assertAlmostEqual(metrics["depth_imbalance"], 0.2)
+        self.assertTrue(metrics["depth_current"])
+
+    def test_ws_best_bid_ask_overrides_older_bootstrap_and_marks_depth_stale(self):
+        adapter = poly.PolymarketMarketAdapter()
+        adapter._books["UP"] = {
+            "bids": [{"price": "0.40", "size": "10"}],
+            "asks": [{"price": "0.60", "size": "10"}],
+            "depth_current": True,
+        }
+        adapter._handle_ws_message(
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "up-token",
+                "best_bid": "0.47",
+                "best_ask": "0.51",
+                "timestamp": "2026-08-13T03:00:00Z",
+            },
+            {"up-token": "UP"},
+        )
+        metrics = poly.book_metrics(adapter._books["UP"])
+        self.assertAlmostEqual(metrics["best_bid"], 0.47)
+        self.assertAlmostEqual(metrics["best_ask"], 0.51)
+        self.assertAlmostEqual(metrics["spread"], 0.04)
+        self.assertFalse(metrics["depth_current"])
+        self.assertIsNone(metrics["depth_imbalance"])
+
+    def test_ws_price_change_updates_depth_and_latest_bbo(self):
+        adapter = poly.PolymarketMarketAdapter()
+        adapter._books["UP"] = {
+            "bids": [{"price": "0.40", "size": "10"}],
+            "asks": [{"price": "0.60", "size": "10"}],
+            "depth_current": True,
+        }
+        adapter._handle_ws_message(
+            {
+                "event_type": "price_change",
+                "timestamp": "2026-08-13T03:00:01Z",
+                "price_changes": [{
+                    "asset_id": "up-token",
+                    "side": "BUY",
+                    "price": "0.47",
+                    "size": "12",
+                    "best_bid": "0.47",
+                    "best_ask": "0.60",
+                }],
+            },
+            {"up-token": "UP"},
+        )
+        metrics = poly.book_metrics(adapter._books["UP"])
+        self.assertAlmostEqual(metrics["best_bid"], 0.47)
+        self.assertAlmostEqual(metrics["best_ask"], 0.60)
+        self.assertTrue(metrics["depth_current"])
+        self.assertAlmostEqual(metrics["bid_depth_5"], 22.0)
 
 
 class KalshiAdapterTests(unittest.TestCase):
@@ -110,11 +162,11 @@ class BorosAdapterTests(unittest.TestCase):
 
 class RealMarketCoreTests(unittest.TestCase):
     @staticmethod
-    def _market(poly_ctx):
+    def _market(poly_ctx, *, kalshi_ctx=None, boros_ctx=None):
         candles = []
         for i in range(16):
             candles.append([i, 100.1, 100.2, 99.8, 100.0, 1000.0])
-        return {
+        result = {
             "symbol": "BTC/USDT",
             "timeframe": "15m",
             "ohlcv": candles,
@@ -125,30 +177,66 @@ class RealMarketCoreTests(unittest.TestCase):
             "liquidity_quality": 0.99,
             "polymarket_context": poly_ctx,
         }
+        if kalshi_ctx is not None:
+            result["kalshi_context"] = kalshi_ctx
+        if boros_ctx is not None:
+            result["boros_context"] = boros_ctx
+        return result
 
-    def test_polymarket_pressure_is_fixed_bounded_and_audited(self):
-        core = real_core.SingleDecisionCore()
-        market_state = core.ingest_market(self._market({
+    def _features(self, pressure, *, extra=None):
+        ctx = {
             "eligible_for_prediction": True,
             "status": "LIVE_WS",
             "slug": "btc-updown-5m-1785033600",
-            "up_probability": 0.80,
-            "down_probability": 0.20,
-            "directional_pressure": 0.80,
+            "up_probability": (pressure + 1.0) / 2.0,
+            "down_probability": 1.0 - ((pressure + 1.0) / 2.0),
+            "directional_pressure": pressure,
             "seconds_to_close": 120,
             "freshness_s": 1.0,
             "ws_connected": True,
-        }))
-        features = core.compress_features(market_state)
-        self.assertAlmostEqual(features["pressures"]["polymarket"], 0.20, places=6)
-        self.assertAlmostEqual(
-            features["total_pressure"] - features["base_total_pressure"],
-            0.20,
-            places=6,
-        )
+        }
+        core = real_core.SingleDecisionCore()
+        market = self._market(ctx, **(extra or {}))
+        return core.compress_features(core.ingest_market(market))
+
+    def test_polymarket_directional_use_default_off_is_exactly_invariant(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(real_core.POLYMARKET_EXPERIMENT_FLAG, None)
+            results = [self._features(p) for p in (-1.0, 0.0, 1.0)]
+
+        baseline = results[1]
+        for features in results:
+            self.assertEqual(features["direction"], baseline["direction"])
+            self.assertEqual(features["conviction"], baseline["conviction"])
+            self.assertEqual(features["noise"], baseline["noise"])
+            self.assertEqual(features["total_pressure"], baseline["total_pressure"])
+            self.assertEqual(features["up_prob"], baseline["up_prob"])
+            self.assertEqual(features["down_prob"], baseline["down_prob"])
+            ctx = features["polymarket_context_v1"]
+            self.assertFalse(ctx["directional_use"])
+            self.assertFalse(ctx["experiment_enabled"])
+            self.assertEqual(ctx["effective_weight"], 0.0)
+            self.assertEqual(ctx["pressure_component"], 0.0)
+
+    def test_polymarket_nonzero_weight_requires_explicit_paper_experiment_flag(self):
+        with mock.patch.dict(os.environ, {real_core.POLYMARKET_EXPERIMENT_FLAG: "1"}, clear=False):
+            features = self._features(0.8)
         ctx = features["polymarket_context_v1"]
-        self.assertTrue(ctx["eligible"])
-        self.assertEqual(ctx["fixed_weight"], 0.25)
+        self.assertTrue(ctx["directional_use"])
+        self.assertTrue(ctx["experiment_enabled"])
+        self.assertEqual(ctx["effective_weight"], 0.25)
+        self.assertAlmostEqual(ctx["pressure_component"], 0.20, places=6)
+
+    def test_kalshi_and_boros_extremes_do_not_change_direction_or_conviction(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(real_core.POLYMARKET_EXPERIMENT_FLAG, None)
+            baseline = self._features(0.0)
+            extreme = self._features(0.0, extra={
+                "kalshi_ctx": {"directional_use": False, "market": {"yes_probability": 1.0}},
+                "boros_ctx": {"directional_use": False, "markets": [{"mid_apr": 999.0}]},
+            })
+        for key in ("direction", "conviction", "noise", "total_pressure", "up_prob", "down_prob"):
+            self.assertEqual(extreme[key], baseline[key])
 
     def test_stale_polymarket_context_has_zero_effect(self):
         core = real_core.SingleDecisionCore()
