@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY senecio_polymarket/backend ./backend
 COPY senecio_polymarket/frontend ./frontend
 COPY senecio_polymarket/oracle ./oracle
+COPY senecio_polymarket/oracle_runtime ./oracle_runtime
 
 # Northflank customCommand="./start.sh" remains unchanged.
 # Install the single-authority launcher at both expected runtime paths.
@@ -26,7 +27,10 @@ RUN mkdir -p /app/data/audit && chmod -R 777 /app/data
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app:/app/oracle
+# oracle_runtime intentionally precedes /app/oracle so its institutional_core
+# wrapper can replay proof-qualified PAPER outcomes before delegating to the
+# unchanged original SingleDecisionCore implementation.
+ENV PYTHONPATH=/app/oracle_runtime:/app:/app/oracle
 
 EXPOSE 8080
 
