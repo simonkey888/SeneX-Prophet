@@ -1,14 +1,16 @@
 """Read-only Boros market context.
 
-Boros is used only as auxiliary funding/yield context. It does not create a
-BTC directional signal in SENEX v1 because implied/underlying APR is not a
-validated causal mapping to 5-minute BTC direction.
+Boros is auxiliary real funding/yield context only. It does not create a BTC
+directional signal in SENEX v1 because its funding/APR horizon is not the
+canonical SENEX 1h outcome horizon and is not the Polymarket 5m horizon.
+
+Public source: https://api-boros.pendle.finance/apis/v1/markets
+No wallet, account, agent, signer, calldata, or transaction endpoints are used.
 """
 from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
 import threading
 import time
@@ -22,29 +24,6 @@ BOROS_MARKETS_URL = "https://api-boros.pendle.finance/apis/v1/markets"
 REFRESH_S = 60
 
 
-def _first(obj: dict[str, Any], *names: str) -> Any:
-    for name in names:
-        if name in obj and obj[name] is not None:
-            return obj[name]
-    return None
-
-
-def _extract_market_list(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [x for x in payload if isinstance(x, dict)]
-    if not isinstance(payload, dict):
-        return []
-    for key in ("results", "data", "markets", "items"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [x for x in value if isinstance(x, dict)]
-        if isinstance(value, dict):
-            nested = _extract_market_list(value)
-            if nested:
-                return nested
-    return []
-
-
 def _as_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -52,34 +31,50 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _extract_market_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+    results = payload.get("results")
+    return [x for x in results if isinstance(x, dict)] if isinstance(results, list) else []
+
+
 def normalize_boros_market(raw: dict[str, Any]) -> dict[str, Any]:
-    descriptor = raw.get("descriptor") if isinstance(raw.get("descriptor"), dict) else {}
+    """Normalize the current `/v1/markets` schema used by Boros SDK/examples."""
+    im_data = raw.get("imData") if isinstance(raw.get("imData"), dict) else {}
     metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-    state = raw.get("state") if isinstance(raw.get("state"), dict) else {}
-    merged = {**descriptor, **metadata, **state, **raw}
-    symbol = _first(
-        merged,
-        "fundingRateSymbol", "funding_rate_symbol", "symbol", "pair", "name", "marketName", "displayName",
-    )
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    ext = raw.get("extConfig") if isinstance(raw.get("extConfig"), dict) else {}
+    underlying = metadata.get("underlyingSymbol")
+    funding_symbol = metadata.get("fundingRateSymbol")
+    symbol = underlying or funding_symbol or im_data.get("symbol") or im_data.get("name")
     return {
-        "market_id": _first(merged, "marketId", "market_id", "id"),
+        "market_id": raw.get("marketId"),
+        "name": im_data.get("name"),
         "symbol": symbol,
-        "exchange": _first(merged, "exchange", "venue", "source", "underlyingExchange"),
-        "maturity": _first(merged, "maturity", "expiry", "expiryTimestamp", "maturityTimestamp"),
-        "mid_apr": _as_float(_first(merged, "midApr", "midAPR", "midRate", "mid")),
-        "mark_apr": _as_float(_first(merged, "markApr", "markAPR", "markRate", "mark")),
-        "last_traded_apr": _as_float(_first(merged, "lastTradedApr", "lastTradeApr", "lastRate", "lastTradedRate")),
-        "underlying_apr": _as_float(_first(merged, "underlyingApr", "underlyingAPR", "underlyingRate", "underlying")),
-        "best_bid_apr": _as_float(_first(merged, "bestBid", "bestBidApr", "bestBidAPR")),
-        "best_ask_apr": _as_float(_first(merged, "bestAsk", "bestAskApr", "bestAskAPR")),
-        "open_interest": _as_float(_first(merged, "openInterest", "open_interest", "oi")),
-        "is_whitelisted": _first(merged, "isWhitelisted", "is_whitelisted"),
+        "underlying_symbol": underlying,
+        "funding_rate_symbol": funding_symbol,
+        "maturity": im_data.get("maturity"),
+        "payment_period_s": ext.get("paymentPeriod"),
+        "mid_apr": _as_float(data.get("midApr")),
+        "mark_apr": _as_float(data.get("markApr")),
+        "volume_24h": _as_float(data.get("volume24h")),
+        "open_interest_notional": _as_float(data.get("notionalOI")),
+        "asset_mark_price": _as_float(data.get("assetMarkPrice")),
+        "next_settlement_time": data.get("nextSettlementTime"),
+        "time_to_maturity": data.get("timeToMaturity"),
+        "max_leverage": metadata.get("maxLeverage"),
+        "is_ui_whitelisted": metadata.get("isUiWhitelisted"),
     }
 
 
 def _is_relevant(market: dict[str, Any]) -> bool:
-    text = " ".join(str(v or "") for v in (market.get("symbol"), market.get("exchange"))).upper()
-    return "BTCUSDT" in text or "ETHUSDT" in text or "BTC/USDT" in text or "ETH/USDT" in text
+    text = " ".join(
+        str(market.get(k) or "")
+        for k in ("name", "symbol", "underlying_symbol", "funding_rate_symbol")
+    ).upper()
+    return any(token in text for token in ("BTC", "ETH", "BITCOIN", "ETHEREUM"))
 
 
 class BorosMarketAdapter:
@@ -116,6 +111,7 @@ class BorosMarketAdapter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                log.warning("Boros refresh error: %s", type(exc).__name__)
                 with self._lock:
                     self._last_error = type(exc).__name__
 
@@ -124,9 +120,10 @@ class BorosMarketAdapter:
         error: str | None = None
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=4.0)) as client:
             try:
-                response = await client.get(BOROS_MARKETS_URL, params={"limit": 100})
-                if response.status_code in (400, 404, 422):
-                    response = await client.get(BOROS_MARKETS_URL)
+                response = await client.get(
+                    BOROS_MARKETS_URL,
+                    params={"isMatured": "false", "isUiWhitelisted": "true", "limit": 100},
+                )
                 if response.status_code == 200:
                     payload = response.json()
                 else:
@@ -148,9 +145,15 @@ class BorosMarketAdapter:
             last_refresh = self._last_refresh
             error = self._last_error
         age = time.monotonic() - last_refresh if last_refresh is not None else None
+        if markets and (age is None or age <= REFRESH_S * 2.5):
+            status = "LIVE"
+        elif error:
+            status = "UNAVAILABLE"
+        else:
+            status = "EMPTY"
         return {
             "source": "BOROS_PUBLIC_API",
-            "status": "LIVE" if markets and (age is None or age <= REFRESH_S * 2.5) else ("EMPTY" if not error else "UNAVAILABLE"),
+            "status": status,
             "read_only": True,
             "directional_use": False,
             "purpose": "funding_yield_context_only",
