@@ -6,6 +6,7 @@ Production starts only:
 - proof/settlement oracle_runner
 - public read-only Polymarket market adapter
 - public read-only Boros context adapter
+- public read-only Kalshi BTC 15m context adapter
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from contextlib import asynccontextmanager
 from . import main as legacy
 from . import oracle_runner
 from .boros_market_adapter import get_boros_adapter
+from .kalshi_market_adapter import get_kalshi_adapter
 from .polymarket_market_adapter import get_polymarket_adapter
 
 log = logging.getLogger("senecio.main_real")
@@ -23,6 +25,7 @@ log = logging.getLogger("senecio.main_real")
 app = legacy.app
 _poly = get_polymarket_adapter()
 _boros = get_boros_adapter()
+_kalshi = get_kalshi_adapter()
 
 
 def synthetic_demo_enabled() -> bool:
@@ -49,14 +52,18 @@ async def real_lifespan(app):
     else:
         log.info("SENEX production mode: synthetic scheduler disabled")
 
+    # Read-only adapters are independent; each internally degrades to
+    # UNAVAILABLE rather than blocking the oracle if an upstream is down.
     await _poly.start()
     await _boros.start()
+    await _kalshi.start()
     oracle_runner.start()
-    log.info("SENEX REAL market runtime up — Polymarket+CLOB + Boros + authoritative oracle")
+    log.info("SENEX REAL market runtime up — Polymarket+CLOB + Kalshi + Boros + authoritative oracle")
 
     yield
 
     await oracle_runner.stop()
+    await _kalshi.stop()
     await _boros.stop()
     await _poly.stop()
     if demo:
@@ -76,6 +83,7 @@ async def market_context():
         "mode": "REAL_PLUS_EXPLICIT_DEMO" if synthetic_demo_enabled() else "REAL_ONLY",
         "synthetic_demo_enabled": synthetic_demo_enabled(),
         "polymarket": _poly.snapshot(),
+        "kalshi": _kalshi.snapshot(),
         "boros": _boros.snapshot(),
         "oracle": oracle_runner.get_state(),
         "safety": {
