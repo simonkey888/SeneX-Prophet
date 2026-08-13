@@ -15,7 +15,7 @@
       <div class="logo">⬡</div>
       <div>
         <div class="title">SENEX ORACLE</div>
-        <div class="subtitle">REAL-only • Polymarket CLOB + Boros context • PAPER</div>
+        <div class="subtitle">REAL-only • Polymarket + Kalshi + Boros • PAPER</div>
       </div>
     </div>
     <div id="conn-status" class="pill pill-amber">loading real market…</div>
@@ -86,11 +86,26 @@
     </section>
 
     <section class="col col-mid">
+      <div class="panel">
+        <div class="panel-head"><h2>Kalshi · BTC Up/Down 15m</h2><span id="kalshi-meta" class="meta">cross-venue only</span></div>
+        <div class="risk-grid">
+          <div class="risk-cell"><div class="label">YES / Up</div><div class="value pos" id="kalshi-yes">—</div></div>
+          <div class="risk-cell"><div class="label">NO / Down</div><div class="value neg" id="kalshi-no">—</div></div>
+          <div class="risk-cell"><div class="label">Volume</div><div class="value" id="kalshi-volume">—</div></div>
+          <div class="risk-cell"><div class="label">Open interest</div><div class="value" id="kalshi-oi">—</div></div>
+        </div>
+        <div class="panel-body" style="padding:10px 12px;font-family:var(--mono);font-size:11px">
+          <div id="kalshi-title">—</div>
+          <div id="kalshi-ticker" style="color:var(--text-faint);margin-top:5px">—</div>
+          <div id="kalshi-status" style="color:var(--text-dim);margin-top:5px">—</div>
+        </div>
+      </div>
+
       <div class="panel" style="flex:1">
         <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">informational</span></div>
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>PAIR</th><th>VENUE</th><th>MID APR</th><th>MARK APR</th><th>UNDERLYING</th><th>BID</th><th>ASK</th></tr></thead>
+            <thead><tr><th>PAIR</th><th>MARKET</th><th>MID APR</th><th>MARK APR</th><th>ASSET PX</th><th>VOL 24H</th><th>OI</th></tr></thead>
             <tbody id="boros-body"><tr><td colspan="7" class="placeholder">loading Boros…</td></tr></tbody>
           </table>
         </div>
