@@ -13,20 +13,29 @@ jobs:
     runs-on: ubuntu-latest
     environment: northflank-readonly-audit
     env:
-      NF_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+      NF_MAINT: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+      NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
     steps:
-      - name: Verify Northflank access without exposing token
+      - name: Probe configured credentials without exposing them
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${NF_TOKEN:-}" ]; then
-            echo "NORTHFLANK_MAINTENANCE_TOKEN_PRESENT=NO"
-            exit 42
-          fi
-          echo "::add-mask::$NF_TOKEN"
-          code=$(curl -sS -o /tmp/service.json -w '%{http_code}' \
-            -H "Authorization: Bearer $NF_TOKEN" \
-            https://api.northflank.com/v1/projects/seneciobot/services/senecio-h011)
-          echo "NORTHFLANK_GET_HTTP=$code"
-          test "$code" = "200"
-          jq -r '.data | "SERVICE_ID=\(.id)\nSERVICE_TYPE=\(.serviceType)\nDISABLED_CD=\(.disabledCD)\nACTIVE_SHA=\(.deployment.internal.buildSHA // \"UNKNOWN\")"' /tmp/service.json
+          URL=https://api.northflank.com/v1/projects/seneciobot/services/senecio-h011
+          ok=0
+          for label in MAINTENANCE API; do
+            if [ "$label" = MAINTENANCE ]; then token="${NF_MAINT:-}"; else token="${NF_API:-}"; fi
+            if [ -z "$token" ]; then
+              echo "${label}_TOKEN_PRESENT=NO"
+              continue
+            fi
+            echo "::add-mask::$token"
+            code=$(curl -sS -o "/tmp/${label}.json" -w '%{http_code}' -H "Authorization: Bearer $token" "$URL")
+            echo "${label}_GET_HTTP=$code"
+            if [ "$code" = "200" ]; then
+              echo "VALID_CREDENTIAL=$label"
+              jq -r '.data | "SERVICE_ID=\(.id)\nSERVICE_TYPE=\(.serviceType)\nDISABLED_CD=\(.disabledCD)\nACTIVE_SHA=\(.deployment.internal.buildSHA // \"UNKNOWN\")"' "/tmp/${label}.json"
+              ok=1
+              break
+            fi
+          done
+          test "$ok" = 1
