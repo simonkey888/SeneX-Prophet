@@ -1,16 +1,19 @@
 """Runtime bridge for the production ``predict_only`` module.
 
 The Docker image preserves the original predictor as ``predict_only_base.py``
-and installs this module at ``/app/oracle/predict_only.py``.  Every original
-function is re-exported unchanged except ``run_prediction``.  During that one
-call, the local import name ``institutional_core`` is deterministically bound
-to the proof-qualified learning wrapper.
+and installs this module at ``/app/oracle/predict_only.py``. Every original
+function is re-exported unchanged except ``run_prediction``.
 
-This avoids relying on ``sys.path`` ordering: the legacy predictor inserts its
-own directory at index 0, so PYTHONPATH precedence alone is not sufficient.
+Production additions:
+- bind the proof-qualified learning SingleDecisionCore;
+- inject a bounded read-only Polymarket BTC 5m snapshot before decision time;
+- attach Polymarket + Boros real-market evidence to the prediction audit.
+
+No trading/authentication surface is added.
 """
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 from pathlib import Path
@@ -39,14 +42,114 @@ for _name in dir(_base):
     globals()[_name] = getattr(_base, _name)
 
 
+def _poly_snapshot_for_prediction() -> dict[str, Any]:
+    try:
+        from backend.polymarket_market_adapter import get_polymarket_snapshot
+        raw = get_polymarket_snapshot()
+    except Exception:
+        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
+    if not isinstance(raw, dict):
+        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
+    market = raw.get("market") if isinstance(raw.get("market"), dict) else {}
+    up = raw.get("up") if isinstance(raw.get("up"), dict) else {}
+    down = raw.get("down") if isinstance(raw.get("down"), dict) else {}
+    return {
+        "source": "POLYMARKET_PUBLIC",
+        "version": "polymarket-btc-5m-v1",
+        "status": raw.get("status"),
+        "eligible_for_prediction": bool(raw.get("eligible_for_prediction")),
+        "ws_connected": bool(raw.get("ws_connected")),
+        "slug": market.get("slug"),
+        "condition_id": market.get("condition_id"),
+        "question": market.get("question"),
+        "start_ts": market.get("start_ts"),
+        "end_ts": market.get("end_ts"),
+        "resolution_source": market.get("resolution_source"),
+        "seconds_to_close": raw.get("seconds_to_close"),
+        "freshness_s": raw.get("freshness_s"),
+        "up_probability": raw.get("up_probability"),
+        "down_probability": raw.get("down_probability"),
+        "directional_pressure": raw.get("directional_pressure"),
+        "up": {
+            "best_bid": up.get("best_bid"), "best_ask": up.get("best_ask"),
+            "spread": up.get("spread"), "depth_imbalance": up.get("depth_imbalance"),
+            "bid_depth_5": up.get("bid_depth_5"), "ask_depth_5": up.get("ask_depth_5"),
+            "last_trade_price": up.get("last_trade_price"),
+        },
+        "down": {
+            "best_bid": down.get("best_bid"), "best_ask": down.get("best_ask"),
+            "spread": down.get("spread"), "depth_imbalance": down.get("depth_imbalance"),
+            "bid_depth_5": down.get("bid_depth_5"), "ask_depth_5": down.get("ask_depth_5"),
+            "last_trade_price": down.get("last_trade_price"),
+        },
+    }
+
+
+def _boros_snapshot_for_audit() -> dict[str, Any]:
+    try:
+        from backend.boros_market_adapter import get_boros_snapshot
+        raw = get_boros_snapshot()
+    except Exception:
+        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
+    if not isinstance(raw, dict):
+        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
+    markets = raw.get("markets") if isinstance(raw.get("markets"), list) else []
+    return {
+        "source": "BOROS_PUBLIC_API",
+        "version": "boros-funding-context-v1",
+        "status": raw.get("status"),
+        "directional_use": False,
+        "purpose": "funding_yield_context_only",
+        "freshness_s": raw.get("freshness_s"),
+        "markets": markets[:8],
+        "last_error": raw.get("last_error"),
+    }
+
+
 def run_prediction(market_data: dict) -> dict:
-    """Run the unchanged predictor with the authoritative learning SDC bound."""
+    """Run the base predictor with authoritative learning + real market context."""
+    working = copy.deepcopy(market_data)
+    symbol = str(working.get("symbol") or "").replace("/", "").upper()
+    poly = _poly_snapshot_for_prediction() if symbol == "BTCUSDT" else {
+        "source": "POLYMARKET_PUBLIC",
+        "version": "polymarket-btc-5m-v1",
+        "status": "NOT_APPLICABLE",
+        "eligible_for_prediction": False,
+    }
+    boros = _boros_snapshot_for_audit()
+    working["polymarket_context"] = poly
+    working["boros_context"] = boros
+
     previous = sys.modules.get("institutional_core")
     sys.modules["institutional_core"] = _learning_core
     try:
-        return _base.run_prediction(market_data)
+        result = _base.run_prediction(working)
     finally:
         if previous is None:
             sys.modules.pop("institutional_core", None)
         else:
             sys.modules["institutional_core"] = previous
+
+    audit = result.setdefault("_audit", {})
+    if isinstance(audit, dict):
+        external = {
+            "version": "real-market-context-v1",
+            "polymarket": poly,
+            "boros": boros,
+        }
+        pipeline = audit.get("pipeline") if isinstance(audit.get("pipeline"), dict) else {}
+        step2 = pipeline.get("step2_features") if isinstance(pipeline, dict) else {}
+        market_up = poly.get("up_probability")
+        model_up = step2.get("up_prob") if isinstance(step2, dict) else None
+        try:
+            if market_up is not None and model_up is not None:
+                external["polymarket_model_edge_v1"] = {
+                    "model_up": round(float(model_up), 6),
+                    "market_up": round(float(market_up), 6),
+                    "up_edge": round(float(model_up) - float(market_up), 6),
+                    "diagnostic_only": True,
+                }
+        except (TypeError, ValueError):
+            pass
+        audit["external_markets_v1"] = external
+    return result
