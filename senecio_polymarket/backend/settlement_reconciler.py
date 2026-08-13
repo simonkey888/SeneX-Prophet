@@ -20,6 +20,8 @@ from typing import Any, Optional
 import ccxt
 import httpx
 
+from .supabase_client import build_supabase_headers
+
 log = logging.getLogger("senex.settlement_reconciler")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -35,12 +37,7 @@ WINDOW_1H_S = 3600
 def _headers() -> dict[str, str]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be provided by the runtime environment")
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    return build_supabase_headers(SUPABASE_KEY)
 
 
 def _normalize_symbol(symbol: str) -> str:
