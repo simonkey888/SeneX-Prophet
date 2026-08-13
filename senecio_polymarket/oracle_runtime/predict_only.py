@@ -7,7 +7,8 @@ function is re-exported unchanged except ``run_prediction``.
 Production additions:
 - bind the proof-qualified learning + real-market SingleDecisionCore;
 - inject a bounded read-only Polymarket BTC 5m snapshot before decision time;
-- attach Polymarket + Kalshi + Boros real-market evidence to prediction audit.
+- attach Polymarket + Kalshi + Boros real-market evidence to prediction audit;
+- label persisted confidence explicitly as raw conviction, not calibrated P(correct).
 
 Kalshi (15m) and Boros (funding/APR) are context-only in v1 because their
 horizons differ from the canonical SENEX 1h score. No trading/authentication
@@ -161,6 +162,17 @@ def run_prediction(market_data: dict) -> dict:
 
     audit = result.setdefault("_audit", {})
     if isinstance(audit, dict):
+        # AUD-059: confidence remains the historical persisted field, but its
+        # statistical meaning is explicit and cannot be mistaken for P(correct).
+        audit["confidence_semantics_v1"] = {
+            "version": "confidence-semantics-v1",
+            "field": "confidence",
+            "source": "pipeline.step2_features.conviction",
+            "semantics": "RAW_CONVICTION",
+            "probability_semantics": "UNVALIDATED",
+            "calibrated_probability": False,
+            "brier_ece_authority_eligible": False,
+        }
         external = {
             "version": "real-market-context-v1",
             "polymarket": poly,
