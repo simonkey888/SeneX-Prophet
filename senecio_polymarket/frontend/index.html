@@ -4,10 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#07090d" />
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>SENECIO ORACLE — Polymarket Cockpit</title>
-<meta name="oracle-version" content="ACT-XX-ORACLE-FIRST-V3" />
+<title>SENEX ORACLE — REAL Market Cockpit</title>
+<meta name="oracle-version" content="REAL-MARKET-V1" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -16,175 +14,127 @@
     <div class="brand">
       <div class="logo">⬡</div>
       <div>
-        <div class="title">SENECIO ORACLE</div>
-        <div class="subtitle">Polymarket-style autonomous trading intelligence stack</div>
+        <div class="title">SENEX ORACLE</div>
+        <div class="subtitle">REAL-only • Polymarket CLOB + Boros context • PAPER</div>
       </div>
     </div>
-    <div id="conn-status" class="pill pill-amber">connecting…</div>
+    <div id="conn-status" class="pill pill-amber">loading real market…</div>
     <div class="topbar-stats">
-      <span id="stat-events" class="stat">events: <b>0</b></span>
-      <span id="stat-ticks"   class="stat">ticks: <b>0</b></span>
-      <span id="stat-signals" class="stat">signals: <b>0</b></span>
-      <span id="stat-fills"   class="stat">fills: <b>0</b></span>
-      <span id="stat-equity"  class="stat">equity: <b>$10,000</b></span>
+      <span class="stat">mode: <b id="stat-mode">—</b></span>
+      <span class="stat">CLOB: <b id="stat-clob">—</b></span>
+      <span class="stat">oracle: <b id="stat-oracle">—</b></span>
+      <span class="stat">live: <b>LOCKED</b></span>
     </div>
   </header>
 
   <main>
-    <!-- FIRST COLUMN (was 4th): REAL ORACLE — Supabase-backed predictions -->
     <section class="col col-oracle">
       <div class="panel">
         <div class="panel-head">
-          <h2>Oracle Score</h2>
-          <span id="oracle-score-meta" class="meta">live</span>
+          <h2>Authoritative score · 1h gate</h2>
+          <span id="oracle-score-meta" class="meta">proof-qualified only</span>
         </div>
-        <div id="oracle-score" class="oracle-score-grid">
-          <div class="score-card">
-            <div class="score-label">Total</div>
-            <div class="score-value" id="score-total">—</div>
-          </div>
-          <div class="score-card">
-            <div class="score-label">Verified</div>
-            <div class="score-value" id="score-verified">—</div>
-          </div>
-          <div class="score-card score-win">
-            <div class="score-label">Win rate</div>
-            <div class="score-value" id="score-winrate">—</div>
-          </div>
-          <div class="score-card">
-            <div class="score-label">Next cycle</div>
-            <div class="score-value" id="score-next" style="font-size:13px">—</div>
-          </div>
+        <div class="oracle-score-grid">
+          <div class="score-card"><div class="score-label">Total</div><div class="score-value" id="score-total">—</div></div>
+          <div class="score-card"><div class="score-label">Verified</div><div class="score-value" id="score-verified">—</div></div>
+          <div class="score-card score-win"><div class="score-label">Win rate</div><div class="score-value" id="score-winrate">—</div></div>
+          <div class="score-card"><div class="score-label">Next cycle</div><div class="score-value" id="score-next" style="font-size:13px">—</div></div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-head">
-          <h2>Oracle Predictions (live DB)</h2>
-          <span id="oracle-pred-meta" class="meta">—</span>
-        </div>
+      <div class="panel" style="flex:1">
+        <div class="panel-head"><h2>Oracle predictions · Supabase</h2><span id="oracle-pred-meta" class="meta">—</span></div>
         <div class="table-wrap">
           <table id="oracle-table" class="table">
-            <thead>
-              <tr>
-                <th>TS</th><th>SYM</th><th>PRED</th><th>CONF</th><th>EV</th><th>PRICE</th><th>EX</th><th>OUT</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td colspan="8" class="placeholder">loading…</td></tr>
-            </tbody>
+            <thead><tr><th>TS</th><th>SYM</th><th>PRED</th><th>CONF</th><th>LEARN</th><th>POLY</th><th>OUT</th></tr></thead>
+            <tbody><tr><td colspan="7" class="placeholder">loading…</td></tr></tbody>
           </table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head"><h2>Confidence Trend (last 50)</h2></div>
-        <div class="chart-wrap">
-          <canvas id="oracle-conf-chart"></canvas>
         </div>
       </div>
     </section>
 
-    <!-- SECOND COLUMN: live feed -->
     <section class="col col-left">
       <div class="panel">
-        <div class="panel-head">
-          <h2>Live Event Stream</h2>
-          <div class="filter-chips" id="filter-chips">
-            <button class="chip active" data-type="">ALL</button>
-            <button class="chip" data-type="MARKET_TICK">TICK</button>
-            <button class="chip" data-type="WALLET_ALERT">WALLET</button>
-            <button class="chip" data-type="MARKET_CANDIDATE">CAND</button>
-            <button class="chip" data-type="SIGNAL">SIG</button>
-            <button class="chip" data-type="EXECUTION_SIM">EXEC</button>
-            <button class="chip" data-type="RISK_STATE">RISK</button>
-            <button class="chip" data-type="AUDIT_TRACE">AUD</button>
-          </div>
+        <div class="panel-head"><h2>Polymarket · BTC Up/Down 5m</h2><span id="poly-meta" class="meta">public read-only</span></div>
+        <div class="risk-grid">
+          <div class="risk-cell"><div class="label">UP probability</div><div class="value pos" id="poly-up">—</div></div>
+          <div class="risk-cell"><div class="label">DOWN probability</div><div class="value neg" id="poly-down">—</div></div>
+          <div class="risk-cell"><div class="label">Directional pressure</div><div class="value" id="poly-pressure">—</div></div>
+          <div class="risk-cell"><div class="label">Closes in</div><div class="value" id="poly-close">—</div></div>
         </div>
-        <div id="feed" class="feed"></div>
+        <div class="panel-body" style="padding:10px 12px;font-family:var(--mono);font-size:11px">
+          <div id="poly-question" style="color:var(--text);margin-bottom:6px">—</div>
+          <div id="poly-slug" style="color:var(--text-faint);word-break:break-all">—</div>
+          <div id="poly-resolution" style="color:var(--text-dim);margin-top:6px">—</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Polymarket CLOB · real orderbook</h2><span id="poly-book-meta" class="meta">—</span></div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>OUTCOME</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>BID D5</th><th>ASK D5</th><th>IMB</th></tr></thead>
+            <tbody id="poly-book-body"><tr><td colspan="7" class="placeholder">waiting for CLOB…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1">
+        <div class="panel-head"><h2>CLOB live events</h2><span class="meta">WebSocket public</span></div>
+        <div id="poly-feed" class="feed"></div>
       </div>
     </section>
 
-    <!-- THIRD COLUMN: scanner + wallet + decision trace -->
     <section class="col col-mid">
-      <div class="panel">
-        <div class="panel-head"><h2>Scanner Ranking</h2><span id="scanner-meta" class="meta">—</span></div>
+      <div class="panel" style="flex:1">
+        <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">informational</span></div>
         <div class="table-wrap">
-          <table id="scanner-table" class="table">
-            <thead>
-              <tr>
-                <th>#</th><th>SYM</th><th>SCAN</th><th>SCORE</th><th>REASONS</th><th>TS</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
+          <table class="table">
+            <thead><tr><th>PAIR</th><th>VENUE</th><th>MID APR</th><th>MARK APR</th><th>UNDERLYING</th><th>BID</th><th>ASK</th></tr></thead>
+            <tbody id="boros-body"><tr><td colspan="7" class="placeholder">loading Boros…</td></tr></tbody>
           </table>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Wallet Activity</h2><span id="wallet-meta" class="meta">—</span></div>
-        <div class="table-wrap">
-          <table id="wallet-table" class="table">
-            <thead>
-              <tr>
-                <th>WALLET</th><th>SYM</th><th>ACTION</th><th>SIZE</th><th>LABEL</th><th>TS</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head"><h2>Decision Trace (Latest Signal)</h2></div>
-        <div id="decision-trace" class="decision-trace">
-          <div class="placeholder">Awaiting first signal…</div>
-        </div>
+        <div class="panel-head"><h2>Latest BTC decision context</h2><span class="meta">audit</span></div>
+        <div id="decision-context" class="decision-trace"><div class="placeholder">awaiting prediction…</div></div>
       </div>
     </section>
 
-    <!-- RIGHT COLUMN: positions + risk + charts -->
     <section class="col col-right">
       <div class="panel">
-        <div class="panel-head"><h2>Open Positions (paper)</h2></div>
-        <div class="table-wrap">
-          <table id="positions-table" class="table">
-            <thead>
-              <tr><th>SYM</th><th>QTY</th><th>ENTRY</th><th>STOP</th><th>TGT</th><th>TS</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+        <div class="panel-head"><h2>Runtime & safety</h2></div>
+        <div class="risk-grid">
+          <div class="risk-cell"><div class="label">Market mode</div><div class="value" id="safe-market-mode">—</div></div>
+          <div class="risk-cell"><div class="label">Trade mode</div><div class="value" id="safe-trade-mode">—</div></div>
+          <div class="risk-cell"><div class="label">Live capital</div><div class="value pos" id="safe-live">LOCKED</div></div>
+          <div class="risk-cell"><div class="label">Synthetic scheduler</div><div class="value pos" id="safe-synth">OFF</div></div>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h2>Risk & Calibration</h2></div>
-        <div id="risk-grid" class="risk-grid"></div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head"><h2>Equity Curve (paper)</h2></div>
-        <div class="chart-wrap">
-          <canvas id="equity-chart"></canvas>
+        <div class="panel-head"><h2>Learning loop</h2><span class="meta">proof-qualified replay</span></div>
+        <div class="risk-grid">
+          <div class="risk-cell"><div class="label">BTC state</div><div class="value" id="learn-state">—</div></div>
+          <div class="risk-cell"><div class="label">Qualified N</div><div class="value" id="learn-n">—</div></div>
+          <div class="risk-cell"><div class="label">Mutations</div><div class="value" id="learn-mutations">—</div></div>
+          <div class="risk-cell"><div class="label">Poly weight</div><div class="value" id="learn-poly-weight">0.25 FIXED</div></div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-head"><h2>Confidence Distribution</h2></div>
-        <div class="chart-wrap">
-          <canvas id="confidence-chart"></canvas>
-        </div>
+      <div class="panel" style="flex:1">
+        <div class="panel-head"><h2>Source integrity</h2></div>
+        <div id="source-integrity" class="decision-trace"></div>
       </div>
     </section>
-
   </main>
 
   <footer>
-    <span>SENECIO ORACLE • ACT XIX • Unified Oracle + Supabase • paper-only • all events auditable</span>
-    <span id="cursor-display">cursor: clob=0 / onchain=0</span>
+    <span>SENEX REAL-MARKET-V1 • no synthetic market feed • PAPER-only • no wallet/signer/orders</span>
+    <span id="footer-freshness">—</span>
   </footer>
 </div>
-
 <script src="/static/app.js"></script>
 </body>
 </html>
