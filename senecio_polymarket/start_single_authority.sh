@@ -30,7 +30,9 @@ start_reconciler() {
 
 start_reconciler
 
-uvicorn backend.main:app \
+# Production entrypoint intentionally uses main_real: synthetic market scheduler
+# is disabled unless SENEX_ENABLE_SYNTHETIC_DEMO=1 is explicitly supplied.
+uvicorn backend.main_real:app \
   --host 0.0.0.0 \
   --port 8080 \
   --workers 1 \
