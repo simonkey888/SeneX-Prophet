@@ -8,8 +8,9 @@ Production starts only:
 - public read-only Boros context adapter
 - public read-only Kalshi BTC 15m context adapter
 
-AUD-055 additionally replaces the legacy public score route with a truth-safe
-version whose authoritative score remains null until all evidence gates pass.
+AUD-055/R1 replaces the legacy public score route with a truth-safe,
+instrument-scoped version whose authoritative score remains null until all
+proof, evidence, and calibration/quality gates pass.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from fastapi import Query
 from fastapi.routing import APIRoute
 
 from . import main as legacy
@@ -79,12 +81,20 @@ async def real_lifespan(app):
 app.router.lifespan_context = real_lifespan
 
 
-async def authoritative_oracle_score():
-    """Truth-safe public 1h score: diagnostic until all calibration gates pass."""
+async def authoritative_oracle_score(symbol: str | None = Query(default=None)):
+    """Truth-safe 1h score; authority is always scoped to one instrument."""
     from . import supabase_client
 
-    rows = await supabase_client.fetch_predictions(limit=500)
-    return build_authoritative_score(rows, oracle_runner.get_state())
+    normalized_symbol = (
+        str(symbol).upper().replace("/", "").replace("-", "").strip()
+        if symbol else None
+    )
+    rows = await supabase_client.fetch_predictions(limit=500, symbol=normalized_symbol)
+    return build_authoritative_score(
+        rows,
+        oracle_runner.get_state(),
+        symbol=normalized_symbol,
+    )
 
 
 def _install_authoritative_score_route() -> None:
