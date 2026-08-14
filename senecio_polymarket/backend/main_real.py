@@ -2,15 +2,10 @@
 
 The legacy FastAPI app and its endpoints are retained, but its synthetic demo
 scheduler is NOT started unless SENEX_ENABLE_SYNTHETIC_DEMO=1 is explicitly set.
-Production starts only:
-- proof/settlement oracle_runner
-- public read-only Polymarket market adapter
-- public read-only Boros context adapter
-- public read-only Kalshi BTC 15m context adapter
-
-AUD-055/R1 replaces the legacy public score route with a truth-safe,
-instrument-scoped version whose authoritative score remains null until all
-proof, evidence, and calibration/quality gates pass.
+Production starts only the proof/settlement oracle runner and public read-only
+market adapters. AUD-059 explicitly quarantines the pre-SCORE-002 historical
+outcome backfill: settled legacy rows are excluded or qualified by the proof
+gate, never rewritten as a repair mechanism.
 """
 from __future__ import annotations
 
@@ -41,9 +36,21 @@ def synthetic_demo_enabled() -> bool:
     return (os.environ.get("SENEX_ENABLE_SYNTHETIC_DEMO") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def quarantine_legacy_outcome_backfill() -> None:
+    """Disable the obsolete historical WIN/LOSS rewrite path before startup.
+
+    This is an in-memory runtime guard only; it performs no Supabase mutation.
+    The normal NULL->WIN/LOSS settlement authority and repair-only reconciler
+    remain unchanged.
+    """
+    oracle_runner._state["bogus_backfill_done"] = True
+    oracle_runner._state["bogus_backfill_count"] = 0
+    oracle_runner._state["bogus_backfill_errors"] = 0
+    oracle_runner._state["legacy_backfill_quarantined"] = True
+
+
 @asynccontextmanager
 async def real_lifespan(app):
-    # Preserve app.state compatibility for existing read-only endpoints.
     app.state.audit = legacy._audit
     app.state.bus = legacy._bus
     app.state.retriever = legacy._retriever
@@ -61,9 +68,9 @@ async def real_lifespan(app):
     else:
         log.info("SENEX production mode: synthetic scheduler disabled")
 
-    # Independent public upstreams start in parallel. Each adapter degrades to
-    # UNAVAILABLE instead of blocking oracle operation when an upstream is down.
     await asyncio.gather(_poly.start(), _boros.start(), _kalshi.start())
+    quarantine_legacy_outcome_backfill()
+    log.info("AUD-059: legacy historical outcome backfill QUARANTINED (no rewrite)")
     oracle_runner.start()
     log.info("SENEX REAL market runtime up — Polymarket+CLOB + Kalshi + Boros + authoritative oracle")
 
@@ -77,7 +84,6 @@ async def real_lifespan(app):
     log.info("SENEX REAL market runtime down")
 
 
-# Replace the legacy app lifespan before uvicorn starts it.
 app.router.lifespan_context = real_lifespan
 
 
@@ -129,6 +135,7 @@ async def market_context():
         "safety": {
             "trade_mode": "PAPER",
             "allow_live": False,
+            "orders_enabled": False,
             "live_capital_locked": True,
             "read_only_market_adapters": True,
         },

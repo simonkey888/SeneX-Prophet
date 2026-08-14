@@ -125,14 +125,22 @@ class RuntimeDirectionalIsolationTests(unittest.TestCase):
         self.assertEqual(stats["per_symbol"]["ETHUSDT"]["by_window"]["1h"]["global"]["verified"], 11)
         self.assertEqual(stats["aggregate_diagnostic"]["by_window"]["1h"]["global"]["verified"], 16)
 
-    def test_eth_short_only_gate_cannot_trigger_btc_short_only(self):
+    def test_eth_raw_overlap_cannot_trigger_control_short_only(self):
         btc = BTC5
         eth = _cohort("ETHUSDT", ["LOSS"] * 30, ["WIN"] * 30, 500)
         stats = self._refresh(btc + eth)
         self.assertFalse(stats["per_symbol"]["BTCUSDT"]["short_only_paper_mode"])
-        self.assertTrue(stats["per_symbol"]["ETHUSDT"]["short_only_paper_mode"])
+        self.assertFalse(stats["per_symbol"]["ETHUSDT"]["short_only_paper_mode"])
+        self.assertEqual(
+            stats["per_symbol"]["ETHUSDT"]["by_window"]["1h"]["SHORT"]["verified"],
+            30,
+        )
+        self.assertEqual(
+            stats["per_symbol"]["ETHUSDT"]["authority_1h"]["SHORT"]["verified"],
+            0,
+        )
         self.assertFalse(stats["per_symbol"]["BTCUSDT"]["gates"]["short_1h"]["pass"])
-        self.assertTrue(stats["per_symbol"]["ETHUSDT"]["gates"]["short_1h"]["pass"])
+        self.assertFalse(stats["per_symbol"]["ETHUSDT"]["gates"]["short_1h"]["pass"])
 
 
 class _ConfigSink:
@@ -164,10 +172,12 @@ class PortfolioSymbolIsolationTests(unittest.TestCase):
             "per_symbol": {
                 "BTCUSDT": {
                     "by_window": {"1h": {"LONG": {"win_rate_pct": 33.33}, "SHORT": {"win_rate_pct": 50.0}}},
+                    "authority_1h": {"LONG": {"win_rate_pct": 33.33}, "SHORT": {"win_rate_pct": 50.0}},
                     "short_only_paper_mode": False,
                 },
                 "ETHUSDT": {
                     "by_window": {"1h": {"LONG": {"win_rate_pct": 40.0}, "SHORT": {"win_rate_pct": 70.0}}},
+                    "authority_1h": {"LONG": {"win_rate_pct": 40.0}, "SHORT": {"win_rate_pct": 70.0}},
                     "short_only_paper_mode": True,
                 },
             },

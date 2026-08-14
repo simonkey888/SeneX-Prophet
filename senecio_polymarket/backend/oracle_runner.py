@@ -36,6 +36,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+from .authoritative_score import build_authoritative_score
 from .settlement_proof import is_proof_qualified
 
 # Make oracle modules importable
@@ -64,7 +65,9 @@ _state: dict[str, Any] = {
     "last_verify_at": None,
     "last_verify_count": None,        # how many outcomes were settled in last run
     "last_verify_ids": [],            # ids settled in last run (for debug, capped at 10)
-    "verified_total": 0,              # running total of verified predictions
+    "verified_total": 0,              # raw cross-symbol diagnostic count only
+    "verified_total_diagnostic_only": True,
+    "verified_total_scope": "CROSS_SYMBOL_RAW_PROOF_QUALIFIED",
     # ACT-XXII-prereq: bogus-outcome backfill state
     "bogus_backfill_done": False,     # set True after _backfill_bogus_outcomes() runs once
     "bogus_backfill_count": None,     # how many rows re-settled with historical price
@@ -75,6 +78,8 @@ _state: dict[str, Any] = {
     "directional_stats": {
         "per_symbol": {},
         "aggregate_diagnostic": {
+            "diagnostic_only": True,
+            "scope": "CROSS_SYMBOL_RAW_PROOF_QUALIFIED",
             "by_window": {
                 "15m": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
                 "1h": {"LONG": {}, "SHORT": {}, "FLAT": {}, "global": {}},
@@ -714,13 +719,16 @@ async def _refresh_directional_stats() -> None:
         log.warning("supabase_client unavailable for directional stats: %s", e)
         return
 
+    # The global bounded query is diagnostic only. It must never provide the
+    # authority cohort because newer activity in one symbol can evict another
+    # symbol from the global newest-N window.
     try:
-        rows = await supabase_client.fetch_predictions(limit=500)
+        diagnostic_rows = await supabase_client.fetch_predictions(limit=500)
     except Exception as e:
-        log.warning("directional stats fetch failed: %s", e)
-        return
+        log.warning("aggregate directional diagnostic fetch failed: %s", e)
+        diagnostic_rows = []
 
-    def build_by_window(source_rows: list[dict[str, Any]]) -> dict[str, dict]:
+    def build_diagnostic_by_window(source_rows: list[dict[str, Any]]) -> dict[str, dict]:
         buckets: dict[str, dict[str, dict[str, int]]] = {
             "15m": {
                 "LONG": {"WIN": 0, "LOSS": 0},
@@ -751,7 +759,7 @@ async def _refresh_directional_stats() -> None:
 
         by_window: dict[str, dict] = {}
         for window in ("15m", "1h"):
-            by_window[window] = {}
+            by_window[window] = {"diagnostic_only": True}
             total_w = total_l = 0
             for direction in ("LONG", "SHORT", "FLAT"):
                 wins = buckets[window][direction]["WIN"]
@@ -764,6 +772,7 @@ async def _refresh_directional_stats() -> None:
                     "wins": wins,
                     "losses": losses,
                     "win_rate_pct": round((wins / verified * 100) if verified else 0.0, 2),
+                    "diagnostic_only": True,
                 }
             total = total_w + total_l
             by_window[window]["global"] = {
@@ -771,54 +780,58 @@ async def _refresh_directional_stats() -> None:
                 "wins": total_w,
                 "losses": total_l,
                 "win_rate_pct": round((total_w / total * 100) if total else 0.0, 2),
+                "diagnostic_only": True,
             }
         return by_window
 
-    def build_gates(by_window: dict[str, dict]) -> dict[str, dict[str, Any]]:
-        specs = {
-            "long_1h": ("LONG", 50.0, 30),
-            "short_1h": ("SHORT", 55.0, 30),
-            "global_1h": ("global", 52.0, 100),
-        }
-        result: dict[str, dict[str, Any]] = {}
-        for gate_name, (bucket_name, threshold_pct, min_n) in specs.items():
-            bucket = (by_window.get("1h") or {}).get(bucket_name) or {}
-            verified = int(bucket.get("verified") or 0)
-            win_rate_pct = float(bucket.get("win_rate_pct") or 0.0)
-            result[gate_name] = {
-                "pass": bool(verified >= min_n and win_rate_pct >= threshold_pct),
-                "win_rate_pct": win_rate_pct,
-                "n": verified,
-                "threshold_pct": threshold_pct,
-                "min_n": min_n,
-            }
-        return result
-
-    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
     all_qualified: list[dict[str, Any]] = []
-    for row in rows:
+    for row in diagnostic_rows:
         if not is_proof_qualified(row):
             continue
         symbol = _normalize_symbol(row.get("symbol"))
         if not symbol:
             continue
-        qualified_by_symbol.setdefault(symbol, []).append(row)
         all_qualified.append(row)
 
     configured_symbols = {_normalize_symbol(symbol) for symbol in SYMBOLS}
-    symbols = sorted(configured_symbols | set(qualified_by_symbol))
+    symbols = sorted(configured_symbols)
+    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for symbol in symbols:
+        try:
+            # PostgREST applies this equality filter before the bounded limit,
+            # preserving an independent evidence window for each instrument.
+            symbol_rows = await supabase_client.fetch_predictions(
+                limit=500,
+                symbol=symbol,
+            )
+        except Exception as e:
+            log.warning("directional stats fetch failed for %s: %s", symbol, e)
+            symbol_rows = []
+        qualified_by_symbol[symbol] = [
+            row for row in symbol_rows
+            if is_proof_qualified(row)
+            and _normalize_symbol(row.get("symbol")) == symbol
+        ]
+
     per_symbol: dict[str, dict[str, Any]] = {}
 
     for symbol in symbols:
-        by_window = build_by_window(qualified_by_symbol.get(symbol, []))
-        gates = build_gates(by_window)
-        short_only = bool(
-            gates["short_1h"]["pass"] and not gates["long_1h"]["pass"]
+        score = build_authoritative_score(
+            qualified_by_symbol.get(symbol, []),
+            symbol=symbol,
         )
+        gates = score["gates"]
+        short_only = bool(score["short_only_paper_mode"])
         per_symbol[symbol] = {
-            "by_window": by_window,
+            # Overlapping proof-qualified rows remain visible for diagnosis only.
+            "by_window": score["by_window"],
+            # Portfolio/risk control consumes only this independent 1h authority.
+            "authority_1h": score["authority_1h"],
             "gates": gates,
             "short_only_paper_mode": short_only,
+            "proof_qualified_rows_raw": score["proof_qualified_rows_raw"],
+            "independent_1h_rows": score["independent_1h_rows"],
+            "authority_cohort": score["authority_cohort"],
         }
         log.info(
             "directional gates symbol=%s LONG_1h=%s(wr=%.1f%% n=%d) "
@@ -834,10 +847,14 @@ async def _refresh_directional_stats() -> None:
             short_only,
         )
 
-    aggregate_by_window = build_by_window(all_qualified)
+    aggregate_by_window = build_diagnostic_by_window(all_qualified)
     _state["directional_stats"] = {
         "per_symbol": per_symbol,
-        "aggregate_diagnostic": {"by_window": aggregate_by_window},
+        "aggregate_diagnostic": {
+            "diagnostic_only": True,
+            "scope": "CROSS_SYMBOL_RAW_PROOF_QUALIFIED",
+            "by_window": aggregate_by_window,
+        },
     }
     _state["verified_total"] = aggregate_by_window["1h"]["global"]["verified"]
 
@@ -950,11 +967,11 @@ async def _route_to_portfolio(prediction: dict, market_data: dict) -> None:
     symbol_stats = (
         (_state.get("directional_stats") or {}).get("per_symbol") or {}
     ).get(symbol) or {}
-    by_window = symbol_stats.get("by_window") or {}
+    authority_1h = symbol_stats.get("authority_1h") or {}
     win_rate_by_dir = {}
     try:
         for direction in ("LONG", "SHORT"):
-            direction_stat = (by_window.get("1h") or {}).get(direction) or {}
+            direction_stat = authority_1h.get(direction) or {}
             win_rate_by_dir[direction] = float(direction_stat.get("win_rate_pct") or 0.0) / 100.0
     except Exception:
         win_rate_by_dir = {}

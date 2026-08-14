@@ -94,8 +94,8 @@ class LiveGate:
         """Run all 6 unlock checks. Returns a GateStatus.
 
         Args:
-            oracle_score: dict from /api/oracle/score (must have
-                          'win_rate_pct', 'verified', 'by_window')
+            oracle_score: symbol-scoped authoritative score (must have
+                          ``authority_1h`` from build_authoritative_score)
             analytics_report: dict from PortfolioAnalytics.compute()
                               (must have 'profit_factor', 'max_drawdown_pct')
             shadow_report: dict from ShadowLive.generate_report()
@@ -111,12 +111,19 @@ class LiveGate:
         shadow_report = shadow_report or {}
         exec_self_test = exec_self_test or {}
 
-        # Extract values from upstream reports
-        # Use 1h-window global win rate (the ACT-XXIII gating window)
-        by_window = oracle_score.get("by_window") or {}
-        global_1h = (by_window.get("1h") or {}).get("global") or {}
-        global_win_rate = float(global_1h.get("win_rate_pct") or oracle_score.get("win_rate_pct") or 0)
-        verified = int(global_1h.get("verified") or oracle_score.get("verified") or 0)
+        # Fail closed unless the score exposes the explicit independent cohort.
+        # Raw ``by_window`` and top-level compatibility fields are diagnostic
+        # only and can never authorize readiness.
+        authority_1h = oracle_score.get("authority_1h") or {}
+        global_1h = authority_1h.get("global") or {}
+        valid_authority = bool(
+            oracle_score.get("score_scope") == "PER_SYMBOL"
+            and oracle_score.get("requested_symbol")
+            and authority_1h.get("n_source") == "INDEPENDENT_NONOVERLAP_1H"
+            and global_1h.get("n_source") == "INDEPENDENT_NONOVERLAP_1H"
+        )
+        global_win_rate = float(global_1h.get("win_rate_pct") or 0) if valid_authority else 0.0
+        verified = int(global_1h.get("verified") or 0) if valid_authority else 0
 
         profit_factor = float(analytics_report.get("profit_factor") or 0)
         # Handle inf PF (all wins, no losses) — convert to large finite number

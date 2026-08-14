@@ -337,21 +337,26 @@ class ResearchCoordinator:
                 with timed("senecio_research_module_latency_seconds",
                            labels={"module": f"calibration_{method}"}):
                     cal_report = fit_and_evaluate(
-                        y_true=y, y_prob=confs,
+                        y_true=y,
+                        y_prob=confs,
                         method=method,
                         n_bins=CAL_DEFAULTS["n_bins"],
                         extra={"coordinator_run_at": started.isoformat()},
+                        timestamps=ts,
                     )
                 report.calibration_reports.append(cal_report.to_dict())
                 self._registry.observe(
                     "senecio_calibration_fits_total", 1,
                     labels={"method": method},
                 )
-                self._registry.set_gauge(
-                    "senecio_last_calibration_ece",
-                    float(cal_report.ece_after),
-                    labels={"method": method},
-                )
+                if cal_report.authority_eligible and cal_report.ece_after is not None:
+                    ece_value = float(cal_report.ece_after)
+                    if math.isfinite(ece_value):
+                        self._registry.set_gauge(
+                            "senecio_last_calibration_ece",
+                            ece_value,
+                            labels={"method": method},
+                        )
             except Exception as e:
                 log.exception("calibration %s failed: %s", method, e)
                 report.errors.append(f"calibration_{method}: {e}")

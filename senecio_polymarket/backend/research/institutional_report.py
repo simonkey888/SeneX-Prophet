@@ -465,14 +465,26 @@ def explain_live_gate(
     failed_reasons = live_gate_state.get("failed_reasons", [])
     conditions_raw = live_gate_state.get("conditions", [])
     conditions: list[dict[str, Any]] = []
-    for c in conditions_raw:
-        conditions.append({
-            "name":     c.get("name", "?"),
-            "passed":   bool(c.get("passed", False)),
-            "actual":   c.get("actual"),
-            "required": c.get("required"),
-            "detail":   c.get("detail", ""),
-        })
+    if isinstance(conditions_raw, dict):
+        for name, condition in conditions_raw.items():
+            condition = condition if isinstance(condition, dict) else {}
+            conditions.append({
+                "name": name,
+                "passed": bool(condition.get("pass", False)),
+                "actual": condition.get("value"),
+                "required": condition.get("threshold"),
+                "detail": condition.get("detail", ""),
+            })
+    else:
+        for condition in conditions_raw:
+            condition = condition if isinstance(condition, dict) else {}
+            conditions.append({
+                "name": condition.get("name", "?"),
+                "passed": bool(condition.get("passed", False)),
+                "actual": condition.get("actual"),
+                "required": condition.get("required"),
+                "detail": condition.get("detail", ""),
+            })
     blockers: list[str] = []
     if not unlocked:
         for r in failed_reasons:
