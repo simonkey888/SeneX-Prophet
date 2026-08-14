@@ -13,7 +13,7 @@ import numpy as np
 
 from backend import oracle_runner
 from backend.authoritative_score import build_authoritative_score, independent_1h_cohort
-from backend.portfolio.live_gate import LiveGate
+from backend.portfolio.live_gate import GateStatus, LiveGate
 from backend import supabase_client
 from backend.research import calibration, decision_engine
 from backend.research.coordinator import ResearchCoordinator
@@ -38,6 +38,44 @@ def proof_row(idx: int, minute: int, *, symbol="BTCUSDT", direction="LONG", outc
 
 def core():
     return learning.SingleDecisionCore(max_drawdown=0.12, ruin_probability_threshold=0.05, hard_stop=True, max_position_pct=0.25, max_leverage=1, min_confidence=0.40, min_ev_to_trade=0.001, no_trade_noise=0.60, initial_capital=1000.0)
+
+
+class _BoundedPredictionFetch:
+    """PostgREST-like boundary: filter by symbol, then apply newest-N limit."""
+
+    def __init__(self, rows):
+        self.rows = sorted(rows, key=lambda row: row["ts"], reverse=True)
+        self.calls = []
+
+    async def __call__(self, limit=50, symbol=None):
+        self.calls.append({"limit": limit, "symbol": symbol})
+        selected = self.rows
+        if symbol:
+            normalized = str(symbol).upper().replace("/", "").replace("-", "").strip()
+            selected = [
+                row for row in selected
+                if str(row.get("symbol") or "").upper().replace("/", "").replace("-", "").strip() == normalized
+            ]
+        return selected[:limit]
+
+
+class _BoundaryGateCoordinator:
+    def evaluate_live_gate(self, oracle_score=None):
+        authority = (oracle_score or {}).get("authority_1h") or {}
+        verified = int((authority.get("global") or {}).get("verified") or 0)
+        return GateStatus(
+            unlocked=True,
+            trade_mode="LIVE",
+            live_capital_locked=False,
+            conditions={
+                "verified": {
+                    "value": verified,
+                    "threshold": 300,
+                    "op": ">=",
+                    "pass": verified >= 300,
+                },
+            },
+        )
 
 
 class _RegistrySpy:
@@ -147,6 +185,35 @@ class RuntimeControlAuthorityTests(unittest.TestCase):
         for key in ("authority_1h", "gates", "short_only_paper_mode"):
             self.assertEqual(solo[key], mixed[key], key)
 
+    def test_newest_500_eth_rows_cannot_evict_btc_runtime_authority(self):
+        btc = [
+            proof_row(i + 1, i * 60, outcome="WIN" if i % 3 else "LOSS")
+            for i in range(40)
+        ]
+        eth = [
+            proof_row(10_000 + i, 10_000 + i, symbol="ETHUSDT", outcome="LOSS")
+            for i in range(510)
+        ]
+
+        def refresh(rows):
+            boundary = _BoundedPredictionFetch(rows)
+            with patch.object(supabase_client, "fetch_predictions", new=boundary):
+                import asyncio
+                asyncio.run(oracle_runner._refresh_directional_stats())
+            return copy.deepcopy(oracle_runner._state["directional_stats"]), boundary.calls
+
+        solo, solo_calls = refresh(btc)
+        mixed, mixed_calls = refresh(btc + eth)
+        btc_solo = solo["per_symbol"]["BTCUSDT"]
+        btc_mixed = mixed["per_symbol"]["BTCUSDT"]
+        for key in ("authority_1h", "gates", "short_only_paper_mode", "authority_cohort"):
+            self.assertEqual(btc_solo[key], btc_mixed[key], key)
+        self.assertEqual(btc_mixed["independent_1h_rows"], 40)
+        self.assertIn({"limit": 500, "symbol": "BTCUSDT"}, mixed_calls)
+        self.assertIn({"limit": 500, "symbol": "ETHUSDT"}, mixed_calls)
+        self.assertIn({"limit": 500, "symbol": None}, mixed_calls)
+        self.assertIn({"limit": 500, "symbol": "BTCUSDT"}, solo_calls)
+
 
 class LiveReadinessAuthorityTests(unittest.TestCase):
     @staticmethod
@@ -245,6 +312,89 @@ class LiveReadinessAuthorityTests(unittest.TestCase):
         self.assertEqual(report.live_gate_explanation["conditions"][0]["actual"], 1)
         self.assertEqual(report.readiness["verified_predictions_n"], 1)
         self.assertIn("live_gate locked", report.readiness["blockers"])
+
+    def test_live_gate_query_boundary_filters_btc_before_limit(self):
+        import asyncio
+        from backend import main
+
+        btc = [proof_row(i + 1, i * 60) for i in range(40)]
+        eth = [proof_row(10_000 + i, 10_000 + i, symbol="ETHUSDT", outcome="LOSS") for i in range(510)]
+
+        def evaluate(rows):
+            boundary = _BoundedPredictionFetch(rows)
+            with (
+                patch.object(main, "_get_coordinator", return_value=_BoundaryGateCoordinator()),
+                patch.object(supabase_client, "fetch_predictions", new=boundary),
+            ):
+                state = asyncio.run(main.portfolio_live_gate(symbol="BTC/USDT"))
+            return state, boundary.calls
+
+        solo, _ = evaluate(btc)
+        mixed, calls = evaluate(btc + eth)
+        for key in ("verified", "conditions", "unlocked", "trade_mode", "live_capital_locked"):
+            self.assertEqual(solo[key], mixed[key], key)
+        self.assertEqual(mixed["verified"], 40)
+        self.assertEqual(calls, [{"limit": 500, "symbol": "BTCUSDT"}])
+
+    def test_research_report_query_boundary_filters_btc_before_limit(self):
+        import asyncio
+        from backend import main, research
+
+        btc = [proof_row(i + 1, i * 60) for i in range(40)]
+        eth = [proof_row(10_000 + i, 10_000 + i, symbol="ETHUSDT", outcome="LOSS") for i in range(510)]
+
+        class RequestStub:
+            async def json(self):
+                return {
+                    "symbol": "BTC-USDT",
+                    "run_walk_forward": False,
+                    "run_monte_carlo": False,
+                    "run_statistical": False,
+                    "run_stress": False,
+                    "run_capacity": False,
+                }
+
+        class ResearchCoordinatorStub:
+            predictions = [btc[0]]
+            y = np.asarray([], dtype=float)
+            confidences = np.asarray([], dtype=float)
+
+            def _build_feature_matrix(self):
+                return np.empty((0, 0)), self.y, self.confidences, []
+
+            def get_drift_stats(self):
+                return {}
+
+            def get_explainer(self):
+                return None
+
+        captured = {}
+
+        class ReportStub:
+            def to_dict(self):
+                return {"live_gate_state": captured["live_gate_state"]}
+
+        def build_report_stub(**kwargs):
+            captured.update(kwargs)
+            return ReportStub()
+
+        def evaluate(rows):
+            boundary = _BoundedPredictionFetch(rows)
+            with (
+                patch.object(main, "_research_coord", ResearchCoordinatorStub()),
+                patch.object(main, "_get_coordinator", return_value=_BoundaryGateCoordinator()),
+                patch.object(supabase_client, "fetch_predictions", new=boundary),
+                patch.object(research, "build_institutional_report", side_effect=build_report_stub),
+            ):
+                result = asyncio.run(main.research_report(RequestStub()))
+            return result["live_gate_state"], boundary.calls
+
+        solo, _ = evaluate(btc)
+        mixed, calls = evaluate(btc + eth)
+        for key in ("verified", "conditions", "unlocked", "trade_mode", "live_capital_locked"):
+            self.assertEqual(solo[key], mixed[key], key)
+        self.assertEqual(mixed["verified"], 40)
+        self.assertEqual(calls, [{"limit": 500, "symbol": "BTCUSDT"}])
 
 
 class TestDiscoveryIntegrityTests(unittest.TestCase):

@@ -314,6 +314,32 @@ def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> di
     return state
 
 
+def _normalize_authority_symbol(symbol: str) -> str:
+    """Normalize the instrument key used at the evidence-query boundary."""
+    return str(symbol or "").upper().replace("/", "").replace("-", "").strip()
+
+
+async def _symbol_scoped_paper_live_gate_state(coord, *, symbol: str) -> dict:
+    """Fetch one symbol before the bounded limit, then apply the PAPER lock."""
+    from . import supabase_client
+
+    normalized_symbol = _normalize_authority_symbol(symbol)
+    rows = []
+    if normalized_symbol:
+        try:
+            rows = await supabase_client.fetch_predictions(
+                limit=500,
+                symbol=normalized_symbol,
+            )
+        except Exception as e:
+            log.warning("symbol-scoped live-gate fetch failed for %s: %s", normalized_symbol, e)
+    return _paper_locked_live_gate_state(
+        coord,
+        rows,
+        symbol=normalized_symbol,
+    )
+
+
 @app.get("/api/portfolio/state")
 async def portfolio_state():
     """ACT-XXV/XXVI: full portfolio subsystem snapshot (includes microstructure + regime_hmm)."""
@@ -436,13 +462,7 @@ async def portfolio_live_gate(symbol: str = Query(default="BTCUSDT")):
     coord = _get_coordinator()
     if coord is None:
         return {"error": "portfolio coordinator not initialized"}
-    # Pull oracle score for gate evaluation
-    try:
-        from . import supabase_client
-        rows = await supabase_client.fetch_predictions(limit=500)
-    except Exception:
-        rows = []
-    return _paper_locked_live_gate_state(coord, rows, symbol=symbol)
+    return await _symbol_scoped_paper_live_gate_state(coord, symbol=symbol)
 
 
 @app.post("/api/portfolio/kill_switch")
@@ -1178,12 +1198,9 @@ async def research_report(request: Request):
     try:
         coord = _get_coordinator()
         if coord is not None:
-            from . import supabase_client
-            rows = await supabase_client.fetch_predictions(limit=500)
             report_symbol = str(body.get("symbol") or "BTCUSDT")
-            live_gate_state = _paper_locked_live_gate_state(
+            live_gate_state = await _symbol_scoped_paper_live_gate_state(
                 coord,
-                rows,
                 symbol=report_symbol,
             )
     except Exception as e:

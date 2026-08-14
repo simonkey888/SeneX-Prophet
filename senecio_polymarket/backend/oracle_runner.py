@@ -719,11 +719,14 @@ async def _refresh_directional_stats() -> None:
         log.warning("supabase_client unavailable for directional stats: %s", e)
         return
 
+    # The global bounded query is diagnostic only. It must never provide the
+    # authority cohort because newer activity in one symbol can evict another
+    # symbol from the global newest-N window.
     try:
-        rows = await supabase_client.fetch_predictions(limit=500)
+        diagnostic_rows = await supabase_client.fetch_predictions(limit=500)
     except Exception as e:
-        log.warning("directional stats fetch failed: %s", e)
-        return
+        log.warning("aggregate directional diagnostic fetch failed: %s", e)
+        diagnostic_rows = []
 
     def build_diagnostic_by_window(source_rows: list[dict[str, Any]]) -> dict[str, dict]:
         buckets: dict[str, dict[str, dict[str, int]]] = {
@@ -781,19 +784,35 @@ async def _refresh_directional_stats() -> None:
             }
         return by_window
 
-    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
     all_qualified: list[dict[str, Any]] = []
-    for row in rows:
+    for row in diagnostic_rows:
         if not is_proof_qualified(row):
             continue
         symbol = _normalize_symbol(row.get("symbol"))
         if not symbol:
             continue
-        qualified_by_symbol.setdefault(symbol, []).append(row)
         all_qualified.append(row)
 
     configured_symbols = {_normalize_symbol(symbol) for symbol in SYMBOLS}
-    symbols = sorted(configured_symbols | set(qualified_by_symbol))
+    symbols = sorted(configured_symbols)
+    qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for symbol in symbols:
+        try:
+            # PostgREST applies this equality filter before the bounded limit,
+            # preserving an independent evidence window for each instrument.
+            symbol_rows = await supabase_client.fetch_predictions(
+                limit=500,
+                symbol=symbol,
+            )
+        except Exception as e:
+            log.warning("directional stats fetch failed for %s: %s", symbol, e)
+            symbol_rows = []
+        qualified_by_symbol[symbol] = [
+            row for row in symbol_rows
+            if is_proof_qualified(row)
+            and _normalize_symbol(row.get("symbol")) == symbol
+        ]
+
     per_symbol: dict[str, dict[str, Any]] = {}
 
     for symbol in symbols:
