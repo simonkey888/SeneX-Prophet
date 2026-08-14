@@ -1,0 +1,35 @@
+{
+  "order": "AUD-061",
+  "observed_date_utc": "2026-08-14",
+  "service": "https://h011-web--senecio-h011--wbjggn89fnf8.code.run",
+  "method": "PUBLIC_READ_ONLY_GET",
+  "current_production_sha": "UNKNOWN_NOT_EXPOSED_BY_PUBLIC_RUNTIME",
+  "deployment_id": "UNKNOWN_NOT_EXPOSED_BY_PUBLIC_RUNTIME",
+  "health": {
+    "http_status": 200,
+    "status": "ok",
+    "version": "ACT-XXIX-systemic-antifragility",
+    "cycles_run": 18,
+    "cycles_failed": 0,
+    "supabase_total": 254,
+    "response_sha256": "f9b7cf86156d276fce992bf1ebaee497ddf023f79426fee6ae77e986b8f2ee2b"
+  },
+  "score": {
+    "BTCUSDT": {"status": "INSUFFICIENT_EVIDENCE", "raw_proof_n": 18, "independent_1h_n": 10, "authoritative_score_pct": null, "response_sha256": "542e9553b1cb535b00fdb2bfb1058fc44b5c54b2096fec008cd2a9086f274fe3"},
+    "ETHUSDT": {"status": "INSUFFICIENT_EVIDENCE", "raw_proof_n": 23, "independent_1h_n": 11, "authoritative_score_pct": null, "response_sha256": "6bf089f02c65fcfa9224c19b7affa76219ce34a89e3f8bc4c5dbe55bcd0ed70b"}
+  },
+  "live_gate": {
+    "unlocked": false,
+    "trade_mode": "PAPER",
+    "live_capital_locked": true,
+    "effective_gate": "LOCKED_BY_PAPER_POLICY",
+    "response_sha256": "6d05af04c3415e05116b7af7ca94795b0515528139cf82fe6aa98233d66d0311"
+  },
+  "market_context_response_sha256": "09e69cf199689174607e121ac2615d6aa4aad3307b852e3fbb7779eafb6c80f6",
+  "prediction_exports": {
+    "BTCUSDT": {"rows": 126, "response_sha256": "d23821d869b2a0290d1b93e91e40498090ceab3a8e22fad99a714fa335f9600e"},
+    "ETHUSDT": {"rows": 126, "response_sha256": "8b96627063db33533fd10c1cb47b0d327db6f7d7e924b7cfbee236e689e93298"}
+  },
+  "supabase_data_mutations": 0,
+  "production_mutations": 0
+}

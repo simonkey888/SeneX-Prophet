@@ -1672,7 +1672,9 @@ def _run_mock_tests():
         for name, data in results.items():
             assert data["orderbook"] is not None, f"{name} orderbook is None"
             assert data["ticker"] is not None, f"{name} ticker is None"
-            assert data["trades"] is not None, f"{name} trades is None"
+            # fetch_all intentionally omits trades because the shadow pipeline
+            # does not consume them; asserting a fetch here was stale.
+            assert data["trades"] is None, f"{name} trades should be skipped"
             assert data["funding"] is not None, f"{name} funding is None"
             assert data["ohlcv"] is not None, f"{name} ohlcv is None"
 
@@ -2300,6 +2302,52 @@ def _run_live_tests():
 DEFAULT_FALLBACK_CHAIN = ["okx", "kraken", "gate", "mexc", "bitget"]
 
 
+def build_feature_observations(
+    *, exchange: str, ohlcv: list | None, orderbook: dict | None,
+    funding: dict | None, open_interest: dict | None,
+    fallback_used: bool = False,
+) -> dict:
+    """Describe the six predictor inputs without conflating absence with zero."""
+    def observed(value: float) -> str:
+        return "REAL_OBSERVED_ZERO" if abs(float(value)) <= 1e-12 else "REAL_NONZERO"
+
+    candles_ok = bool(ohlcv and len(ohlcv) >= 2 and ohlcv[-2][4] and ohlcv[-2][5])
+    depth = (orderbook or {}).get("bid_depth_usdt") or (orderbook or {}).get("bid_depth") or 0
+    depth += (orderbook or {}).get("ask_depth_usdt") or (orderbook or {}).get("ask_depth") or 0
+    book_ok = depth > 0
+    funding_ok = funding is not None and funding.get("rate") is not None
+    # A point-in-time OI amount is not OI momentum. The connector does not have
+    # a prior comparable snapshot, so its historical 0.0 was a fallback.
+    oi_momentum_ok = bool(open_interest and open_interest.get("oi_change_observed") is True)
+    derivative_capable = exchange not in {"kraken"}
+    transport = "FALLBACK_USED" if fallback_used else "PRIMARY_SOURCE"
+
+    def item(status: str, source: str, fallback: float | None = None) -> dict:
+        return {"status": status, "source": source, "transport_status": transport, "fallback_value": fallback}
+
+    price_momentum = 0.0
+    volume_delta = 0.0
+    if candles_ok:
+        price_momentum = (float(ohlcv[-1][4]) - float(ohlcv[-2][4])) / float(ohlcv[-2][4])
+        volume_delta = (float(ohlcv[-1][5]) - float(ohlcv[-2][5])) / float(ohlcv[-2][5])
+    imbalance = 0.0
+    if book_ok:
+        bid = float((orderbook or {}).get("bid_depth_usdt") or (orderbook or {}).get("bid_depth") or 0)
+        ask = float((orderbook or {}).get("ask_depth_usdt") or (orderbook or {}).get("ask_depth") or 0)
+        imbalance = (bid - ask) / (bid + ask)
+    funding_signal = -float((funding or {}).get("rate") or 0.0) * 100.0
+    oi_momentum = float((open_interest or {}).get("oi_change_24h_pct") or 0.0) / 100.0
+    unavailable = "SOURCE_ERROR" if derivative_capable else "NOT_APPLICABLE"
+    return {
+        "price_momentum": item(observed(price_momentum) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
+        "volume_delta": item(observed(volume_delta) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
+        "bidask_imbalance": item(observed(imbalance) if book_ok else "MISSING", f"{exchange}:orderbook", None if book_ok else 0.0),
+        "orderflow": item(observed(imbalance * (1.0 + abs(volume_delta))) if book_ok and candles_ok else "MISSING", f"{exchange}:orderbook+ohlcv", None if book_ok and candles_ok else 0.0),
+        "funding_signal": item(observed(funding_signal) if funding_ok else unavailable, f"{exchange}:funding_public_get", None if funding_ok else 0.0),
+        "oi_momentum": item(observed(oi_momentum) if oi_momentum_ok else ("MISSING" if open_interest else unavailable), f"{exchange}:open_interest_public_get", None if oi_momentum_ok else 0.0),
+    }
+
+
 def fetch_market_snapshot_with_fallback(
     symbol: str = "BTC/USDT",
     timeframe: str = "15m",
@@ -2314,7 +2362,7 @@ def fetch_market_snapshot_with_fallback(
     chain = fallback_chain or DEFAULT_FALLBACK_CHAIN
     last_error = None
 
-    for exchange_name in chain:
+    for exchange_index, exchange_name in enumerate(chain):
         try:
             logger.info(f"Fallback chain: trying {exchange_name} for {symbol}")
             connector = ExchangeConnector(
@@ -2430,6 +2478,14 @@ def fetch_market_snapshot_with_fallback(
                 "candle_ts": candle_ts,
                 "liquidity_quality": round(liquidity_quality, 4),
                 "exchange_used": exchange_name,
+                "feature_observations": build_feature_observations(
+                    exchange=exchange_name,
+                    ohlcv=ohlcv,
+                    orderbook=orderbook,
+                    funding=funding,
+                    open_interest=oi,
+                    fallback_used=exchange_index > 0,
+                ),
             }
 
             try:
@@ -2468,4 +2524,3 @@ if __name__ == "__main__":
         # Run mock tests only (default)
         mock_ok = _run_mock_tests()
         sys.exit(0 if mock_ok else 1)
-

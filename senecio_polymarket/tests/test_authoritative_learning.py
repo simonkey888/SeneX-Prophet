@@ -14,7 +14,7 @@ BASE_TS = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
 
 
 def _row(idx: int, *, outcome: str = "LOSS", symbol: str = "BTCUSDT", valid: bool = True):
-    ts = (BASE_TS + timedelta(minutes=idx)).isoformat()
+    ts = (BASE_TS + timedelta(minutes=idx * 61)).isoformat()
     direction = "LONG"
     origin = 100.0
     later = 101.0 if outcome == "WIN" else 99.0
@@ -152,6 +152,9 @@ class AuthoritativeLearningTests(unittest.TestCase):
         state = decision["pipeline"]["step2_features"]["learning_state_v1"]
         self.assertEqual(state["status"], "ACTIVE")
         self.assertEqual(state["proof_qualified_n"], 10)
+        self.assertEqual(state["authority_cohort"], "INDEPENDENT_NONOVERLAP_1H")
+        for key in ("source_evidence_hash", "effective_weights_hash", "code_hash", "config_hash"):
+            self.assertEqual(len(state[key]), 64, key)
         self.assertNotIn("sb_secret_test", repr(state))
 
     def test_runtime_predictor_forces_real_learning_core_for_base_import(self):

@@ -208,4 +208,17 @@ def run_prediction(market_data: dict) -> dict:
         except (TypeError, ValueError):
             pass
         audit["external_markets_v1"] = external
+        try:
+            from backend.research.aud061_pipeline import classify_flat_reason
+            audit["decision_waterfall_v1"] = {
+                "version": "AUD-061-flat-waterfall-v1",
+                "category": classify_flat_reason(result),
+                "raw_reason": (audit.get("action_vector") or {}).get("reason"),
+            }
+        except Exception:
+            audit["decision_waterfall_v1"] = {
+                "version": "AUD-061-flat-waterfall-v1",
+                "category": "OTHER_EXPLICIT_REASON",
+                "raw_reason": (audit.get("action_vector") or {}).get("reason"),
+            }
     return result

@@ -59,7 +59,10 @@ jobs:
           grep -q 'SUPABASE_KEY.*os.environ.get' backend/settlement_reconciler.py
           grep -q 'SUPABASE_URL.*os.environ.get' backend/supabase_client.py
           grep -q 'SUPABASE_KEY.*os.environ.get' backend/supabase_client.py
-          ! grep -RInE 'supabase\.co|sb_publishable_[A-Za-z0-9_-]+' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' .
+          if grep -RInE 'supabase\.co|sb_publishable_[A-Za-z0-9_-]+' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' .; then
+            echo 'Forbidden hard-coded Supabase endpoint or publishable key found'
+            exit 1
+          fi
           grep -q 'origin-price-v1' backend/oracle_runner.py
           grep -q 'filter_proof_qualified' backend/main.py
           grep -q 'is_proof_qualified' backend/oracle_runner.py

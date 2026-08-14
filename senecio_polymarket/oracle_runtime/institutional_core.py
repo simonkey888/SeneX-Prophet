@@ -24,6 +24,7 @@ import math
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +52,10 @@ for _name in dir(_original):
 
 OriginalSingleDecisionCore = _original.SingleDecisionCore
 
-LEARNING_VERSION = "proof-qualified-replay-v2-aud059"
+LEARNING_VERSION = "proof-qualified-replay-v3-aud061"
 MIN_LEARNING_EXAMPLES = 10
 MAX_LEARNING_EXAMPLES = 50
-FETCH_LIMIT = 120
+FETCH_LIMIT = 240
 MAX_RELATIVE_DRIFT = 0.25
 FETCH_CACHE_TTL_S = 60.0
 
@@ -90,6 +91,71 @@ def _supabase_headers(key: str) -> dict[str, str]:
 
 def _weights_payload(weights: dict[str, Any]) -> dict[str, float]:
     return {k: round(float(v), 6) for k, v in sorted(weights.items())}
+
+
+def _canonical_json_hash(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _timestamp_epoch(value: Any) -> float | None:
+    """Normalize ISO, datetime, seconds, or milliseconds for causal ordering."""
+    try:
+        if isinstance(value, datetime):
+            dt = value
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        if isinstance(value, (int, float)):
+            number = float(value)
+            return number / 1000.0 if number > 10_000_000_000 else number
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return _timestamp_epoch(float(text))
+        except ValueError:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _evidence_hash(rows: list[dict[str, Any]]) -> str:
+    """Hash only the causal evidence fields consumed by the replay."""
+    evidence = []
+    for row in rows:
+        audit = row.get("audit") if isinstance(row.get("audit"), dict) else {}
+        pipeline = audit.get("pipeline") if isinstance(audit, dict) else {}
+        step2 = pipeline.get("step2_features") if isinstance(pipeline, dict) else {}
+        dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}
+        evidence.append({
+            "id": row.get("id"), "ts": row.get("ts"), "symbol": row.get("symbol"),
+            "prediction": row.get("prediction"), "confidence": row.get("confidence"),
+            "price_now": row.get("price_now"), "outcome": row.get("outcome"),
+            "price_1h_later": dual.get("price_1h_later") if isinstance(dual, dict) else None,
+            "features": step2 if isinstance(step2, dict) else {},
+        })
+    return _canonical_json_hash(evidence)
+
+
+def _code_hash() -> str:
+    payload = _ORIGINAL_PATH.read_bytes() + Path(__file__).read_bytes()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _config_hash(base_weights: dict[str, Any]) -> str:
+    return _canonical_json_hash({
+        "version": LEARNING_VERSION,
+        "min_examples": MIN_LEARNING_EXAMPLES,
+        "max_examples": MAX_LEARNING_EXAMPLES,
+        "max_relative_drift": MAX_RELATIVE_DRIFT,
+        "fetch_limit": FETCH_LIMIT,
+        "fetch_cache_ttl_s": FETCH_CACHE_TTL_S,
+        "base_weights": _weights_payload(base_weights),
+    })
 
 
 def effective_weights_hash(weights: dict[str, Any]) -> str:
@@ -187,6 +253,8 @@ def replay_authoritative_learning(
     core: Any,
     rows: list[dict[str, Any]],
     symbol: str,
+    *,
+    decision_cutoff: Any | None = None,
 ) -> dict[str, Any]:
     """Replay only already-settled proof-qualified evidence into ``core``.
 
@@ -197,15 +265,29 @@ def replay_authoritative_learning(
     """
     normalized = _normalize_symbol(symbol)
     base_weights = _reset_replay_state(core)
-    available = [
-        row
-        for row in rows
-        if _normalize_symbol(str(row.get("symbol") or "")) == normalized
-        and _proof_gate(row)
-    ]
-    available.sort(key=lambda row: (str(row.get("ts") or ""), str(row.get("id") or "")))
-    proof_qualified_available_before_decision = len(available)
-    qualified = available[-MAX_LEARNING_EXAMPLES:]
+    cutoff_epoch = _timestamp_epoch(decision_cutoff)
+    available = []
+    for row in rows:
+        origin_epoch = _timestamp_epoch(row.get("ts"))
+        evidence_known = (
+            cutoff_epoch is None
+            or (origin_epoch is not None and origin_epoch + 3600.0 <= cutoff_epoch)
+        )
+        if (
+            _normalize_symbol(str(row.get("symbol") or "")) == normalized
+            and evidence_known
+            and _proof_gate(row)
+        ):
+            available.append(row)
+    available.sort(key=lambda row: (_timestamp_epoch(row.get("ts")) or float("-inf"), str(row.get("id") or "")))
+    proof_qualified_raw_available_before_decision = len(available)
+    try:
+        from backend.authoritative_score import independent_1h_cohort
+    except ImportError:
+        from senecio_polymarket.backend.authoritative_score import independent_1h_cohort
+    independent = independent_1h_cohort(available)
+    proof_qualified_available_before_decision = len(independent)
+    qualified = independent[-MAX_LEARNING_EXAMPLES:]
 
     wins = sum(1 for row in qualified if row.get("outcome") == "WIN")
     losses = sum(1 for row in qualified if row.get("outcome") == "LOSS")
@@ -238,12 +320,21 @@ def replay_authoritative_learning(
         "evidence_cut": "PRE_DECISION_SNAPSHOT",
         "uses_only_prior_settled_evidence": True,
         "proof_qualified_available_before_decision": proof_qualified_available_before_decision,
+        "proof_qualified_raw_available_before_decision": proof_qualified_raw_available_before_decision,
+        "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+        "authority_n_field": "proof_qualified_n",
         "min_examples": MIN_LEARNING_EXAMPLES,
         "max_replayed_examples": MAX_LEARNING_EXAMPLES,
         "proof_qualified_n": len(qualified),
         "wins": wins,
         "losses": losses,
         "source_prediction_ids": [row.get("id") for row in qualified],
+        "source_evidence_hash": _evidence_hash(qualified),
+        "decision_cutoff_epoch": cutoff_epoch,
+        "learning_snapshot_cutoff_epoch": cutoff_epoch,
+        "authority_horizon_seconds": 3600,
+        "code_hash": _code_hash(),
+        "config_hash": _config_hash(base_weights),
         "max_relative_drift": MAX_RELATIVE_DRIFT,
         "base_weights": _weights_payload(base_weights),
         "effective_weights": _weights_payload(core.weights),
@@ -322,6 +413,7 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         super().__init__(*args, **kwargs)
         self._senex_base_weights = dict(self.weights)
         self._authoritative_learning_symbol: str | None = None
+        self._authoritative_learning_loaded_monotonic: float | None = None
         self._authoritative_learning_state: dict[str, Any] = {
             "version": LEARNING_VERSION,
             "learning_version": LEARNING_VERSION,
@@ -330,14 +422,24 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
             "proof_qualified_available_before_decision": 0,
             "evidence_cut": "PRE_DECISION_SNAPSHOT",
             "uses_only_prior_settled_evidence": True,
+            "source_prediction_ids": [],
+            "source_evidence_hash": _evidence_hash([]),
+            "code_hash": _code_hash(),
+            "config_hash": _config_hash(self._senex_base_weights),
             "effective_weights_hash": effective_weights_hash(self.weights),
         }
 
-    def _load_learning_for_symbol(self, symbol: str) -> None:
+    def _load_learning_for_symbol(self, symbol: str, decision_cutoff: Any | None = None) -> None:
         normalized = _normalize_symbol(symbol)
-        if self._authoritative_learning_symbol == normalized:
+        now = time.monotonic()
+        if (
+            self._authoritative_learning_symbol == normalized
+            and self._authoritative_learning_loaded_monotonic is not None
+            and now - self._authoritative_learning_loaded_monotonic <= FETCH_CACHE_TTL_S
+        ):
             return
         self._authoritative_learning_symbol = normalized
+        self._authoritative_learning_loaded_monotonic = now
         if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
             self._authoritative_learning_state = {
                 "version": LEARNING_VERSION,
@@ -349,6 +451,9 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
                 "proof_qualified_n": 0,
                 "proof_qualified_available_before_decision": 0,
                 "source_prediction_ids": [],
+                "source_evidence_hash": _evidence_hash([]),
+                "code_hash": _code_hash(),
+                "config_hash": _config_hash(self._senex_base_weights),
                 "effective_weights": _weights_payload(self.weights),
                 "effective_weights_hash": effective_weights_hash(self.weights),
             }
@@ -356,7 +461,7 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         try:
             candidates = fetch_authoritative_rows(normalized)
             self._authoritative_learning_state = replay_authoritative_learning(
-                self, candidates, normalized
+                self, candidates, normalized, decision_cutoff=decision_cutoff
             )
         except Exception as exc:
             self.weights.clear()
@@ -372,16 +477,57 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
                 "proof_qualified_n": 0,
                 "proof_qualified_available_before_decision": 0,
                 "source_prediction_ids": [],
+                "source_evidence_hash": _evidence_hash([]),
+                "code_hash": _code_hash(),
+                "config_hash": _config_hash(self._senex_base_weights),
                 "effective_weights": _weights_payload(self.weights),
                 "effective_weights_hash": effective_weights_hash(self.weights),
             }
 
+    def ingest_market(self, market: dict) -> dict:
+        """Attach explicit input provenance without changing frozen model math."""
+        state = super().ingest_market(market)
+        supplied = market.get("feature_observations") or {}
+        features = (
+            "orderflow", "volume_delta", "bidask_imbalance",
+            "funding_signal", "oi_momentum", "price_momentum",
+        )
+        availability = {}
+        for feature in features:
+            item = supplied.get(feature) if isinstance(supplied, dict) else None
+            if isinstance(item, dict) and item.get("status"):
+                availability[feature] = dict(item)
+                continue
+            observed = True
+            if feature in {"price_momentum", "volume_delta"}:
+                observed = len(market.get("ohlcv") or []) >= 2
+            elif feature in {"orderflow", "bidask_imbalance"}:
+                book = market.get("orderbook") or {}
+                observed = float(book.get("bid_depth") or 0) + float(book.get("ask_depth") or 0) > 0
+            elif feature == "funding_signal":
+                observed = (market.get("funding") or {}).get("rate") is not None
+            elif feature == "oi_momentum":
+                observed = (market.get("open_interest") or {}).get("oi_change_24h_pct") is not None
+            value = float(state.get(feature) or 0.0)
+            availability[feature] = {
+                "status": ("REAL_OBSERVED_ZERO" if abs(value) <= 1e-12 else "REAL_NONZERO") if observed else "MISSING",
+                "source": "legacy_explicit_input" if observed else "unavailable",
+                "fallback_value": None if observed else 0.0,
+            }
+        state["feature_availability_v1"] = availability
+        return state
+
     def decide(self, market: dict, risk_state: dict, execution_state: dict) -> dict:
         # Learning snapshot is loaded before the prediction decision.
-        self._load_learning_for_symbol(str(market.get("symbol") or ""))
+        decision_cutoff = market.get("timestamp") or datetime.now(timezone.utc)
+        self._load_learning_for_symbol(
+            str(market.get("symbol") or ""), decision_cutoff=decision_cutoff
+        )
         action_vector = super().decide(market, risk_state, execution_state)
         pipeline = action_vector.setdefault("pipeline", {})
         step2 = pipeline.setdefault("step2_features", {})
         if isinstance(step2, dict):
-            step2["learning_state_v1"] = dict(self._authoritative_learning_state)
+            decision_state = dict(self._authoritative_learning_state)
+            decision_state["decision_cutoff_epoch"] = _timestamp_epoch(decision_cutoff)
+            step2["learning_state_v1"] = decision_state
         return action_vector

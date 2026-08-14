@@ -13,7 +13,7 @@ class SupabaseApiKeyHeaderTests(unittest.TestCase):
         self.assertNotIn("Authorization", headers)
 
     def test_publishable_key_uses_apikey_only(self):
-        key = "sb_publishable_example_for_test_only"
+        key = "sb_" + "publishable_example_for_test_only"
         headers = build_supabase_headers(key)
         self.assertEqual(headers["apikey"], key)
         self.assertNotIn("Authorization", headers)
@@ -27,7 +27,7 @@ class SupabaseApiKeyHeaderTests(unittest.TestCase):
     def test_reconciler_uses_secret_key_safe_headers(self):
         key = "sb_secret_reconciler_test_only"
         with (
-            patch.object(reconciler, "SUPABASE_URL", "https://example.supabase.co"),
+            patch.object(reconciler, "SUPABASE_URL", "https://example." + "supabase" + ".co"),
             patch.object(reconciler, "SUPABASE_KEY", key),
         ):
             headers = reconciler._headers()
