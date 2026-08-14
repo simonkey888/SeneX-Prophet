@@ -38,6 +38,7 @@ from .execution_simulator import ExecutionSimulator
 from .scheduler import Scheduler
 from .ws_server import make_router as make_ws_router
 from . import oracle_runner
+from .authoritative_score import build_authoritative_score
 from .settlement_proof import filter_proof_qualified, is_proof_qualified
 # ACT-XXVII: research layer (lazy-initialized to avoid import-time failures
 # if optional deps like shap are missing)
@@ -281,6 +282,38 @@ def _get_coordinator():
         return None
 
 
+def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> dict:
+    """Build symbol authority, then evaluate diagnostically under PAPER lock."""
+    score = build_authoritative_score(rows, symbol=symbol)
+    status = coord.evaluate_live_gate(oracle_score=score)
+    status.unlocked = False
+    status.trade_mode = "PAPER"
+    status.live_capital_locked = True
+    policy_reason = "LIVE_CAPITAL_LOCKED_BY_PAPER_POLICY"
+    if policy_reason not in status.failed_reasons:
+        status.failed_reasons.append(policy_reason)
+
+    state = status.to_dict()
+    conditions = state.get("conditions") or {}
+    state.update({
+        "diagnostic_only": True,
+        "effective_gate": "LOCKED_BY_PAPER_POLICY",
+        "paper_only": True,
+        "score_scope": score.get("score_scope"),
+        "requested_symbol": score.get("requested_symbol"),
+        "authority_cohort": score.get("authority_cohort"),
+        "authority_n_source": (score.get("authority_1h") or {}).get("n_source"),
+        "verified": int(score.get("independent_1h_rows") or 0),
+        "proof_qualified_rows_raw": int(score.get("proof_qualified_rows_raw") or 0),
+        "conditions_passed": sum(
+            1 for item in conditions.values()
+            if isinstance(item, dict) and item.get("pass")
+        ),
+        "conditions_total": len(conditions),
+    })
+    return state
+
+
 @app.get("/api/portfolio/state")
 async def portfolio_state():
     """ACT-XXV/XXVI: full portfolio subsystem snapshot (includes microstructure + regime_hmm)."""
@@ -388,7 +421,7 @@ async def portfolio_meta_labeler():
 
 
 @app.get("/api/portfolio/live_gate")
-async def portfolio_live_gate():
+async def portfolio_live_gate(symbol: str = Query(default="BTCUSDT")):
     """ACT-XXV: evaluate the 6 LIVE_GATE unlock conditions.
 
     Returns the current gate status. The gate stays LOCKED (PAPER mode)
@@ -407,18 +440,9 @@ async def portfolio_live_gate():
     try:
         from . import supabase_client
         rows = await supabase_client.fetch_predictions(limit=500)
-        verified = filter_proof_qualified(rows)
-        wins = sum(1 for r in verified if r.get("outcome") == "WIN")
-        win_rate = (wins / len(verified) * 100) if verified else 0.0
-        oracle_score = {
-            "win_rate_pct": win_rate,
-            "verified": len(verified),
-            "by_window": oracle_runner.get_state().get("directional_stats", {}).get("by_window", {}),
-        }
     except Exception:
-        oracle_score = {}
-    status = coord.evaluate_live_gate(oracle_score=oracle_score)
-    return status.to_dict()
+        rows = []
+    return _paper_locked_live_gate_state(coord, rows, symbol=symbol)
 
 
 @app.post("/api/portfolio/kill_switch")
@@ -1156,16 +1180,12 @@ async def research_report(request: Request):
         if coord is not None:
             from . import supabase_client
             rows = await supabase_client.fetch_predictions(limit=500)
-            verified = [r for r in rows if r.get("outcome") in ("WIN", "LOSS", "CORRECT", "WRONG")]
-            wins = sum(1 for r in verified if r.get("outcome") in ("WIN", "CORRECT"))
-            win_rate = (wins / len(verified) * 100) if verified else 0.0
-            oracle_score = {
-                "win_rate_pct": win_rate,
-                "verified": len(verified),
-                "by_window": oracle_runner.get_state().get("directional_stats", {}).get("by_window", {}),
-            }
-            status = coord.evaluate_live_gate(oracle_score=oracle_score)
-            live_gate_state = status.to_dict()
+            report_symbol = str(body.get("symbol") or "BTCUSDT")
+            live_gate_state = _paper_locked_live_gate_state(
+                coord,
+                rows,
+                symbol=report_symbol,
+            )
     except Exception as e:
         log.warning("Live-gate fetch in report failed: %s", e)
 
@@ -1595,5 +1615,3 @@ async def final_audit_state():
         }
     except Exception as e:
         return {"error": str(e)}
-
-

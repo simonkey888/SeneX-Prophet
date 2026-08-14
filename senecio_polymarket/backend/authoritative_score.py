@@ -191,6 +191,39 @@ def _gate(bucket: dict[str, Any], *, min_n: int, threshold_pct: float) -> dict[s
     }
 
 
+def _authority_1h_payload(score: dict[str, Any]) -> dict[str, Any]:
+    """Expose the sole control-safe 1h buckets derived from the cohort."""
+    by_direction = score.get("by_direction") or {}
+
+    def authority_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "verified": int(bucket.get("verified") or 0),
+            "wins": int(bucket.get("wins") or 0),
+            "losses": int(bucket.get("losses") or 0),
+            "win_rate_pct": float(bucket.get("win_rate_pct") or 0.0),
+            "n_source": "INDEPENDENT_NONOVERLAP_1H",
+        }
+
+    verified = int(score.get("verified") or 0)
+    wins = int(score.get("wins") or 0)
+    losses = int(score.get("losses") or 0)
+    return {
+        "symbol": score.get("symbol"),
+        "cohort": "INDEPENDENT_NONOVERLAP_1H",
+        "n_source": "INDEPENDENT_NONOVERLAP_1H",
+        "LONG": authority_bucket(by_direction.get("LONG") or {}),
+        "SHORT": authority_bucket(by_direction.get("SHORT") or {}),
+        "FLAT": authority_bucket(by_direction.get("FLAT") or {}),
+        "global": {
+            "verified": verified,
+            "wins": wins,
+            "losses": losses,
+            "win_rate_pct": round((wins / verified * 100.0) if verified else 0.0, 2),
+            "n_source": "INDEPENDENT_NONOVERLAP_1H",
+        },
+    }
+
+
 def _quality_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Authority-safe quality metrics over the independent cohort.
 
@@ -414,6 +447,7 @@ def build_authoritative_score(
 
     by_window = _by_window(selected_rows) if selected is not None else {}
     selected_payload = selected or _empty_symbol_score(requested_symbol)
+    authority_1h = _authority_1h_payload(selected_payload)
     selected_raw_n = len(selected_rows) if selected is not None else len(proof_qualified)
     selected_independent_n = (
         selected_payload["independent_1h_rows"] if selected is not None else 0
@@ -447,6 +481,7 @@ def build_authoritative_score(
         "losses": selected_payload["losses"] if selected else 0,
         "posterior_accuracy": selected_payload["posterior_accuracy"] if selected else None,
         "by_direction": selected_payload["by_direction"] if selected else {},
+        "authority_1h": authority_1h,
         "by_window": by_window,
         "by_window_diagnostic_only": True,
         "gates": selected_payload["gates"] if selected else {},

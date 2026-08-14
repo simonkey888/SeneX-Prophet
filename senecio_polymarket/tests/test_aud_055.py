@@ -1,16 +1,13 @@
-"""Historical AUD-055 regression entrypoint.
+"""Historical AUD-055 compatibility regressions only.
 
-AUD-059 supersedes the former assumptions that overlapping 1h observations were
-independent and that persisted confidence was a calibrated probability. The
-current statistical-truth regressions are imported here so repository-wide test
-discovery cannot silently reintroduce the retired semantics.
+AUD-059 statistical-truth tests live exclusively in ``test_aud_059.py`` so
+``unittest discover`` collects every test exactly once.
 """
 import inspect
 import unittest
 from pathlib import Path
 
 from fastapi.routing import APIRoute
-from test_aud_059 import IndependentAuthorityTests, LearningProvenanceTests
 
 
 class ProductionScoreRouteCompatibilityTests(unittest.TestCase):

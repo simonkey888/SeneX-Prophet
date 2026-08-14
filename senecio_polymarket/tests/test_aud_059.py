@@ -4,12 +4,17 @@ import copy
 import random
 import tempfile
 import unittest
+from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 
 from backend import oracle_runner
 from backend.authoritative_score import build_authoritative_score, independent_1h_cohort
+from backend.portfolio.live_gate import LiveGate
+from backend import supabase_client
 from backend.research import calibration, decision_engine
 from backend.research.coordinator import ResearchCoordinator
 from oracle_runtime import institutional_core as learning
@@ -102,6 +107,161 @@ class IndependentAuthorityTests(unittest.TestCase):
         self.assertTrue(score["live_capital_locked"])
         self.assertEqual(oracle_runner._state["trade_mode"], "PAPER")
         self.assertTrue(oracle_runner._state["live_capital_locked"])
+
+
+class RuntimeControlAuthorityTests(unittest.TestCase):
+    def setUp(self):
+        self._saved_state = copy.deepcopy(oracle_runner._state)
+
+    def tearDown(self):
+        oracle_runner._state.clear()
+        oracle_runner._state.update(self._saved_state)
+
+    def _refresh(self, rows):
+        with patch.object(supabase_client, "fetch_predictions", new=AsyncMock(return_value=rows)):
+            import asyncio
+            asyncio.run(oracle_runner._refresh_directional_stats())
+        return oracle_runner._state["directional_stats"]
+
+    def test_runtime_keeps_raw4_diagnostic_but_control_authority_n1(self):
+        rows = [proof_row(i + 1, i * 15) for i in range(4)]
+        stats = self._refresh(rows)["per_symbol"]["BTCUSDT"]
+        self.assertEqual(stats["by_window"]["1h"]["global"]["verified"], 4)
+        self.assertTrue(stats["by_window"]["1h"]["global"]["diagnostic_only"])
+        self.assertEqual(stats["authority_1h"]["global"]["verified"], 1)
+        self.assertEqual(stats["gates"]["global_1h"]["n"], 1)
+
+    def test_raw_short_gate_cannot_enable_control_short_only(self):
+        rows = [proof_row(i + 1, i, direction="SHORT") for i in range(30)]
+        stats = self._refresh(rows)["per_symbol"]["BTCUSDT"]
+        self.assertEqual(stats["by_window"]["1h"]["SHORT"]["verified"], 30)
+        self.assertEqual(stats["authority_1h"]["SHORT"]["verified"], 1)
+        self.assertFalse(stats["gates"]["short_1h"]["pass"])
+        self.assertFalse(stats["short_only_paper_mode"])
+
+    def test_eth_rows_cannot_change_btc_runtime_control(self):
+        btc = [proof_row(i + 1, i * 15) for i in range(4)]
+        eth = [proof_row(1000 + i, i * 60, symbol="ETHUSDT", outcome="LOSS") for i in range(40)]
+        solo = self._refresh(btc)["per_symbol"]["BTCUSDT"]
+        mixed = self._refresh(btc + eth)["per_symbol"]["BTCUSDT"]
+        for key in ("authority_1h", "gates", "short_only_paper_mode"):
+            self.assertEqual(solo[key], mixed[key], key)
+
+
+class LiveReadinessAuthorityTests(unittest.TestCase):
+    @staticmethod
+    def _otherwise_passing_inputs():
+        return {
+            "analytics_report": {"profit_factor": 2.0, "max_drawdown_pct": 1.0},
+            "shadow_report": {"passed": True},
+            "exec_self_test": {"verified": True},
+        }
+
+    def test_live_gate_uses_independent_authority_not_raw_by_window(self):
+        rows = [proof_row(i + 1, i, outcome="WIN") for i in range(100)]
+        score = build_authoritative_score(rows, symbol="BTCUSDT")
+        status = LiveGate().evaluate(oracle_score=score, **self._otherwise_passing_inputs())
+        self.assertEqual(score["proof_qualified_rows_raw"], 100)
+        self.assertEqual(score["independent_1h_rows"], 2)
+        self.assertEqual(status.conditions["verified"]["value"], 2)
+        self.assertFalse(status.conditions["verified"]["pass"])
+        self.assertFalse(status.unlocked)
+
+    def test_raw_unverified_cannot_change_authority_or_readiness(self):
+        proof = [proof_row(i + 1, i * 60) for i in range(4)]
+        poisoned = proof + [proof_row(999, 500, outcome="WIN", valid=False)]
+        clean_score = build_authoritative_score(proof, symbol="BTCUSDT")
+        poisoned_score = build_authoritative_score(poisoned, symbol="BTCUSDT")
+        self.assertEqual(clean_score["authority_1h"], poisoned_score["authority_1h"])
+        clean = LiveGate().evaluate(oracle_score=clean_score, **self._otherwise_passing_inputs())
+        poisoned_status = LiveGate().evaluate(oracle_score=poisoned_score, **self._otherwise_passing_inputs())
+        self.assertEqual(clean.conditions, poisoned_status.conditions)
+
+    def test_main_policy_adapter_keeps_effective_gate_locked_and_diagnostic(self):
+        from backend.main import _paper_locked_live_gate_state
+        from backend.portfolio.live_gate import GateStatus
+
+        class CaptureCoordinator:
+            def __init__(self):
+                self.oracle_score = None
+
+            def evaluate_live_gate(self, oracle_score=None):
+                self.oracle_score = oracle_score
+                return GateStatus(
+                    unlocked=True,
+                    trade_mode="LIVE",
+                    live_capital_locked=False,
+                    conditions={
+                        "verified": {"value": 300, "threshold": 300, "op": ">=", "pass": True},
+                    },
+                )
+
+        rows = [proof_row(1, 0), proof_row(2, 60, valid=False)]
+        coord = CaptureCoordinator()
+        state = _paper_locked_live_gate_state(coord, rows, symbol="BTCUSDT")
+        self.assertEqual(coord.oracle_score["input_rows"], 2)
+        self.assertEqual(coord.oracle_score["proof_qualified_rows_raw"], 1)
+        self.assertEqual(coord.oracle_score["independent_1h_rows"], 1)
+        self.assertFalse(state["unlocked"])
+        self.assertEqual(state["trade_mode"], "PAPER")
+        self.assertTrue(state["live_capital_locked"])
+        self.assertTrue(state["diagnostic_only"])
+        self.assertEqual(state["requested_symbol"], "BTCUSDT")
+        self.assertEqual(state["verified"], 1)
+
+    def test_research_report_accepts_authority_gate_state_and_stays_locked(self):
+        from backend.main import _paper_locked_live_gate_state
+        from backend.portfolio.live_gate import GateStatus
+        from backend.research.institutional_report import build_institutional_report
+
+        class ResearchCoordinatorStub:
+            def evaluate_live_gate(self, oracle_score=None):
+                verified = oracle_score["authority_1h"]["global"]["verified"]
+                return GateStatus(
+                    unlocked=False,
+                    conditions={
+                        "verified": {
+                            "value": verified,
+                            "threshold": 300,
+                            "op": ">=",
+                            "pass": verified >= 300,
+                        },
+                    },
+                    failed_reasons=["verified"],
+                )
+
+        rows = [proof_row(1, 0), proof_row(2, 60, valid=False)]
+        state = _paper_locked_live_gate_state(
+            ResearchCoordinatorStub(),
+            rows,
+            symbol="BTCUSDT",
+        )
+        report = build_institutional_report(
+            live_gate_state=state,
+            verified_predictions_n=state["verified"],
+            persist=False,
+        )
+        self.assertFalse(report.live_gate_explanation["unlocked"])
+        self.assertEqual(report.live_gate_explanation["conditions"][0]["actual"], 1)
+        self.assertEqual(report.readiness["verified_predictions_n"], 1)
+        self.assertIn("live_gate locked", report.readiness["blockers"])
+
+
+class TestDiscoveryIntegrityTests(unittest.TestCase):
+    def test_repository_discovery_has_unique_test_ids(self):
+        tests_dir = Path(__file__).resolve().parent
+        suite = unittest.defaultTestLoader.discover(str(tests_dir))
+
+        def iter_cases(node):
+            for item in node:
+                if isinstance(item, unittest.TestSuite):
+                    yield from iter_cases(item)
+                else:
+                    yield item
+
+        ids = [case.id() for case in iter_cases(suite)]
+        duplicates = {name: count for name, count in Counter(ids).items() if count > 1}
+        self.assertEqual(duplicates, {})
 
 
 class LearningProvenanceTests(unittest.TestCase):
