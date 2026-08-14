@@ -81,6 +81,10 @@ class SettlementReconcilerTests(unittest.TestCase):
         self.assertEqual(client.patch_calls[0][1]["outcome"], "eq.WIN")
         self.assertEqual(client.patch_calls[0][1]["audit->outcomes_dual"], "is.null")
         self.assertEqual(payload["audit"]["outcomes_dual"]["primary_window"], "1h")
+        observation = payload["audit"]["outcomes_dual"]["settlement_observation_v1"]
+        self.assertEqual(observation["version"], "settlement-observation-v1")
+        self.assertEqual(observation["writer"], "SENEX_SCORE_002_RECONCILER")
+        self.assertTrue(observation["observed_at"])
 
     def test_loss_without_dual_repairs_evidence_only(self):
         rows = [{"id": 21, "ts": TS, "symbol": "BTCUSDT", "prediction": "SHORT", "price_now": 100, "outcome": "LOSS", "audit": None, "exchange_used": "okx"}]

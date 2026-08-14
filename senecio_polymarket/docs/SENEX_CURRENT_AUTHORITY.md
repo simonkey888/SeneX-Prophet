@@ -23,14 +23,19 @@ This document does not edit or replace the historical preregistration in
 
 `pipeline.step2_features.learning_state_v1` is a decision-time snapshot. Its
 effective evidence is symbol-scoped, proof-qualified, non-overlapping at 1h,
-and known at least one full authority horizon before the decision. It records
-source prediction IDs, source evidence hash, effective weight hash, code hash,
-config hash, and decision cutoff. Replays are bounded to 50 examples and each
-weight remains within 25% of its code-defined base weight.
+and explicitly observed by settlement or by the live pre-decision query at or
+before the decision. Horizon expiry alone is not proof of historical database
+availability. It records source prediction IDs, source evidence hash,
+effective weight hash, code hash, config hash, and decision cutoff. Replays are
+bounded to 50 examples and each weight remains within 25% of its code-defined
+base weight.
 
-The learning A/B report is research evidence only. It compares frozen base
-weights with bounded learned weights on paired timestamps using chronological
-purging and never writes weights or thresholds back to production.
+The legacy export lacks complete decision replay snapshots and explicit
+historical settlement-observation times. Therefore AUD-061-R1 labels the old
+reweighting exercise as component-level sensitivity, not a full model A/B, and
+returns `INSUFFICIENT_CAUSAL_PROVENANCE`. New decisions persist bounded replay
+inputs and new settlements persist observation time for future research. No
+weights or thresholds are written back to production.
 
 ## Feature observation contract
 
@@ -38,9 +43,11 @@ The six model inputs are `orderflow`, `volume_delta`, `bidask_imbalance`,
 `funding_signal`, `oi_momentum`, and `price_momentum`. Every candidate decision
 records one of `REAL_OBSERVED_ZERO`, `REAL_NONZERO`, `MISSING`,
 `NOT_APPLICABLE`, or `SOURCE_ERROR`; fallback-chain use is recorded separately
-as `transport_status=FALLBACK_USED`. A numeric zero retained for deterministic
-model compatibility is accompanied by `fallback_value=0.0` and is not called
-an observation. A point-in-time OI amount is not OI momentum.
+as `transport_status=FALLBACK_USED`. Public funding/OI reads use explicit
+USDT-settled swap identities. OI momentum requires two ordered comparable
+snapshots. The runtime bridge masks missing learnable inputs out of the
+agreement/noise denominator, so a missing source is not equivalent to measured
+neutral zero. The frozen model file remains byte-identical.
 
 ## Safety and future GO
 

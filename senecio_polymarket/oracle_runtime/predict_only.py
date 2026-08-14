@@ -17,7 +17,9 @@ surface is added.
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -128,6 +130,41 @@ def _boros_snapshot_for_audit() -> dict[str, Any]:
     }
 
 
+def _decision_replay_snapshot(market: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Persist the bounded inputs needed by a future full-pipeline replay."""
+    audit = result.get("_audit") if isinstance(result.get("_audit"), dict) else {}
+    execution = audit.get("execution_state") if isinstance(audit, dict) else {}
+    pipeline = audit.get("pipeline") if isinstance(audit, dict) else {}
+    step2 = pipeline.get("step2_features") if isinstance(pipeline, dict) else {}
+    learning = step2.get("learning_state_v1") if isinstance(step2, dict) else {}
+    ohlcv = market.get("ohlcv") if isinstance(market.get("ohlcv"), list) else []
+    bounded_market = {
+        key: copy.deepcopy(market.get(key))
+        for key in (
+            "symbol", "timeframe", "ticker", "orderbook", "funding",
+            "open_interest", "timestamp", "candle_ts", "liquidity_quality",
+            "exchange_used", "feature_observations", "polymarket_context",
+        )
+    }
+    bounded_market["ohlcv"] = copy.deepcopy(ohlcv[-16:])
+    snapshot = {
+        "version": "decision-replay-v1",
+        "captured_at": result.get("timestamp"),
+        "market": bounded_market,
+        "risk_state": {"drawdown": 0.0, "var": 0.0, "loss_streak": 0, "capital": 1000.0},
+        "execution_state": copy.deepcopy(execution) if isinstance(execution, dict) else {},
+        "learning_source_prediction_ids": list(learning.get("source_prediction_ids") or []) if isinstance(learning, dict) else [],
+        "learning_source_evidence_hash": learning.get("source_evidence_hash") if isinstance(learning, dict) else None,
+        "effective_weights_hash": learning.get("effective_weights_hash") if isinstance(learning, dict) else None,
+        "code_hash": learning.get("code_hash") if isinstance(learning, dict) else None,
+        "config_hash": learning.get("config_hash") if isinstance(learning, dict) else None,
+        "production_writeback": False,
+    }
+    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    snapshot["snapshot_hash"] = hashlib.sha256(encoded).hexdigest()
+    return snapshot
+
+
 def run_prediction(market_data: dict) -> dict:
     """Run the base predictor with authoritative learning + real market context."""
     working = copy.deepcopy(market_data)
@@ -208,6 +245,7 @@ def run_prediction(market_data: dict) -> dict:
         except (TypeError, ValueError):
             pass
         audit["external_markets_v1"] = external
+        audit["decision_replay_v1"] = _decision_replay_snapshot(working, result)
         try:
             from backend.research.aud061_pipeline import classify_flat_reason
             audit["decision_waterfall_v1"] = {

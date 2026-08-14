@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -202,12 +203,20 @@ async def update_outcome_dual(
             except Exception:
                 existing_audit = {}
 
+        observed_at = datetime.now(timezone.utc).isoformat()
         outcomes_dual = {
             "outcome_15m": outcome_15m,
             "outcome_1h": outcome_1h,
             "price_15m_later": float(price_15m_later) if price_15m_later is not None else None,
             "price_1h_later": float(price_1h_later) if price_1h_later is not None else None,
             "primary_window": primary_window,
+            "settled_at": observed_at,
+            "settlement_observation_v1": {
+                "version": "settlement-observation-v1",
+                "observed_at": observed_at,
+                "writer": "SENEX_PRIMARY_DUAL_WINDOW_VERIFIER",
+                "availability_semantics": "PERSISTED_BY_COMPARE_AND_SET_AT_OR_AFTER_THIS_TIME",
+            },
         }
         existing_audit["outcomes_dual"] = outcomes_dual
         patch_body = {

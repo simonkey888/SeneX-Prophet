@@ -35,7 +35,10 @@ The six predictor inputs are `orderflow`, `volume_delta`,
 `bidask_imbalance`, `funding_signal`, `oi_momentum`, and `price_momentum`.
 Candidate decisions distinguish real observed zero/nonzero from missing,
 not-applicable, source error, and fallback transport. Numeric fallback values
-are never presented as observations.
+are never presented as observations. Funding and OI use explicit public
+USDT-settled swap symbols; OI momentum requires two comparable timestamped
+snapshots. Missing learnable inputs are masked from model agreement/noise
+semantics instead of being treated as measured neutral zeros.
 
 ## Public API
 
@@ -70,9 +73,13 @@ python scripts/run_aud061.py btc.json eth.json \
   --output docs/evidence/aud061-experiments.json
 ```
 
-The harness has no database client and no production writeback. It reports
-insufficient evidence rather than fitting or selecting production thresholds
-when the independent OOS sample is too small.
+The harness has no database client and no production writeback. Legacy exports
+lack complete decision replay snapshots and historical settlement-observation
+times, so the learning comparison fails closed as
+`INSUFFICIENT_CAUSAL_PROVENANCE`. Threshold curves over historical directional
+rows are explicitly in-sample diagnostics; the real purged/embargoed split
+includes FLAT snapshots and returns insufficient evidence rather than
+pretending a production counterfactual can be replayed.
 
 ## Historical boundaries
 

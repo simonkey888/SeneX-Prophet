@@ -3,41 +3,42 @@
   "feature_availability": {
     "counts": {
       "okx|BTCUSDT|bidask_imbalance": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       },
       "okx|BTCUSDT|funding_signal": {
-        "UNKNOWN_ZERO_CONFLATED": 126
+        "UNKNOWN_ZERO_CONFLATED": 136
       },
       "okx|BTCUSDT|oi_momentum": {
-        "UNKNOWN_ZERO_CONFLATED": 126
+        "UNKNOWN_ZERO_CONFLATED": 136
       },
       "okx|BTCUSDT|orderflow": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       },
       "okx|BTCUSDT|price_momentum": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 135,
+        "UNKNOWN_ZERO_CONFLATED": 1
       },
       "okx|BTCUSDT|volume_delta": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       },
       "okx|ETHUSDT|bidask_imbalance": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       },
       "okx|ETHUSDT|funding_signal": {
-        "UNKNOWN_ZERO_CONFLATED": 126
+        "UNKNOWN_ZERO_CONFLATED": 136
       },
       "okx|ETHUSDT|oi_momentum": {
-        "UNKNOWN_ZERO_CONFLATED": 126
+        "UNKNOWN_ZERO_CONFLATED": 136
       },
       "okx|ETHUSDT|orderflow": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       },
       "okx|ETHUSDT|price_momentum": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 125,
+        "REAL_NONZERO_UNPROVEN_LEGACY": 135,
         "UNKNOWN_ZERO_CONFLATED": 1
       },
       "okx|ETHUSDT|volume_delta": {
-        "REAL_NONZERO_UNPROVEN_LEGACY": 126
+        "REAL_NONZERO_UNPROVEN_LEGACY": 136
       }
     },
     "grouping": "exchange|symbol|feature",
@@ -46,101 +47,213 @@
       "candidate_not_deployed": true,
       "counts": {
         "bidask_imbalance|MISSING": 1,
-        "bidask_imbalance|REAL_OBSERVED_ZERO": 1,
+        "bidask_imbalance|REAL_OBSERVED_ZERO": 2,
         "funding_signal|NOT_APPLICABLE": 1,
-        "funding_signal|REAL_OBSERVED_ZERO": 1,
-        "oi_momentum|MISSING": 1,
+        "funding_signal|REAL_NONZERO": 1,
+        "funding_signal|SOURCE_ERROR": 1,
         "oi_momentum|NOT_APPLICABLE": 1,
+        "oi_momentum|REAL_NONZERO": 1,
+        "oi_momentum|SOURCE_ERROR": 1,
         "orderflow|MISSING": 1,
-        "orderflow|REAL_OBSERVED_ZERO": 1,
+        "orderflow|REAL_OBSERVED_ZERO": 2,
         "price_momentum|MISSING": 1,
-        "price_momentum|REAL_OBSERVED_ZERO": 1,
+        "price_momentum|REAL_OBSERVED_ZERO": 2,
         "volume_delta|MISSING": 1,
-        "volume_delta|REAL_OBSERVED_ZERO": 1
+        "volume_delta|REAL_OBSERVED_ZERO": 2
       },
-      "live_post_fix_observation": "NOT_APPLICABLE_NO_DEPLOY",
+      "live_post_fix_observation": "NOT_OBSERVED_NO_DEPLOY",
       "scenarios": {
         "kraken_spot_fallback_unavailable": {
           "bidask_imbalance": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:orderbook",
             "status": "MISSING",
             "transport_status": "FALLBACK_USED"
           },
           "funding_signal": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:funding_public_get",
             "status": "NOT_APPLICABLE",
             "transport_status": "FALLBACK_USED"
           },
           "oi_momentum": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:open_interest_public_get",
             "status": "NOT_APPLICABLE",
             "transport_status": "FALLBACK_USED"
           },
           "orderflow": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:orderbook+ohlcv",
             "status": "MISSING",
             "transport_status": "FALLBACK_USED"
           },
           "price_momentum": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:ohlcv",
             "status": "MISSING",
             "transport_status": "FALLBACK_USED"
           },
           "volume_delta": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "kraken:ohlcv",
             "status": "MISSING",
             "transport_status": "FALLBACK_USED"
           }
         },
-        "okx_observed_zero_plus_oi_snapshot": {
+        "okx_derivative_source_failure": {
           "bidask_imbalance": {
             "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:orderbook",
             "status": "REAL_OBSERVED_ZERO",
             "transport_status": "PRIMARY_SOURCE"
           },
           "funding_signal": {
-            "fallback_value": null,
+            "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:funding_public_get",
-            "status": "REAL_OBSERVED_ZERO",
+            "status": "SOURCE_ERROR",
             "transport_status": "PRIMARY_SOURCE"
           },
           "oi_momentum": {
             "fallback_value": 0.0,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:open_interest_public_get",
-            "status": "MISSING",
+            "status": "SOURCE_ERROR",
             "transport_status": "PRIMARY_SOURCE"
           },
           "orderflow": {
             "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:orderbook+ohlcv",
             "status": "REAL_OBSERVED_ZERO",
             "transport_status": "PRIMARY_SOURCE"
           },
           "price_momentum": {
             "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:ohlcv",
             "status": "REAL_OBSERVED_ZERO",
             "transport_status": "PRIMARY_SOURCE"
           },
           "volume_delta": {
             "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
+            "source": "okx:ohlcv",
+            "status": "REAL_OBSERVED_ZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          }
+        },
+        "okx_nonzero_funding_plus_two_point_oi": {
+          "bidask_imbalance": {
+            "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
+            "source": "okx:orderbook",
+            "status": "REAL_OBSERVED_ZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          },
+          "funding_signal": {
+            "fallback_value": null,
+            "instrument": "BTC/USDT:USDT",
+            "market_type": "swap",
+            "observed_at": 2000,
+            "observed_value": -0.025,
+            "source": "okx:public_swap_funding",
+            "status": "REAL_NONZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          },
+          "oi_momentum": {
+            "fallback_value": null,
+            "instrument": "BTC/USDT:USDT",
+            "market_type": "swap",
+            "observed_at": 2000,
+            "observed_value": 0.1,
+            "source": "okx:public_swap_open_interest",
+            "status": "REAL_NONZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          },
+          "orderflow": {
+            "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
+            "source": "okx:orderbook+ohlcv",
+            "status": "REAL_OBSERVED_ZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          },
+          "price_momentum": {
+            "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
+            "source": "okx:ohlcv",
+            "status": "REAL_OBSERVED_ZERO",
+            "transport_status": "PRIMARY_SOURCE"
+          },
+          "volume_delta": {
+            "fallback_value": null,
+            "instrument": null,
+            "market_type": null,
+            "observed_at": null,
+            "observed_value": null,
             "source": "okx:ohlcv",
             "status": "REAL_OBSERVED_ZERO",
             "transport_status": "PRIMARY_SOURCE"
           }
         }
       },
-      "status": "COMPLETE_DETERMINISTIC_CANDIDATE_FIXTURES"
+      "status": "COMPLETE_DETERMINISTIC_ADAPTER_AND_MASK_FIXTURES"
     },
     "status": "COMPLETE",
-    "version": "AUD-061-paper-research-v1"
+    "version": "AUD-061-R1-paper-research-v2"
   },
   "flat_waterfall": {
     "aggregate_diagnostic_only": {
@@ -148,47 +261,47 @@
         "EXECUTION_INFEASIBLE": 0,
         "HIGH_NOISE": 0,
         "LATENCY_COOLDOWN": 0,
-        "LONG_BEAR_SUPPRESSION": 24,
+        "LONG_BEAR_SUPPRESSION": 26,
         "LOW_CONVICTION_GATE": 12,
         "MISSING_INPUT/DEGRADED_SOURCE": 0,
-        "NEGATIVE_OR_INSUFFICIENT_EV": 127,
-        "NO_DIRECTION/NEUTRAL": 13,
+        "NEGATIVE_OR_INSUFFICIENT_EV": 136,
+        "NO_DIRECTION/NEUTRAL": 15,
         "OTHER_EXPLICIT_REASON": 0,
         "REGIME/HIGH_VOL_SHIELD": 0,
         "SIGNAL_DENSITY": 0,
-        "SIZE_TOO_SMALL": 10
+        "SIZE_TOO_SMALL": 12
       },
-      "directional_n": 66,
-      "flat_n": 186,
-      "flat_rate": 0.738095,
+      "directional_n": 71,
+      "flat_n": 201,
+      "flat_rate": 0.738971,
       "rates": {
         "EXECUTION_INFEASIBLE": 0.0,
         "HIGH_NOISE": 0.0,
         "LATENCY_COOLDOWN": 0.0,
-        "LONG_BEAR_SUPPRESSION": 0.095238,
-        "LOW_CONVICTION_GATE": 0.047619,
+        "LONG_BEAR_SUPPRESSION": 0.095588,
+        "LOW_CONVICTION_GATE": 0.044118,
         "MISSING_INPUT/DEGRADED_SOURCE": 0.0,
-        "NEGATIVE_OR_INSUFFICIENT_EV": 0.503968,
-        "NO_DIRECTION/NEUTRAL": 0.051587,
+        "NEGATIVE_OR_INSUFFICIENT_EV": 0.5,
+        "NO_DIRECTION/NEUTRAL": 0.055147,
         "OTHER_EXPLICIT_REASON": 0.0,
         "REGIME/HIGH_VOL_SHIELD": 0.0,
         "SIGNAL_DENSITY": 0.0,
-        "SIZE_TOO_SMALL": 0.039683
+        "SIZE_TOO_SMALL": 0.044118
       },
-      "total": 252,
+      "total": 272,
       "transition_loss": {
         "EXECUTION_INFEASIBLE": 0,
         "HIGH_NOISE": 0,
         "LATENCY_COOLDOWN": 0,
-        "LONG_BEAR_SUPPRESSION": 24,
+        "LONG_BEAR_SUPPRESSION": 26,
         "LOW_CONVICTION_GATE": 12,
         "MISSING_INPUT/DEGRADED_SOURCE": 0,
-        "NEGATIVE_OR_INSUFFICIENT_EV": 127,
-        "NO_DIRECTION/NEUTRAL": 13,
+        "NEGATIVE_OR_INSUFFICIENT_EV": 136,
+        "NO_DIRECTION/NEUTRAL": 15,
         "OTHER_EXPLICIT_REASON": 0,
         "REGIME/HIGH_VOL_SHIELD": 0,
         "SIGNAL_DENSITY": 0,
-        "SIZE_TOO_SMALL": 10
+        "SIZE_TOO_SMALL": 12
       }
     },
     "per_symbol": {
@@ -197,47 +310,47 @@
           "EXECUTION_INFEASIBLE": 0,
           "HIGH_NOISE": 0,
           "LATENCY_COOLDOWN": 0,
-          "LONG_BEAR_SUPPRESSION": 11,
+          "LONG_BEAR_SUPPRESSION": 13,
           "LOW_CONVICTION_GATE": 6,
           "MISSING_INPUT/DEGRADED_SOURCE": 0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 71,
-          "NO_DIRECTION/NEUTRAL": 4,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 75,
+          "NO_DIRECTION/NEUTRAL": 5,
           "OTHER_EXPLICIT_REASON": 0,
           "REGIME/HIGH_VOL_SHIELD": 0,
           "SIGNAL_DENSITY": 0,
-          "SIZE_TOO_SMALL": 3
+          "SIZE_TOO_SMALL": 4
         },
-        "directional_n": 31,
-        "flat_n": 95,
-        "flat_rate": 0.753968,
+        "directional_n": 33,
+        "flat_n": 103,
+        "flat_rate": 0.757353,
         "rates": {
           "EXECUTION_INFEASIBLE": 0.0,
           "HIGH_NOISE": 0.0,
           "LATENCY_COOLDOWN": 0.0,
-          "LONG_BEAR_SUPPRESSION": 0.087302,
-          "LOW_CONVICTION_GATE": 0.047619,
+          "LONG_BEAR_SUPPRESSION": 0.095588,
+          "LOW_CONVICTION_GATE": 0.044118,
           "MISSING_INPUT/DEGRADED_SOURCE": 0.0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 0.563492,
-          "NO_DIRECTION/NEUTRAL": 0.031746,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 0.551471,
+          "NO_DIRECTION/NEUTRAL": 0.036765,
           "OTHER_EXPLICIT_REASON": 0.0,
           "REGIME/HIGH_VOL_SHIELD": 0.0,
           "SIGNAL_DENSITY": 0.0,
-          "SIZE_TOO_SMALL": 0.02381
+          "SIZE_TOO_SMALL": 0.029412
         },
-        "total": 126,
+        "total": 136,
         "transition_loss": {
           "EXECUTION_INFEASIBLE": 0,
           "HIGH_NOISE": 0,
           "LATENCY_COOLDOWN": 0,
-          "LONG_BEAR_SUPPRESSION": 11,
+          "LONG_BEAR_SUPPRESSION": 13,
           "LOW_CONVICTION_GATE": 6,
           "MISSING_INPUT/DEGRADED_SOURCE": 0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 71,
-          "NO_DIRECTION/NEUTRAL": 4,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 75,
+          "NO_DIRECTION/NEUTRAL": 5,
           "OTHER_EXPLICIT_REASON": 0,
           "REGIME/HIGH_VOL_SHIELD": 0,
           "SIGNAL_DENSITY": 0,
-          "SIZE_TOO_SMALL": 3
+          "SIZE_TOO_SMALL": 4
         }
       },
       "ETHUSDT": {
@@ -248,31 +361,31 @@
           "LONG_BEAR_SUPPRESSION": 13,
           "LOW_CONVICTION_GATE": 6,
           "MISSING_INPUT/DEGRADED_SOURCE": 0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 56,
-          "NO_DIRECTION/NEUTRAL": 9,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 61,
+          "NO_DIRECTION/NEUTRAL": 10,
           "OTHER_EXPLICIT_REASON": 0,
           "REGIME/HIGH_VOL_SHIELD": 0,
           "SIGNAL_DENSITY": 0,
-          "SIZE_TOO_SMALL": 7
+          "SIZE_TOO_SMALL": 8
         },
-        "directional_n": 35,
-        "flat_n": 91,
-        "flat_rate": 0.722222,
+        "directional_n": 38,
+        "flat_n": 98,
+        "flat_rate": 0.720588,
         "rates": {
           "EXECUTION_INFEASIBLE": 0.0,
           "HIGH_NOISE": 0.0,
           "LATENCY_COOLDOWN": 0.0,
-          "LONG_BEAR_SUPPRESSION": 0.103175,
-          "LOW_CONVICTION_GATE": 0.047619,
+          "LONG_BEAR_SUPPRESSION": 0.095588,
+          "LOW_CONVICTION_GATE": 0.044118,
           "MISSING_INPUT/DEGRADED_SOURCE": 0.0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 0.444444,
-          "NO_DIRECTION/NEUTRAL": 0.071429,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 0.448529,
+          "NO_DIRECTION/NEUTRAL": 0.073529,
           "OTHER_EXPLICIT_REASON": 0.0,
           "REGIME/HIGH_VOL_SHIELD": 0.0,
           "SIGNAL_DENSITY": 0.0,
-          "SIZE_TOO_SMALL": 0.055556
+          "SIZE_TOO_SMALL": 0.058824
         },
-        "total": 126,
+        "total": 136,
         "transition_loss": {
           "EXECUTION_INFEASIBLE": 0,
           "HIGH_NOISE": 0,
@@ -280,17 +393,17 @@
           "LONG_BEAR_SUPPRESSION": 13,
           "LOW_CONVICTION_GATE": 6,
           "MISSING_INPUT/DEGRADED_SOURCE": 0,
-          "NEGATIVE_OR_INSUFFICIENT_EV": 56,
-          "NO_DIRECTION/NEUTRAL": 9,
+          "NEGATIVE_OR_INSUFFICIENT_EV": 61,
+          "NO_DIRECTION/NEUTRAL": 10,
           "OTHER_EXPLICIT_REASON": 0,
           "REGIME/HIGH_VOL_SHIELD": 0,
           "SIGNAL_DENSITY": 0,
-          "SIZE_TOO_SMALL": 7
+          "SIZE_TOO_SMALL": 8
         }
       }
     },
     "status": "COMPLETE",
-    "version": "AUD-061-paper-research-v1"
+    "version": "AUD-061-R1-paper-research-v2"
   },
   "horizon_research": {
     "BTCUSDT": {
@@ -344,7 +457,7 @@
       "multiple_horizon_correction": "HOLM",
       "primary_authority_horizon": "1h",
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     },
     "ETHUSDT": {
       "horizons": [
@@ -397,92 +510,50 @@
       "multiple_horizon_correction": "HOLM",
       "primary_authority_horizon": "1h",
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     }
   },
-  "input_hash": "f932b8d8424b781377bf7de11870af788bbf5a2a2c770fe8ac747966b7866fd5",
-  "input_rows": 252,
+  "input_hash": "ad54e6e29f3667d15e87b86efb330c0c0388f00124f37db0bfc691f52265f48c",
+  "input_rows": 272,
   "learning_ab": {
-    "a_correct": 1,
-    "a_mean_signed_return": 0.00608986,
-    "abstention_n": 20,
+    "a_mean_signed_return": null,
+    "abstention_n": 21,
+    "analysis_type": "COMPONENT_LEVEL_WEIGHT_SENSITIVITY_NOT_MODEL_AB",
     "authority_target_n": 21,
-    "b_correct": 1,
-    "b_mean_signed_return": 0.00608986,
-    "coverage": 0.047619,
-    "decisions": [
-      {
-        "a_correct": true,
-        "a_direction": "SHORT",
-        "a_signed_return": 0.00608986,
-        "b_correct": true,
-        "b_direction": "SHORT",
-        "b_signed_return": 0.00608986,
-        "code_hash": "b67cd39d0f22d5ffe50166381481265084e3e97788b55ef3c3c032b9871787e7",
-        "config_hash": "ac0177c79dd2e493d6b2e4d9b4113a5a426539f7649e718caed29da31b9d66f7",
-        "effective_weights_hash": "29453a33630b7faa8feb596d73ae93aebce014cc9a881142a78a7244130ca156",
-        "source_evidence_hash": "6a32e78809e7b171ed777efc971c61cf0d31bcf36dc7be30a921eb9a9bb46930",
-        "source_prediction_ids": [
-          1,
-          13,
-          25,
-          41,
-          57,
-          67,
-          77,
-          87,
-          97,
-          105
-        ],
-        "symbol": "ETHUSDT",
-        "target_id": 113,
-        "timestamp": "2026-08-13T15:57:53.250954+00:00",
-        "truth": "SHORT"
-      }
-    ],
-    "learning_effect": "INSUFFICIENT_OOS_EVIDENCE",
-    "method": "PAIRED_STRICT_CHRONOLOGICAL_PROOF_QUALIFIED_PURGED_1H",
-    "paired_correctness_delta": 0.0,
-    "paired_n": 1,
-    "per_truth_direction": {
-      "LONG": {
-        "b_correct": 0,
-        "n": 0,
-        "wilson_95": null
-      },
-      "SHORT": {
-        "b_correct": 1,
-        "n": 1,
-        "wilson_95": [
-          0.206549,
-          1.0
-        ]
-      }
-    },
+    "b_mean_signed_return": null,
+    "coverage": 0.0,
+    "decision_replay_snapshot_n": 0,
+    "decisions": [],
+    "full_model_ab": false,
+    "learning_effect": "NOT_ESTIMABLE",
+    "method": "FAIL_CLOSED_PROVENANCE_GATE",
+    "paired_correctness_delta": null,
+    "paired_n": 0,
+    "reason": "legacy_rows_do_not_prove_decision_time_settlement_availability_or_complete_pipeline_replay_inputs",
     "reorder_invariant": true,
-    "same_inputs_and_timestamps": true,
-    "status": "INSUFFICIENT_OOS_EVIDENCE",
-    "version": "AUD-061-paper-research-v1"
+    "same_inputs_and_timestamps": false,
+    "settlement_observation_provenance_n": 0,
+    "status": "INSUFFICIENT_CAUSAL_PROVENANCE",
+    "version": "AUD-061-R1-paper-research-v2"
   },
   "manifest": {
-    "generated_at_utc": "2026-08-14T09:54:11.584862+00:00",
-    "order": "AUD-061",
+    "generated_at_utc": "2026-08-14T12:17:21.230523+00:00",
+    "order": "AUD-061-R1",
     "production_writeback": false,
     "read_only": true,
     "source_endpoints": [
-      "GET /api/oracle/predictions/db?limit=500&symbol=BTCUSDT",
-      "GET /api/oracle/predictions/db?limit=500&symbol=ETHUSDT"
+      "production-read-only"
     ],
     "sources": [
       {
-        "path_label": "aud061_btc.json",
-        "rows": 126,
-        "sha256": "7d7c2ac7e7762f9049d75bfe1d57e9aeb84c8b89ddd4ef31d65c6a3f999e512b"
+        "path_label": "aud061r1_btc.json",
+        "rows": 136,
+        "sha256": "4c9d85d45e2393f5e1bc3e1525d743038a0674284705129a944c802a2711e392"
       },
       {
-        "path_label": "aud061_eth.json",
-        "rows": 126,
-        "sha256": "cb8b3cdd58f700e7e4d10a901bf85e19d9fa129ee2322752095d88a46f2b3e3e"
+        "path_label": "aud061r1_eth.json",
+        "rows": 136,
+        "sha256": "3237080ec9c15e37f1af42053681312ae46a35aba18db14dbcb0a571b8fbe537"
       }
     ],
     "supabase_mutations": 0
@@ -501,9 +572,9 @@
       "independent_1h_n": 10,
       "production_feature_change": false,
       "reason": "requires_at_least_30_independent_rows",
-      "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+      "split": "NO_TEMPORAL_SPLIT_DESCRIPTIVE_AVAILABILITY_ONLY",
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     },
     "ETHUSDT": {
       "feature_rows": {
@@ -517,144 +588,466 @@
       "independent_1h_n": 11,
       "production_feature_change": false,
       "reason": "requires_at_least_30_independent_rows",
-      "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+      "split": "NO_TEMPORAL_SPLIT_DESCRIPTIVE_AVAILABILITY_ONLY",
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     }
   },
   "threshold_research": {
     "BTCUSDT": {
-      "curve": [
-        {
-          "coverage": 1.0,
-          "holm_adjusted_p": 1.0,
-          "n": 10,
-          "raw_p": 0.20590321,
-          "threshold": 0.4,
-          "win_rate": 0.3
-        },
-        {
-          "coverage": 0.8,
-          "holm_adjusted_p": 1.0,
-          "n": 8,
-          "raw_p": 0.47950012,
-          "threshold": 0.5,
-          "win_rate": 0.375
-        },
-        {
-          "coverage": 0.6,
-          "holm_adjusted_p": 1.0,
-          "n": 6,
-          "raw_p": 1.0,
-          "threshold": 0.55,
-          "win_rate": 0.5
-        },
-        {
-          "coverage": 0.3,
-          "holm_adjusted_p": 1.0,
-          "n": 3,
-          "raw_p": 0.56370286,
-          "threshold": 0.6,
-          "win_rate": 0.666667
-        },
-        {
-          "coverage": 0.0,
-          "holm_adjusted_p": 1.0,
-          "n": 0,
-          "raw_p": 1.0,
-          "threshold": 0.7,
-          "win_rate": null
-        },
-        {
-          "coverage": 0.0,
-          "holm_adjusted_p": 1.0,
-          "n": 0,
-          "raw_p": 1.0,
-          "threshold": 0.8,
-          "win_rate": null
-        },
-        {
-          "coverage": 0.0,
-          "holm_adjusted_p": 1.0,
-          "n": 0,
-          "raw_p": 1.0,
-          "threshold": 0.9,
-          "win_rate": null
-        }
-      ],
+      "all_decision_snapshot_n": 136,
+      "analysis_type": "THRESHOLD_COUNTERFACTUAL",
+      "diagnostic_in_sample_directional_only": {
+        "curve": [
+          {
+            "coverage": 1.0,
+            "holm_adjusted_p": 1.0,
+            "n": 10,
+            "raw_p": 0.20590321,
+            "threshold": 0.4,
+            "win_rate": 0.3
+          },
+          {
+            "coverage": 0.8,
+            "holm_adjusted_p": 1.0,
+            "n": 8,
+            "raw_p": 0.47950012,
+            "threshold": 0.5,
+            "win_rate": 0.375
+          },
+          {
+            "coverage": 0.6,
+            "holm_adjusted_p": 1.0,
+            "n": 6,
+            "raw_p": 1.0,
+            "threshold": 0.55,
+            "win_rate": 0.5
+          },
+          {
+            "coverage": 0.3,
+            "holm_adjusted_p": 1.0,
+            "n": 3,
+            "raw_p": 0.56370286,
+            "threshold": 0.6,
+            "win_rate": 0.666667
+          },
+          {
+            "coverage": 0.0,
+            "holm_adjusted_p": 1.0,
+            "n": 0,
+            "raw_p": 1.0,
+            "threshold": 0.7,
+            "win_rate": null
+          },
+          {
+            "coverage": 0.0,
+            "holm_adjusted_p": 1.0,
+            "n": 0,
+            "raw_p": 1.0,
+            "threshold": 0.8,
+            "win_rate": null
+          },
+          {
+            "coverage": 0.0,
+            "holm_adjusted_p": 1.0,
+            "n": 0,
+            "raw_p": 1.0,
+            "threshold": 0.9,
+            "win_rate": null
+          }
+        ],
+        "label": "DESCRIPTIVE_IN_SAMPLE_DIRECTIONAL_ONLY_NON_OOS",
+        "multiple_testing_correction": "HOLM"
+      },
+      "evaluation_flat_n": 37,
+      "evaluation_snapshot_n": 48,
       "independent_1h_n": 10,
       "multiple_testing_correction": "HOLM",
+      "oos_curve": [],
+      "oos_split": {
+        "embargo_seconds": 3600,
+        "evaluation_ids": [
+          178,
+          180,
+          182,
+          184,
+          186,
+          188,
+          190,
+          192,
+          194,
+          196,
+          198,
+          200,
+          202,
+          204,
+          206,
+          208,
+          210,
+          212,
+          214,
+          216,
+          218,
+          220,
+          222,
+          224,
+          226,
+          228,
+          230,
+          232,
+          234,
+          236,
+          238,
+          240,
+          242,
+          244,
+          246,
+          248,
+          250,
+          252,
+          254,
+          256,
+          258,
+          260,
+          262,
+          264,
+          266,
+          268,
+          270,
+          272
+        ],
+        "evaluation_start_epoch": 1786666292.07885,
+        "mechanically_disjoint": true,
+        "minimum_gap_seconds": 7365.34464097023,
+        "purge_seconds": 3600,
+        "purged_embargoed_ids": [
+          164,
+          166,
+          168,
+          170,
+          172,
+          174,
+          176
+        ],
+        "status": "COMPLETE",
+        "train_end_epoch": 1786658926.734209,
+        "train_ids": [
+          2,
+          4,
+          6,
+          8,
+          10,
+          12,
+          14,
+          16,
+          18,
+          20,
+          22,
+          24,
+          26,
+          28,
+          30,
+          32,
+          34,
+          36,
+          38,
+          40,
+          42,
+          44,
+          46,
+          48,
+          50,
+          52,
+          54,
+          56,
+          58,
+          60,
+          62,
+          64,
+          66,
+          68,
+          70,
+          72,
+          74,
+          76,
+          78,
+          80,
+          82,
+          84,
+          86,
+          88,
+          90,
+          92,
+          94,
+          96,
+          98,
+          100,
+          102,
+          104,
+          106,
+          108,
+          110,
+          112,
+          114,
+          116,
+          118,
+          120,
+          122,
+          124,
+          126,
+          128,
+          130,
+          132,
+          134,
+          136,
+          138,
+          140,
+          142,
+          144,
+          146,
+          148,
+          150,
+          152,
+          154,
+          156,
+          158,
+          160,
+          162
+        ]
+      },
       "production_writeback": false,
-      "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+      "reason": "legacy_FLAT_and_directional_rows_lack_complete_decision_replay_snapshots",
+      "replay_ready_evaluation_n": 0,
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     },
     "ETHUSDT": {
-      "curve": [
-        {
-          "coverage": 1.0,
-          "holm_adjusted_p": 1.0,
-          "n": 11,
-          "raw_p": 0.7630246,
-          "threshold": 0.4,
-          "win_rate": 0.454545
-        },
-        {
-          "coverage": 0.909091,
-          "holm_adjusted_p": 1.0,
-          "n": 10,
-          "raw_p": 0.52708926,
-          "threshold": 0.5,
-          "win_rate": 0.4
-        },
-        {
-          "coverage": 0.545455,
-          "holm_adjusted_p": 1.0,
-          "n": 6,
-          "raw_p": 0.41421618,
-          "threshold": 0.55,
-          "win_rate": 0.333333
-        },
-        {
-          "coverage": 0.272727,
-          "holm_adjusted_p": 1.0,
-          "n": 3,
-          "raw_p": 0.56370286,
-          "threshold": 0.6,
-          "win_rate": 0.333333
-        },
-        {
-          "coverage": 0.090909,
-          "holm_adjusted_p": 1.0,
-          "n": 1,
-          "raw_p": 0.31731051,
-          "threshold": 0.7,
-          "win_rate": 0.0
-        },
-        {
-          "coverage": 0.0,
-          "holm_adjusted_p": 1.0,
-          "n": 0,
-          "raw_p": 1.0,
-          "threshold": 0.8,
-          "win_rate": null
-        },
-        {
-          "coverage": 0.0,
-          "holm_adjusted_p": 1.0,
-          "n": 0,
-          "raw_p": 1.0,
-          "threshold": 0.9,
-          "win_rate": null
-        }
-      ],
+      "all_decision_snapshot_n": 136,
+      "analysis_type": "THRESHOLD_COUNTERFACTUAL",
+      "diagnostic_in_sample_directional_only": {
+        "curve": [
+          {
+            "coverage": 1.0,
+            "holm_adjusted_p": 1.0,
+            "n": 11,
+            "raw_p": 0.7630246,
+            "threshold": 0.4,
+            "win_rate": 0.454545
+          },
+          {
+            "coverage": 0.909091,
+            "holm_adjusted_p": 1.0,
+            "n": 10,
+            "raw_p": 0.52708926,
+            "threshold": 0.5,
+            "win_rate": 0.4
+          },
+          {
+            "coverage": 0.545455,
+            "holm_adjusted_p": 1.0,
+            "n": 6,
+            "raw_p": 0.41421618,
+            "threshold": 0.55,
+            "win_rate": 0.333333
+          },
+          {
+            "coverage": 0.272727,
+            "holm_adjusted_p": 1.0,
+            "n": 3,
+            "raw_p": 0.56370286,
+            "threshold": 0.6,
+            "win_rate": 0.333333
+          },
+          {
+            "coverage": 0.090909,
+            "holm_adjusted_p": 1.0,
+            "n": 1,
+            "raw_p": 0.31731051,
+            "threshold": 0.7,
+            "win_rate": 0.0
+          },
+          {
+            "coverage": 0.0,
+            "holm_adjusted_p": 1.0,
+            "n": 0,
+            "raw_p": 1.0,
+            "threshold": 0.8,
+            "win_rate": null
+          },
+          {
+            "coverage": 0.0,
+            "holm_adjusted_p": 1.0,
+            "n": 0,
+            "raw_p": 1.0,
+            "threshold": 0.9,
+            "win_rate": null
+          }
+        ],
+        "label": "DESCRIPTIVE_IN_SAMPLE_DIRECTIONAL_ONLY_NON_OOS",
+        "multiple_testing_correction": "HOLM"
+      },
+      "evaluation_flat_n": 35,
+      "evaluation_snapshot_n": 48,
       "independent_1h_n": 11,
       "multiple_testing_correction": "HOLM",
+      "oos_curve": [],
+      "oos_split": {
+        "embargo_seconds": 3600,
+        "evaluation_ids": [
+          177,
+          179,
+          181,
+          183,
+          185,
+          187,
+          189,
+          191,
+          193,
+          195,
+          197,
+          199,
+          201,
+          203,
+          205,
+          207,
+          209,
+          211,
+          213,
+          215,
+          217,
+          219,
+          221,
+          223,
+          225,
+          227,
+          229,
+          231,
+          233,
+          235,
+          237,
+          239,
+          241,
+          243,
+          245,
+          247,
+          249,
+          251,
+          253,
+          255,
+          257,
+          259,
+          261,
+          263,
+          265,
+          267,
+          269,
+          271
+        ],
+        "evaluation_start_epoch": 1786666281.939316,
+        "mechanically_disjoint": true,
+        "minimum_gap_seconds": 7364.880245923996,
+        "purge_seconds": 3600,
+        "purged_embargoed_ids": [
+          163,
+          165,
+          167,
+          169,
+          171,
+          173,
+          175
+        ],
+        "status": "COMPLETE",
+        "train_end_epoch": 1786658917.05907,
+        "train_ids": [
+          1,
+          3,
+          5,
+          7,
+          9,
+          11,
+          13,
+          15,
+          17,
+          19,
+          21,
+          23,
+          25,
+          27,
+          29,
+          31,
+          33,
+          35,
+          37,
+          39,
+          41,
+          43,
+          45,
+          47,
+          49,
+          51,
+          53,
+          55,
+          57,
+          59,
+          61,
+          63,
+          65,
+          67,
+          69,
+          71,
+          73,
+          75,
+          77,
+          79,
+          81,
+          83,
+          85,
+          87,
+          89,
+          91,
+          93,
+          95,
+          97,
+          99,
+          101,
+          103,
+          105,
+          107,
+          109,
+          111,
+          113,
+          115,
+          117,
+          119,
+          121,
+          123,
+          125,
+          127,
+          129,
+          131,
+          133,
+          135,
+          137,
+          139,
+          141,
+          143,
+          145,
+          147,
+          149,
+          151,
+          153,
+          155,
+          157,
+          159,
+          161
+        ]
+      },
       "production_writeback": false,
-      "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+      "reason": "legacy_FLAT_and_directional_rows_lack_complete_decision_replay_snapshots",
+      "replay_ready_evaluation_n": 0,
       "status": "INSUFFICIENT_OOS_EVIDENCE",
-      "version": "AUD-061-paper-research-v1"
+      "version": "AUD-061-R1-paper-research-v2"
     }
   },
-  "version": "AUD-061-paper-research-v1"
+  "version": "AUD-061-R1-paper-research-v2"
 }

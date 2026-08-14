@@ -14,11 +14,25 @@ from oracle.exchange_connector import build_feature_observations
 def post_fix_feature_fixtures() -> dict:
     candles = [[0, 100, 101, 99, 100, 10], [1, 100, 101, 99, 100, 10]]
     scenarios = {
-        "okx_observed_zero_plus_oi_snapshot": build_feature_observations(
+        "okx_nonzero_funding_plus_two_point_oi": build_feature_observations(
             exchange="okx", ohlcv=candles,
             orderbook={"bid_depth_usdt": 100, "ask_depth_usdt": 100},
-            funding={"rate": 0.0},
-            open_interest={"oi_value": 123.0, "oi_change_24h_pct": 0.0},
+            funding={
+                "rate": 0.00025, "timestamp": 2000,
+                "derivative_symbol": "BTC/USDT:USDT", "market_type": "swap",
+                "source": "okx:public_swap_funding",
+            },
+            open_interest={
+                "oi_value": 110.0, "oi_change_24h_pct": 10.0,
+                "oi_change_observed": True, "comparison_timestamp": 1000,
+                "timestamp": 2000, "derivative_symbol": "BTC/USDT:USDT",
+                "market_type": "swap", "source": "okx:public_swap_open_interest",
+            },
+        ),
+        "okx_derivative_source_failure": build_feature_observations(
+            exchange="okx", ohlcv=candles,
+            orderbook={"bid_depth_usdt": 100, "ask_depth_usdt": 100},
+            funding=None, open_interest=None,
         ),
         "kraken_spot_fallback_unavailable": build_feature_observations(
             exchange="kraken", ohlcv=None, orderbook=None, funding=None,
@@ -31,11 +45,11 @@ def post_fix_feature_fixtures() -> dict:
             key = f"{feature}|{observation['status']}"
             counts[key] = counts.get(key, 0) + 1
     return {
-        "status": "COMPLETE_DETERMINISTIC_CANDIDATE_FIXTURES",
+        "status": "COMPLETE_DETERMINISTIC_ADAPTER_AND_MASK_FIXTURES",
         "counts": dict(sorted(counts.items())),
         "scenarios": scenarios,
         "candidate_not_deployed": True,
-        "live_post_fix_observation": "NOT_APPLICABLE_NO_DEPLOY",
+        "live_post_fix_observation": "NOT_OBSERVED_NO_DEPLOY",
     }
 
 
@@ -62,7 +76,7 @@ def main() -> int:
     report = run_all(list(unique.values()))
     report["feature_availability"]["post_fix"] = post_fix_feature_fixtures()
     report["manifest"] = {
-        "order": "AUD-061",
+        "order": "AUD-061-R1",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "sources": sources,
         "source_endpoints": args.source,

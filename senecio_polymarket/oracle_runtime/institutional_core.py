@@ -52,7 +52,7 @@ for _name in dir(_original):
 
 OriginalSingleDecisionCore = _original.SingleDecisionCore
 
-LEARNING_VERSION = "proof-qualified-replay-v3-aud061"
+LEARNING_VERSION = "proof-qualified-replay-v4-aud061-r1"
 MIN_LEARNING_EXAMPLES = 10
 MAX_LEARNING_EXAMPLES = 50
 FETCH_LIMIT = 240
@@ -123,6 +123,25 @@ def _timestamp_epoch(value: Any) -> float | None:
         return None
 
 
+def _settlement_observed_epoch(row: dict[str, Any]) -> float | None:
+    """Use explicit observation provenance, never inferred horizon expiry."""
+    audit = row.get("audit") if isinstance(row.get("audit"), dict) else {}
+    dual = audit.get("outcomes_dual") if isinstance(audit, dict) else {}
+    if not isinstance(dual, dict):
+        dual = {}
+    provenance = dual.get("settlement_observation_v1") or {}
+    values = (
+        provenance.get("observed_at") if isinstance(provenance, dict) else None,
+        dual.get("settled_at"), dual.get("verified_at"), dual.get("reconciled_at"),
+        row.get("_senex_snapshot_observed_at_epoch"),
+    )
+    for value in values:
+        parsed = _timestamp_epoch(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _evidence_hash(rows: list[dict[str, Any]]) -> str:
     """Hash only the causal evidence fields consumed by the replay."""
     evidence = []
@@ -136,6 +155,7 @@ def _evidence_hash(rows: list[dict[str, Any]]) -> str:
             "prediction": row.get("prediction"), "confidence": row.get("confidence"),
             "price_now": row.get("price_now"), "outcome": row.get("outcome"),
             "price_1h_later": dual.get("price_1h_later") if isinstance(dual, dict) else None,
+            "settlement_observed_epoch": _settlement_observed_epoch(row),
             "features": step2 if isinstance(step2, dict) else {},
         })
     return _canonical_json_hash(evidence)
@@ -200,6 +220,14 @@ def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
         raise RuntimeError(f"supabase_learning_http_{response.status_code}")
     data = response.json()
     rows = data if isinstance(data, list) else []
+    # The public GET snapshot proves that every returned settlement existed no
+    # later than this observation. This marker is process-local and is never
+    # written back to legacy rows.
+    snapshot_observed_at = time.time()
+    rows = [
+        {**row, "_senex_snapshot_observed_at_epoch": snapshot_observed_at}
+        for row in rows if isinstance(row, dict)
+    ]
     _fetch_cache[normalized] = (now, list(rows))
     return rows
 
@@ -269,12 +297,17 @@ def replay_authoritative_learning(
     available = []
     for row in rows:
         origin_epoch = _timestamp_epoch(row.get("ts"))
-        evidence_known = (
+        observed_epoch = _settlement_observed_epoch(row)
+        horizon_elapsed = (
             cutoff_epoch is None
             or (origin_epoch is not None and origin_epoch + 3600.0 <= cutoff_epoch)
         )
+        evidence_known = observed_epoch is not None and (
+            cutoff_epoch is None or observed_epoch <= cutoff_epoch
+        )
         if (
             _normalize_symbol(str(row.get("symbol") or "")) == normalized
+            and horizon_elapsed
             and evidence_known
             and _proof_gate(row)
         ):
@@ -319,6 +352,7 @@ def replay_authoritative_learning(
         "status": "WARMUP",
         "evidence_cut": "PRE_DECISION_SNAPSHOT",
         "uses_only_prior_settled_evidence": True,
+        "availability_rule": "EXPLICIT_SETTLEMENT_OR_QUERY_SNAPSHOT_OBSERVED_AT_OR_BEFORE_DECISION",
         "proof_qualified_available_before_decision": proof_qualified_available_before_decision,
         "proof_qualified_raw_available_before_decision": proof_qualified_raw_available_before_decision,
         "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
@@ -460,8 +494,11 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
             return
         try:
             candidates = fetch_authoritative_rows(normalized)
+            effective_cutoff = decision_cutoff
+            if effective_cutoff is None:
+                effective_cutoff = datetime.now(timezone.utc)
             self._authoritative_learning_state = replay_authoritative_learning(
-                self, candidates, normalized, decision_cutoff=decision_cutoff
+                self, candidates, normalized, decision_cutoff=effective_cutoff
             )
         except Exception as exc:
             self.weights.clear()
@@ -485,7 +522,7 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
             }
 
     def ingest_market(self, market: dict) -> dict:
-        """Attach explicit input provenance without changing frozen model math."""
+        """Attach provenance and mask unavailable inputs at the runtime bridge."""
         state = super().ingest_market(market)
         supplied = market.get("feature_observations") or {}
         features = (
@@ -505,29 +542,102 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
                 book = market.get("orderbook") or {}
                 observed = float(book.get("bid_depth") or 0) + float(book.get("ask_depth") or 0) > 0
             elif feature == "funding_signal":
-                observed = (market.get("funding") or {}).get("rate") is not None
+                # Derivative values require the connector's explicit public
+                # instrument provenance. A bare numeric compatibility field is
+                # not sufficient evidence of observation.
+                observed = False
             elif feature == "oi_momentum":
-                observed = (market.get("open_interest") or {}).get("oi_change_24h_pct") is not None
+                observed = False
             value = float(state.get(feature) or 0.0)
             availability[feature] = {
                 "status": ("REAL_OBSERVED_ZERO" if abs(value) <= 1e-12 else "REAL_NONZERO") if observed else "MISSING",
                 "source": "legacy_explicit_input" if observed else "unavailable",
                 "fallback_value": None if observed else 0.0,
             }
+        observed_statuses = {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
+        for feature, item in availability.items():
+            if item.get("status") not in observed_statuses:
+                state[feature] = 0.0
         state["feature_availability_v1"] = availability
         return state
 
+    def compress_features(self, market_state: dict) -> dict:
+        """Exclude unavailable inputs from agreement/noise semantics.
+
+        The frozen core still supplies every other pipeline behavior. Missing
+        features contribute no pressure and, unlike a measured neutral zero,
+        do not participate in the signal-agreement denominator.
+        """
+        features = super().compress_features(market_state)
+        if not isinstance(features, dict):
+            return features
+        availability = market_state.get("feature_availability_v1") or {}
+        pressure_to_feature = {
+            "orderflow": "orderflow", "volume_delta": "volume_delta",
+            "bidask": "bidask_imbalance", "funding": "funding_signal",
+            "oi": "oi_momentum", "price_momentum": "price_momentum",
+        }
+        pressures = features.get("pressures") or {}
+        observed_statuses = {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
+        observed_pressures = []
+        masked = []
+        for pressure_name, feature_name in pressure_to_feature.items():
+            item = availability.get(feature_name) if isinstance(availability, dict) else None
+            status = item.get("status") if isinstance(item, dict) else None
+            if status in observed_statuses:
+                observed_pressures.append(float(pressures.get(pressure_name) or 0.0))
+            else:
+                pressures[pressure_name] = None
+                masked.append(feature_name)
+        numeric_pressures = [value for value in pressures.values() if isinstance(value, (int, float))]
+        total_pressure = sum(numeric_pressures)
+        positive_count = sum(value > 0 for value in observed_pressures)
+        negative_count = sum(value < 0 for value in observed_pressures)
+        if observed_pressures:
+            agreement = max(positive_count, negative_count) / len(observed_pressures)
+            noise = _clamp(0.05 + (1.0 - agreement) * 2.0 / 3.0, 0.05, 1.0)
+        else:
+            agreement = 0.0
+            noise = 1.0
+        liquidity = float(market_state.get("liquidity_quality", 1.0) or 0.0)
+        if liquidity < 0.5:
+            noise = _clamp(noise + (1.0 - liquidity) * 0.3, 0.05, 1.0)
+        up = _sigmoid(total_pressure * 5.0)
+        down = _sigmoid(-total_pressure * 5.0)
+        conviction = _clamp(abs(up - down) * (1.0 - noise), 0.0, 1.0)
+        direction = "LONG" if total_pressure > 0.05 else "SHORT" if total_pressure < -0.05 else "NEUTRAL"
+        regime_4h = str(features.get("regime_4h") or "NEUTRAL")
+        long_suppressed = False
+        if direction == "LONG" and regime_4h == "BEAR" and conviction < self._long_bear_bypass_conviction:
+            direction = "NEUTRAL"
+            long_suppressed = True
+        features.update({
+            "direction": direction,
+            "conviction": round(conviction, 6),
+            "noise": round(noise, 6),
+            "total_pressure": round(total_pressure, 6),
+            "up_prob": round(up, 6),
+            "down_prob": round(down, 6),
+            "agreement": round(agreement, 6),
+            "pressures": pressures,
+            "long_suppressed_by_regime": long_suppressed,
+            "missing_input_mask_v1": {
+                "version": "missing-input-mask-v1",
+                "observed_input_count": len(observed_pressures),
+                "masked_features": sorted(masked),
+                "missing_excluded_from_agreement_denominator": True,
+            },
+        })
+        return features
+
     def decide(self, market: dict, risk_state: dict, execution_state: dict) -> dict:
         # Learning snapshot is loaded before the prediction decision.
-        decision_cutoff = market.get("timestamp") or datetime.now(timezone.utc)
-        self._load_learning_for_symbol(
-            str(market.get("symbol") or ""), decision_cutoff=decision_cutoff
-        )
+        self._load_learning_for_symbol(str(market.get("symbol") or ""))
         action_vector = super().decide(market, risk_state, execution_state)
         pipeline = action_vector.setdefault("pipeline", {})
         step2 = pipeline.setdefault("step2_features", {})
         if isinstance(step2, dict):
             decision_state = dict(self._authoritative_learning_state)
-            decision_state["decision_cutoff_epoch"] = _timestamp_epoch(decision_cutoff)
+            decision_state["decision_cutoff_epoch"] = self._authoritative_learning_state.get("decision_cutoff_epoch")
             step2["learning_state_v1"] = decision_state
         return action_vector

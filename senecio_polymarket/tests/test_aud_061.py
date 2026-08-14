@@ -15,8 +15,15 @@ from backend.research.aud061_pipeline import (
     flat_waterfall,
     learning_ab,
     run_all,
+    temporal_purged_split,
+    threshold_research,
 )
-from oracle.exchange_connector import build_feature_observations
+from oracle.exchange_connector import (
+    ExchangeConnector,
+    _OI_SNAPSHOT_CACHE,
+    build_feature_observations,
+    resolve_public_derivative_symbol,
+)
 from oracle_runtime import institutional_core as learning
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +33,7 @@ BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 def proof_row(idx: int, *, minute: int | None = None, symbol: str = "BTCUSDT", prediction: str = "LONG", outcome: str = "WIN"):
     minute = idx * 61 if minute is None else minute
     ts = (BASE + timedelta(minutes=minute)).isoformat()
+    settled_at = (BASE + timedelta(minutes=minute + 60)).isoformat()
     origin = 100.0
     later = 101.0 if (prediction == "LONG") == (outcome == "WIN") else 99.0
     return {
@@ -34,7 +42,7 @@ def proof_row(idx: int, *, minute: int | None = None, symbol: str = "BTCUSDT", p
         "exchange_used": "okx",
         "audit": {
             "origin_price_v1": {"version": "origin-price-v1", "price": origin, "timestamp": ts, "source": "okx"},
-            "outcomes_dual": {"outcome_15m": outcome, "outcome_1h": outcome, "price_15m_later": later, "price_1h_later": later, "primary_window": "1h"},
+            "outcomes_dual": {"outcome_15m": outcome, "outcome_1h": outcome, "price_15m_later": later, "price_1h_later": later, "primary_window": "1h", "settled_at": settled_at},
             "action_vector": {"action": "EXECUTE", "reason": "EU_EXECUTE"},
             "pipeline": {"step1_market": {"funding_signal": 0.0, "oi_momentum": 0.0}, "step2_features": {
                 "direction": prediction, "conviction": 0.65, "regime_4h": "NEUTRAL",
@@ -71,6 +79,14 @@ class LearningCausalityTests(unittest.TestCase):
             if origin + timedelta(hours=1) > cutoff:
                 self.assertNotIn(row["id"], state["source_prediction_ids"])
 
+    def test_late_observation_cannot_enter_even_after_horizon_elapsed(self):
+        row = proof_row(1, minute=0)
+        row["audit"]["outcomes_dual"]["settled_at"] = (BASE + timedelta(hours=4)).isoformat()
+        cutoff = BASE + timedelta(hours=3)
+        state = learning.replay_authoritative_learning(core(), [row], "BTCUSDT", decision_cutoff=cutoff)
+        self.assertEqual(state["proof_qualified_n"], 0)
+        self.assertNotIn(row["id"], state["source_prediction_ids"])
+
     def test_mixed_timestamp_formats_have_deterministic_order(self):
         rows = [proof_row(i) for i in range(1, 15)]
         rows[2]["ts"] = int(datetime.fromisoformat(rows[2]["ts"]).timestamp() * 1000)
@@ -102,16 +118,78 @@ class LearningCausalityTests(unittest.TestCase):
         random.Random(610).shuffle(shuffled)
         b = learning_ab(shuffled)
         self.assertEqual(a, b)
-        self.assertGreaterEqual(a["paired_n"], 30)
-        for item in a["decisions"]:
-            self.assertTrue(item["source_evidence_hash"])
-            self.assertTrue(item["effective_weights_hash"])
-            self.assertTrue(item["code_hash"])
-            self.assertTrue(item["config_hash"])
-            self.assertNotIn(item["target_id"], item["source_prediction_ids"])
+        self.assertEqual(a["status"], "INSUFFICIENT_CAUSAL_PROVENANCE")
+        self.assertEqual(a["analysis_type"], "COMPONENT_LEVEL_WEIGHT_SENSITIVITY_NOT_MODEL_AB")
+        self.assertFalse(a["full_model_ab"])
+        self.assertFalse(a["same_inputs_and_timestamps"])
+        self.assertEqual(a["paired_n"], 0)
+        self.assertEqual(a["decision_replay_snapshot_n"], 0)
+        self.assertEqual(a["settlement_observation_provenance_n"], 44)
 
 
 class FeatureTruthTests(unittest.TestCase):
+    @staticmethod
+    def connector_with(exchange):
+        connector = object.__new__(ExchangeConnector)
+        connector.symbol = "BTC/USDT"
+        connector.exchanges = {"okx": exchange}
+        connector._skip_funding = {}
+        connector._funding_fail_count = {}
+        connector._record_success = lambda *args: None
+        connector._record_failure = lambda *args: None
+        return connector
+
+    def test_public_derivative_identity_and_nonzero_funding_provenance(self):
+        class FakeExchange:
+            options = {"defaultType": "spot"}
+            seen = None
+
+            def fetch_funding_rate(self, symbol):
+                self.seen = symbol
+                return {"fundingRate": 0.00025, "timestamp": 1000}
+
+        exchange = FakeExchange()
+        funding = self.connector_with(exchange).fetch_funding_rate("okx")
+        self.assertEqual(resolve_public_derivative_symbol("okx", "BTC/USDT"), "BTC/USDT:USDT")
+        self.assertEqual(exchange.seen, "BTC/USDT:USDT")
+        self.assertEqual(exchange.options["defaultType"], "spot")
+        observations = build_feature_observations(
+            exchange="okx", ohlcv=None, orderbook=None, funding=funding, open_interest=None,
+        )
+        item = observations["funding_signal"]
+        self.assertEqual(item["status"], "REAL_NONZERO")
+        self.assertEqual(item["observed_value"], -0.025)
+        self.assertEqual(item["instrument"], "BTC/USDT:USDT")
+        self.assertEqual(item["market_type"], "swap")
+
+    def test_two_comparable_oi_snapshots_produce_momentum(self):
+        class FakeExchange:
+            options = {"defaultType": "spot"}
+
+            def __init__(self):
+                self.rows = iter((
+                    {"openInterestAmount": 100.0, "timestamp": 1000},
+                    {"openInterestAmount": 110.0, "timestamp": 2000},
+                ))
+
+            def fetch_open_interest(self, symbol):
+                self.symbol = symbol
+                return next(self.rows)
+
+        _OI_SNAPSHOT_CACHE.clear()
+        exchange = FakeExchange()
+        connector = self.connector_with(exchange)
+        first = connector.fetch_open_interest("okx")
+        second = connector.fetch_open_interest("okx")
+        self.assertFalse(first["oi_change_observed"])
+        self.assertIsNone(first["oi_change_24h_pct"])
+        self.assertTrue(second["oi_change_observed"])
+        self.assertEqual(second["oi_change_24h_pct"], 10.0)
+        observations = build_feature_observations(
+            exchange="okx", ohlcv=None, orderbook=None, funding=None, open_interest=second,
+        )
+        self.assertEqual(observations["oi_momentum"]["status"], "REAL_NONZERO")
+        self.assertAlmostEqual(observations["oi_momentum"]["observed_value"], 0.1)
     def test_missing_derivatives_are_not_real_zero(self):
         candles = [[0, 100, 101, 99, 100, 10], [1, 100, 101, 99, 100, 10]]
         observations = build_feature_observations(exchange="okx", ohlcv=candles, orderbook={"bid_depth_usdt": 100, "ask_depth_usdt": 100}, funding=None, open_interest=None)
@@ -148,6 +226,11 @@ class FeatureTruthTests(unittest.TestCase):
         self.assertEqual(state["funding_signal"], 0.0)
         self.assertEqual(state["feature_availability_v1"]["funding_signal"]["status"], "SOURCE_ERROR")
         self.assertEqual(state["feature_availability_v1"]["oi_momentum"]["status"], "MISSING")
+        features = core().compress_features(state)
+        self.assertIsNone(features["pressures"]["funding"])
+        self.assertIsNone(features["pressures"]["oi"])
+        self.assertEqual(features["missing_input_mask_v1"]["masked_features"], ["funding_signal", "oi_momentum"])
+        self.assertTrue(features["missing_input_mask_v1"]["missing_excluded_from_agreement_denominator"])
 
     def test_legacy_zero_is_reported_as_conflated_not_observed(self):
         report = feature_availability([proof_row(1)])
@@ -155,6 +238,21 @@ class FeatureTruthTests(unittest.TestCase):
 
 
 class DecisionAndGovernanceTests(unittest.TestCase):
+    def test_threshold_split_is_real_and_includes_flat_evaluation_snapshots(self):
+        rows = [proof_row(i, minute=i * 60, prediction="FLAT" if i % 2 else "LONG") for i in range(10)]
+        split = temporal_purged_split(rows)
+        self.assertTrue(split["mechanically_disjoint"])
+        self.assertGreaterEqual(split["minimum_gap_seconds"], 7200)
+        self.assertTrue(split["purged_embargoed_ids"])
+        report = threshold_research(rows)
+        self.assertEqual(report["status"], "INSUFFICIENT_OOS_EVIDENCE")
+        self.assertGreater(report["evaluation_flat_n"], 0)
+        self.assertEqual(report["oos_curve"], [])
+        self.assertEqual(
+            report["diagnostic_in_sample_directional_only"]["label"],
+            "DESCRIPTIVE_IN_SAMPLE_DIRECTIONAL_ONLY_NON_OOS",
+        )
+
     def test_all_flat_reason_categories_are_declared(self):
         self.assertEqual(len(FLAT_REASONS), 12)
         row = proof_row(1)
@@ -166,7 +264,8 @@ class DecisionAndGovernanceTests(unittest.TestCase):
 
     def test_small_sample_gates_are_explicitly_insufficient(self):
         report = run_all([proof_row(i) for i in range(1, 12)])
-        self.assertEqual(report["learning_ab"]["learning_effect"], "INSUFFICIENT_OOS_EVIDENCE")
+        self.assertEqual(report["learning_ab"]["status"], "INSUFFICIENT_CAUSAL_PROVENANCE")
+        self.assertEqual(report["learning_ab"]["learning_effect"], "NOT_ESTIMABLE")
         self.assertEqual(report["threshold_research"]["BTCUSDT"]["status"], "INSUFFICIENT_OOS_EVIDENCE")
         self.assertEqual(report["horizon_research"]["BTCUSDT"]["status"], "INSUFFICIENT_OOS_EVIDENCE")
         self.assertEqual(report["signal_ablation"]["BTCUSDT"]["status"], "INSUFFICIENT_OOS_EVIDENCE")

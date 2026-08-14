@@ -15,6 +15,7 @@ BASE_TS = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
 
 def _row(idx: int, *, outcome: str = "LOSS", symbol: str = "BTCUSDT", valid: bool = True):
     ts = (BASE_TS + timedelta(minutes=idx * 61)).isoformat()
+    settled_at = (BASE_TS + timedelta(minutes=idx * 61 + 60)).isoformat()
     direction = "LONG"
     origin = 100.0
     later = 101.0 if outcome == "WIN" else 99.0
@@ -31,6 +32,7 @@ def _row(idx: int, *, outcome: str = "LOSS", symbol: str = "BTCUSDT", valid: boo
             "price_15m_later": later,
             "price_1h_later": later,
             "primary_window": "1h",
+            "settled_at": settled_at,
         },
         "pipeline": {
             "step2_features": {

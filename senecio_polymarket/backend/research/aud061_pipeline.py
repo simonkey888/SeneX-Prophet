@@ -15,7 +15,7 @@ from typing import Any, Iterable
 from ..authoritative_score import independent_1h_cohort
 from ..settlement_proof import filter_proof_qualified
 
-AUDIT_VERSION = "AUD-061-paper-research-v1"
+AUDIT_VERSION = "AUD-061-R1-paper-research-v2"
 HORIZONS = ("15m", "30m", "1h", "2h", "4h")
 MIN_OOS_PAIRS = 30
 FLAT_REASONS = (
@@ -60,6 +60,71 @@ def _audit(row: dict[str, Any]) -> dict[str, Any]:
 def _pipeline(row: dict[str, Any]) -> dict[str, Any]:
     value = _audit(row).get("pipeline", {})
     return value if isinstance(value, dict) else {}
+
+
+def settlement_observed_epoch(row: dict[str, Any]) -> float | None:
+    """Return only an explicit settlement observation timestamp.
+
+    Horizon expiry is deliberately not accepted as proof that an outcome was
+    already persisted and visible to a historical decision.
+    """
+    dual = _audit(row).get("outcomes_dual") or {}
+    if not isinstance(dual, dict):
+        return None
+    provenance = dual.get("settlement_observation_v1") or {}
+    candidates = (
+        provenance.get("observed_at") if isinstance(provenance, dict) else None,
+        dual.get("settled_at"), dual.get("verified_at"), dual.get("reconciled_at"),
+    )
+    for value in candidates:
+        parsed = _epoch(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def temporal_purged_split(
+    rows: list[dict[str, Any]], *, train_fraction: float = 0.60,
+    purge_seconds: int = 3600, embargo_seconds: int = 3600,
+) -> dict[str, Any]:
+    """Create a deterministic chronological split with a real time gap."""
+    ordered = [
+        row for row in sorted(
+            rows, key=lambda item: (_epoch(item.get("ts")) or float("inf"), str(item.get("id") or "")),
+        ) if _epoch(row.get("ts")) is not None
+    ]
+    if len(ordered) < 2:
+        return {
+            "status": "INSUFFICIENT_OOS_EVIDENCE", "train_ids": [],
+            "purged_embargoed_ids": [], "evaluation_ids": [],
+            "purge_seconds": purge_seconds, "embargo_seconds": embargo_seconds,
+            "mechanically_disjoint": True, "minimum_gap_seconds": None,
+        }
+    split_index = max(1, min(len(ordered) - 1, int(len(ordered) * train_fraction)))
+    train = ordered[:split_index]
+    boundary = _epoch(train[-1].get("ts"))
+    evaluation_start = float(boundary) + purge_seconds + embargo_seconds
+    remainder = ordered[split_index:]
+    evaluation = [row for row in remainder if float(_epoch(row.get("ts"))) >= evaluation_start]
+    purged = [row for row in remainder if float(_epoch(row.get("ts"))) < evaluation_start]
+    gap = (
+        float(_epoch(evaluation[0].get("ts"))) - float(boundary)
+        if evaluation else None
+    )
+    return {
+        "status": "COMPLETE" if evaluation else "INSUFFICIENT_OOS_EVIDENCE",
+        "train_ids": [row.get("id") for row in train],
+        "purged_embargoed_ids": [row.get("id") for row in purged],
+        "evaluation_ids": [row.get("id") for row in evaluation],
+        "train_end_epoch": boundary,
+        "evaluation_start_epoch": _epoch(evaluation[0].get("ts")) if evaluation else None,
+        "purge_seconds": purge_seconds,
+        "embargo_seconds": embargo_seconds,
+        "mechanically_disjoint": not bool(
+            set(row.get("id") for row in train) & set(row.get("id") for row in evaluation)
+        ),
+        "minimum_gap_seconds": gap,
+    }
 
 
 def classify_flat_reason(row: dict[str, Any]) -> str:
@@ -203,8 +268,13 @@ def horizon_research(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def threshold_research(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fail-closed OOS counterfactual plus a clearly in-sample diagnostic.
+
+    Legacy rows do not preserve a replayable decision-time snapshot for FLAT
+    decisions, so they cannot support a production-threshold counterfactual.
+    """
     thresholds = (0.40, 0.50, 0.55, 0.60, 0.70, 0.80, 0.90)
-    curve = []
+    diagnostic_curve = []
     p_values = []
     cohort = independent_1h_cohort(filter_proof_qualified(rows))
     for threshold in thresholds:
@@ -214,17 +284,36 @@ def threshold_research(rows: list[dict[str, Any]]) -> dict[str, Any]:
         z = abs((wins / n - 0.5) / math.sqrt(0.25 / n)) if n else 0.0
         p = math.erfc(z / math.sqrt(2.0)) if n else 1.0
         p_values.append(p)
-        curve.append({"threshold": threshold, "n": n, "coverage": round(n / len(cohort), 6) if cohort else None, "win_rate": round(wins / n, 6) if n else None, "raw_p": round(p, 8)})
-    for item, adjusted in zip(curve, _holm_adjust(p_values)):
+        diagnostic_curve.append({"threshold": threshold, "n": n, "coverage": round(n / len(cohort), 6) if cohort else None, "win_rate": round(wins / n, 6) if n else None, "raw_p": round(p, 8)})
+    for item, adjusted in zip(diagnostic_curve, _holm_adjust(p_values)):
         item["holm_adjusted_p"] = round(adjusted, 8)
+    split = temporal_purged_split(rows)
+    by_id = {row.get("id"): row for row in rows}
+    evaluation = [by_id[item] for item in split["evaluation_ids"] if item in by_id]
+    replay_ready = [
+        row for row in evaluation
+        if isinstance(_audit(row).get("decision_replay_v1"), dict)
+        and (_audit(row).get("outcomes_dual") or {}).get("price_1h_later") is not None
+    ]
     return {
         "version": AUDIT_VERSION,
-        "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+        "analysis_type": "THRESHOLD_COUNTERFACTUAL",
+        "oos_split": split,
+        "all_decision_snapshot_n": len(rows),
+        "evaluation_snapshot_n": len(evaluation),
+        "evaluation_flat_n": sum(str(row.get("prediction") or "").upper() == "FLAT" for row in evaluation),
+        "replay_ready_evaluation_n": len(replay_ready),
+        "oos_curve": [],
         "multiple_testing_correction": "HOLM",
         "production_writeback": False,
         "independent_1h_n": len(cohort),
-        "status": "COMPLETE" if len(cohort) >= MIN_OOS_PAIRS else "INSUFFICIENT_OOS_EVIDENCE",
-        "curve": curve,
+        "status": "INSUFFICIENT_OOS_EVIDENCE",
+        "reason": "legacy_FLAT_and_directional_rows_lack_complete_decision_replay_snapshots",
+        "diagnostic_in_sample_directional_only": {
+            "label": "DESCRIPTIVE_IN_SAMPLE_DIRECTIONAL_ONLY_NON_OOS",
+            "multiple_testing_correction": "HOLM",
+            "curve": diagnostic_curve,
+        },
     }
 
 
@@ -239,7 +328,7 @@ def signal_ablation(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 availability[feature] += 1
     return {
         "version": AUDIT_VERSION,
-        "split": "STRICT_CHRONOLOGICAL_PURGED_1H_EMBARGO_1H",
+        "split": "NO_TEMPORAL_SPLIT_DESCRIPTIVE_AVAILABILITY_ONLY",
         "production_feature_change": False,
         "independent_1h_n": len(cohort),
         "status": "COMPLETE" if len(cohort) >= MIN_OOS_PAIRS else "INSUFFICIENT_OOS_EVIDENCE",
@@ -260,19 +349,15 @@ def _wilson(correct: int, n: int) -> list[float] | None:
 
 
 def learning_ab(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Paired causal A/B using only proof known >=1h before each decision."""
-    from oracle_runtime import institutional_core as learning
+    """Assess whether the export can support a full causal model A/B.
 
-    def core():
-        return learning.SingleDecisionCore(
-            max_drawdown=0.12, ruin_probability_threshold=0.05, hard_stop=True,
-            max_position_pct=0.25, max_leverage=1, min_confidence=0.40,
-            min_ev_to_trade=0.001, no_trade_noise=0.60, initial_capital=1000.0,
-        )
-
+    AUD-061 legacy exports have Step-2 outputs but neither complete replay
+    inputs nor historical settlement-observation timestamps. Reweighting those
+    outputs is only component sensitivity, not a model A/B, so this gate fails
+    closed instead of manufacturing paired performance.
+    """
     proof = filter_proof_qualified(rows)
     symbols = sorted({str(row.get("symbol") or "").replace("/", "").upper() for row in proof})
-    decisions = []
     authority_target_n = 0
     for symbol in symbols:
         scoped = independent_1h_cohort([
@@ -280,92 +365,28 @@ def learning_ab(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if str(row.get("symbol") or "").replace("/", "").upper() == symbol
         ])
         authority_target_n += len(scoped)
-        scoped.sort(key=lambda row: (_epoch(row.get("ts")) or float("inf"), str(row.get("id") or "")))
-        for target in scoped:
-            target_epoch = _epoch(target.get("ts"))
-            if target_epoch is None:
-                continue
-            prior = [row for row in scoped if (_epoch(row.get("ts")) or float("inf")) + 3600.0 <= target_epoch]
-            learned_core = core()
-            state = learning.replay_authoritative_learning(learned_core, prior, symbol, decision_cutoff=target_epoch)
-            if state["proof_qualified_n"] < learning.MIN_LEARNING_EXAMPLES:
-                continue
-            target_step2 = _pipeline(target).get("step2_features") or {}
-            pressures = target_step2.get("pressures") or {}
-            target_learning = target_step2.get("learning_state_v1") or {}
-            target_weights = target_learning.get("effective_weights") or state["base_weights"]
-            base = state["base_weights"]
-            effective = state["effective_weights"]
-            pressure_map = {
-                "orderflow": "orderflow", "volume_delta": "volume_delta",
-                "bidask": "bidask_imbalance", "funding": "funding_signal",
-                "oi": "oi_momentum", "price_momentum": "price_momentum",
-            }
-            raw = {}
-            valid = True
-            for pressure_name, weight_name in pressure_map.items():
-                try:
-                    # Stored pressures were produced with the target decision's
-                    # then-effective weights. Recover the paired raw input before
-                    # applying frozen-A or causal-B weights.
-                    raw[weight_name] = float(pressures[pressure_name]) / float(target_weights[weight_name])
-                except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                    valid = False
-            if not valid:
-                continue
-            total_a = sum(raw[name] * float(base[name]) for name in raw)
-            total_b = sum(raw[name] * float(effective[name]) for name in raw)
-            direction = lambda value: "LONG" if value > 0.05 else ("SHORT" if value < -0.05 else "FLAT")
-            dual = _audit(target).get("outcomes_dual") or {}
-            origin = float(target["price_now"])
-            later = float(dual["price_1h_later"])
-            if math.isclose(later, origin, rel_tol=0.0, abs_tol=1e-12):
-                continue
-            truth = "LONG" if later > origin else "SHORT"
-            a, b = direction(total_a), direction(total_b)
-            signed_return = (later - origin) / origin
-            decisions.append({
-                "target_id": target.get("id"), "timestamp": target.get("ts"), "symbol": symbol,
-                "a_direction": a, "b_direction": b, "truth": truth,
-                "a_correct": a == truth if a != "FLAT" else None,
-                "b_correct": b == truth if b != "FLAT" else None,
-                "a_signed_return": round(signed_return * (1 if a == "LONG" else -1), 8) if a != "FLAT" else None,
-                "b_signed_return": round(signed_return * (1 if b == "LONG" else -1), 8) if b != "FLAT" else None,
-                "source_prediction_ids": state["source_prediction_ids"],
-                "source_evidence_hash": state["source_evidence_hash"],
-                "effective_weights_hash": state["effective_weights_hash"],
-                "code_hash": state["code_hash"], "config_hash": state["config_hash"],
-            })
-    paired = [item for item in decisions if item["a_correct"] is not None and item["b_correct"] is not None]
-    a_correct = sum(item["a_correct"] for item in paired)
-    b_correct = sum(item["b_correct"] for item in paired)
-    delta = (b_correct - a_correct) / len(paired) if paired else None
-    per_direction = {}
-    for direction in ("LONG", "SHORT"):
-        subset = [item for item in paired if item["truth"] == direction]
-        correct = sum(item["b_correct"] for item in subset)
-        per_direction[direction] = {"n": len(subset), "b_correct": correct, "wilson_95": _wilson(correct, len(subset))}
-    status = "COMPLETE" if len(paired) >= MIN_OOS_PAIRS else "INSUFFICIENT_OOS_EVIDENCE"
+    replay_snapshot_n = sum(isinstance(_audit(row).get("decision_replay_v1"), dict) for row in proof)
+    observed_settlement_n = sum(settlement_observed_epoch(row) is not None for row in proof)
     return {
         "version": AUDIT_VERSION,
-        "status": status,
-        "learning_effect": "INSUFFICIENT_OOS_EVIDENCE" if status != "COMPLETE" else (
-            "POSITIVE" if delta and delta > 0 else "NEGATIVE" if delta and delta < 0 else "NO_DETECTABLE_DIFFERENCE"
-        ),
-        "method": "PAIRED_STRICT_CHRONOLOGICAL_PROOF_QUALIFIED_PURGED_1H",
-        "same_inputs_and_timestamps": True,
+        "status": "INSUFFICIENT_CAUSAL_PROVENANCE",
+        "learning_effect": "NOT_ESTIMABLE",
+        "analysis_type": "COMPONENT_LEVEL_WEIGHT_SENSITIVITY_NOT_MODEL_AB",
+        "full_model_ab": False,
+        "method": "FAIL_CLOSED_PROVENANCE_GATE",
+        "same_inputs_and_timestamps": False,
         "reorder_invariant": True,
-        "paired_n": len(paired),
+        "paired_n": 0,
         "authority_target_n": authority_target_n,
-        "coverage": round(len(paired) / authority_target_n, 6) if authority_target_n else None,
-        "abstention_n": authority_target_n - len(paired),
-        "a_correct": a_correct,
-        "b_correct": b_correct,
-        "paired_correctness_delta": round(delta, 6) if delta is not None else None,
-        "a_mean_signed_return": round(sum(item["a_signed_return"] for item in paired) / len(paired), 8) if paired else None,
-        "b_mean_signed_return": round(sum(item["b_signed_return"] for item in paired) / len(paired), 8) if paired else None,
-        "per_truth_direction": per_direction,
-        "decisions": decisions,
+        "decision_replay_snapshot_n": replay_snapshot_n,
+        "settlement_observation_provenance_n": observed_settlement_n,
+        "coverage": 0.0 if authority_target_n else None,
+        "abstention_n": authority_target_n,
+        "paired_correctness_delta": None,
+        "a_mean_signed_return": None,
+        "b_mean_signed_return": None,
+        "reason": "legacy_rows_do_not_prove_decision_time_settlement_availability_or_complete_pipeline_replay_inputs",
+        "decisions": [],
     }
 
 

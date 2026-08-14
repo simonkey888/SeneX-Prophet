@@ -1,11 +1,44 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
 from backend import settlement_reconciler as reconciler
+from backend import supabase_client
 from backend.supabase_client import build_supabase_headers
 
 
 class SupabaseApiKeyHeaderTests(unittest.TestCase):
+    def test_primary_settlement_persists_observation_provenance(self):
+        class Response:
+            status_code = 200
+            content = b"1"
+            text = "ok"
+
+            def __init__(self, body):
+                self.body = body
+
+            def json(self):
+                return self.body
+
+        class Client:
+            def __init__(self):
+                self.patch_body = None
+
+            async def get(self, *args, **kwargs):
+                return Response([{"id": 7, "audit": {}}])
+
+            async def patch(self, *args, **kwargs):
+                self.patch_body = kwargs["json"]
+                return Response([{"id": 7}])
+
+        client = Client()
+        with patch.object(supabase_client, "_get_client", return_value=client):
+            ok = asyncio.run(supabase_client.update_outcome_dual(7, "WIN", "WIN", 101.0, 102.0))
+        self.assertTrue(ok)
+        dual = client.patch_body["audit"]["outcomes_dual"]
+        self.assertEqual(dual["settled_at"], dual["settlement_observation_v1"]["observed_at"])
+        self.assertEqual(dual["settlement_observation_v1"]["writer"], "SENEX_PRIMARY_DUAL_WINDOW_VERIFIER")
+
     def test_secret_key_uses_apikey_only(self):
         key = "sb_secret_example_for_test_only"
         headers = build_supabase_headers(key)

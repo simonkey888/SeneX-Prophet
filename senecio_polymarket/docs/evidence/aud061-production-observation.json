@@ -1,34 +1,60 @@
 {
-  "order": "AUD-061",
+  "order": "AUD-061-R1",
   "observed_date_utc": "2026-08-14",
   "service": "https://h011-web--senecio-h011--wbjggn89fnf8.code.run",
   "method": "PUBLIC_READ_ONLY_GET",
   "current_production_sha": "UNKNOWN_NOT_EXPOSED_BY_PUBLIC_RUNTIME",
   "deployment_id": "UNKNOWN_NOT_EXPOSED_BY_PUBLIC_RUNTIME",
+  "last_verified_deployment_historical_only": {
+    "sha": "44fe55b88be50a5a37364fbc8cabc98f921a6a4f",
+    "deployment": "senecio-h011-64cf779dbf",
+    "source": "Issue #23 AUD control log comments 5289793035 and 5289800503",
+    "evidence_window_start_utc": "2026-08-14T05:19:14Z",
+    "evidence_window_end_utc": "2026-08-14T05:34:16.142313Z",
+    "is_current_identity_claim": false
+  },
   "health": {
     "http_status": 200,
     "status": "ok",
     "version": "ACT-XXIX-systemic-antifragility",
-    "cycles_run": 18,
+    "cycles_run": 27,
     "cycles_failed": 0,
-    "supabase_total": 254,
-    "response_sha256": "f9b7cf86156d276fce992bf1ebaee497ddf023f79426fee6ae77e986b8f2ee2b"
+    "supabase_total": 272,
+    "response_sha256": "b35ecc25cb1180729a3a942d047bfc555a0b176ed3c159019a075eaa27bf23be"
   },
   "score": {
-    "BTCUSDT": {"status": "INSUFFICIENT_EVIDENCE", "raw_proof_n": 18, "independent_1h_n": 10, "authoritative_score_pct": null, "response_sha256": "542e9553b1cb535b00fdb2bfb1058fc44b5c54b2096fec008cd2a9086f274fe3"},
-    "ETHUSDT": {"status": "INSUFFICIENT_EVIDENCE", "raw_proof_n": 23, "independent_1h_n": 11, "authoritative_score_pct": null, "response_sha256": "6bf089f02c65fcfa9224c19b7affa76219ce34a89e3f8bc4c5dbe55bcd0ed70b"}
+    "BTCUSDT": {
+      "status": "INSUFFICIENT_EVIDENCE",
+      "raw_proof_n": 18,
+      "independent_1h_n": 10,
+      "authoritative_score_pct": null,
+      "response_sha256": "b6583ba84e1871aa0b171271e43dcafee8d28bb2091f7818da0cd21695780bad"
+    },
+    "ETHUSDT": {
+      "status": "INSUFFICIENT_EVIDENCE",
+      "raw_proof_n": 23,
+      "independent_1h_n": 11,
+      "authoritative_score_pct": null,
+      "response_sha256": "1eaa940dc3d78dbdfd465266046c15c1c2975d48e39ce7d2be43d489f8e49f4c"
+    }
   },
   "live_gate": {
     "unlocked": false,
     "trade_mode": "PAPER",
     "live_capital_locked": true,
     "effective_gate": "LOCKED_BY_PAPER_POLICY",
-    "response_sha256": "6d05af04c3415e05116b7af7ca94795b0515528139cf82fe6aa98233d66d0311"
+    "response_sha256": "6772362f369817f81e5706f435369e3d73024d7dfb70b0eba90287353540ccc5"
   },
-  "market_context_response_sha256": "09e69cf199689174607e121ac2615d6aa4aad3307b852e3fbb7779eafb6c80f6",
+  "market_context_response_sha256": "872e3a272c411335c4dbe1c20c5a1f28b7e729ede0ae25d44a0e06faa1cba1e6",
   "prediction_exports": {
-    "BTCUSDT": {"rows": 126, "response_sha256": "d23821d869b2a0290d1b93e91e40498090ceab3a8e22fad99a714fa335f9600e"},
-    "ETHUSDT": {"rows": 126, "response_sha256": "8b96627063db33533fd10c1cb47b0d327db6f7d7e924b7cfbee236e689e93298"}
+    "BTCUSDT": {
+      "rows": 136,
+      "response_sha256": "e67bf92441d2ba3c29d6fdad9791f784dafe3e7c2b91117f9097ffb47ccc2383"
+    },
+    "ETHUSDT": {
+      "rows": 136,
+      "response_sha256": "3b166ead7a4423de30c9a3b771617930c424c46b78eb513a71d1cfdef57b763a"
+    }
   },
   "supabase_data_mutations": 0,
   "production_mutations": 0

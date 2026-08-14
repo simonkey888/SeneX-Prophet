@@ -24,11 +24,12 @@ BASE = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
 
 def proof_row(idx: int, minute: int, *, symbol="BTCUSDT", direction="LONG", outcome="WIN", confidence=0.7, valid=True):
     ts = (BASE + timedelta(minutes=minute)).isoformat()
+    settled_at = (BASE + timedelta(minutes=minute + 60)).isoformat()
     origin = 100.0
     later = (101.0 if outcome == "WIN" else 99.0) if direction == "LONG" else (99.0 if outcome == "WIN" else 101.0)
     audit = {
         "origin_price_v1": {"version": "origin-price-v1", "price": origin, "timestamp": ts, "source": "okx"},
-        "outcomes_dual": {"outcome_15m": outcome, "outcome_1h": outcome, "price_15m_later": later, "price_1h_later": later, "primary_window": "1h"},
+        "outcomes_dual": {"outcome_15m": outcome, "outcome_1h": outcome, "price_15m_later": later, "price_1h_later": later, "primary_window": "1h", "settled_at": settled_at},
         "pipeline": {"step2_features": {"conviction": confidence, "regime_4h": "NEUTRAL", "pressures": {"orderflow": 0.4}}},
     }
     if not valid:
