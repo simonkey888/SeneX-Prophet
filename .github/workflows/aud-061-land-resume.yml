@@ -17,7 +17,6 @@ jobs:
     name: Exact Northflank build, deploy, and CD verification
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    environment: northflank-readonly-audit
     env:
       NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
       NF_PROJECT_SLUG: seneciobot
@@ -51,7 +50,6 @@ jobs:
           set +x
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
-          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
           mkdir -p evidence
 
           python - <<'PY'
@@ -69,7 +67,14 @@ jobs:
           from typing import Any
 
           API_BASE = "https://api.northflank.com/v1"
-          TOKEN = os.environ["NORTHFLANK_API_TOKEN"]
+          raw_token = os.environ["NORTHFLANK_API_TOKEN"]
+          TOKEN = raw_token.strip()
+          if TOKEN.startswith("NORTHFLANK_API_TOKEN="):
+              TOKEN = TOKEN.split("=", 1)[1].strip()
+          if len(TOKEN) >= 2 and TOKEN[0] == TOKEN[-1] and TOKEN[0] in ("'", '"'):
+              TOKEN = TOKEN[1:-1].strip()
+          if not TOKEN:
+              raise RuntimeError("NORTHFLANK_API_TOKEN_EMPTY")
           PROJECT_SLUG = os.environ["NF_PROJECT_SLUG"]
           SERVICE_SLUG = os.environ["NF_SERVICE_SLUG"]
           TARGET_REPOSITORY = os.environ["TARGET_REPOSITORY"].rstrip("/").removesuffix(".git")
@@ -506,7 +511,6 @@ jobs:
         run: |
           set +x
           set -euo pipefail
-          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
           python - <<'PY'
           import os
           from pathlib import Path
