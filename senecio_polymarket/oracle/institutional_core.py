@@ -624,14 +624,10 @@ class SingleDecisionCore:
         # Even at ruin_prob=1.0, size_factor=0.2 (minimum size), not zero.
         surv_size_factor = 1.0  # default if no survivability module
         surv_reason = "no_survivability_module"
-        survivability_ruin_prob = None
         if self.survivability is not None:
             surv_check = self.survivability.should_reduce_risk(n_trades=100)
             surv_raw_factor = surv_check.get("recommended_size_factor", 1.0)
             surv_reason = surv_check.get("reason", "ok")
-            surv_raw_ruin_prob = surv_check.get("ruin_prob")
-            if isinstance(surv_raw_ruin_prob, (int, float)):
-                survivability_ruin_prob = _clamp(float(surv_raw_ruin_prob), 0.0, 1.0)
             # Action 2: map continuously to [0.2, 1.0] — never hard cap to 0.0 or 0.5
             # ruin_prob=0 → factor=1.0, ruin_prob=0.5 → factor≈0.6, ruin_prob=1.0 → factor=0.2
             surv_size_factor = _clamp(surv_raw_factor, 0.2, 1.0)
@@ -665,13 +661,6 @@ class SingleDecisionCore:
             "dd_ratio": round(dd_ratio, 6),
             "surv_size_factor": round(surv_size_factor, 6),  # Action 2: continuous [0.2, 1.0]
             "surv_reason": surv_reason,
-            # This is intentionally distinct from the core risk model's
-            # ``ruin_prob`` above.  Persisting both machine fields prevents the
-            # survivability reason from being misread as the core estimate.
-            "survivability_ruin_prob": (
-                round(survivability_ruin_prob, 6)
-                if survivability_ruin_prob is not None else None
-            ),
         }
 
     # ===================================================================
@@ -984,9 +973,7 @@ class SingleDecisionCore:
         # ── 5. EV not tradeable → HOLD ──
         if not ev_result["tradeable"]:
             return self._action_hold(
-                "ev_below_dynamic_min: "
-                f"adjusted_ev={ev_result['adjusted_ev']:.8f} "
-                f"<= dynamic_min_ev={ev_result['dynamic_min_ev']:.8f}"
+                f"negative_ev: {ev_result['adjusted_ev']:.8f}"
             )
 
         # ── 6. Not feasible → HOLD ──

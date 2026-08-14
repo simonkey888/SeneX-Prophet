@@ -92,9 +92,9 @@ class RiskSemanticsTests(Aud062FixtureTests):
         self.assertNotIn("ruin_prob", result)
 
     def test_candidate_serializes_distinct_survivability_machine_probability(self):
-        from oracle_runtime.institutional_core import OriginalSingleDecisionCore
+        from oracle_runtime.institutional_core import SingleDecisionCore
 
-        result = OriginalSingleDecisionCore().filter_risk({}, {})
+        result = SingleDecisionCore().filter_risk({}, {})
         self.assertEqual(result["ruin_prob"], 0.0)
         self.assertEqual(result["survivability_ruin_prob"], 0.5)
         self.assertIn("HIGH_RUIN_PROB: 50.00%", result["surv_reason"])
@@ -221,9 +221,9 @@ class ActionReasonSemanticsTests(Aud062FixtureTests):
         self.assertEqual(len(evidence["affected_prediction_ids"]), 22)
 
     def test_candidate_reason_is_truthful_without_changing_hold_gate(self):
-        from oracle_runtime.institutional_core import OriginalSingleDecisionCore
+        from oracle_runtime.institutional_core import SingleDecisionCore
 
-        core = OriginalSingleDecisionCore()
+        core = SingleDecisionCore()
         result = core.produce_action(
             {"direction": "LONG", "conviction": 0.6, "noise": 0.1},
             {"verdict": "ALLOW", "reason": "ok", "risk_score": 0.0, "size_multiplier": 1.0},

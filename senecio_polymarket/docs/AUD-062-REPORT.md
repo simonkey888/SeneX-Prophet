@@ -203,7 +203,8 @@ python -m scripts.run_aud062 analyze \
   --output docs/evidence
 python -m unittest tests.test_aud_062 -v
 python -m unittest discover -s tests -v
+python -m scripts.act_final_audit_smoke
 python -m compileall -q .
 ```
 
-The AUD-062 test workflow generates the full sanitized/scanned artifacts twice and requires byte-identical hashes, non-zero test discovery, zero confirmed secret candidates, exact base ancestry, no threshold/weight or directional activation diff, decision-semantics invariance for the instrumentation corrections, PAPER/live locks, external applied=0, and RUNTIME017 absence from the diff.
+The AUD-062 test workflow generates the full sanitized/scanned artifacts twice and requires byte-identical hashes, non-zero test discovery, zero confirmed secret candidates, exact base ancestry, frozen-core integrity, no threshold/weight or directional activation diff, decision-semantics invariance for the instrumentation corrections, PAPER/live locks, external applied=0, and RUNTIME017 absence from the diff. The independent legacy smoke suite passes 86/86 checks.

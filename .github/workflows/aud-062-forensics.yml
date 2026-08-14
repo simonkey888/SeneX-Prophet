@@ -46,6 +46,7 @@ jobs:
             exit 1
           fi
           git diff --exit-code "$EXPECTED_BASE" -- \
+            senecio_polymarket/oracle/institutional_core.py \
             senecio_polymarket/oracle_runtime/institutional_core_real.py \
             senecio_polymarket/backend/main_real.py \
             senecio_polymarket/backend/oracle_runner.py \

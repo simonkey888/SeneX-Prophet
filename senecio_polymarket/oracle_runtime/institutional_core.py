@@ -475,6 +475,55 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
             "effective_weights_hash": effective_weights_hash(self.weights),
         }
 
+    def filter_risk(self, features: dict, risk_state: dict) -> dict:
+        """Attach the survivability model's distinct numeric probability.
+
+        The frozen core continues to make the complete risk decision. This
+        bridge adds only the machine field corresponding to ``surv_reason``.
+        """
+        result = super().filter_risk(features, risk_state)
+        if not isinstance(result, dict) or "surv_reason" not in result:
+            return result
+        survivability_ruin_prob = None
+        if self.survivability is not None:
+            check = self.survivability.should_reduce_risk(n_trades=100)
+            raw_probability = check.get("ruin_prob")
+            if isinstance(raw_probability, (int, float)):
+                survivability_ruin_prob = _clamp(float(raw_probability), 0.0, 1.0)
+        enriched = dict(result)
+        enriched["survivability_ruin_prob"] = (
+            round(survivability_ruin_prob, 6)
+            if survivability_ruin_prob is not None else None
+        )
+        return enriched
+
+    def produce_action(
+        self,
+        features: dict,
+        risk_filter: dict,
+        ev_result: dict,
+        feasibility: dict,
+        market_state: dict,
+    ) -> dict:
+        """Correct an EV-rejection label without changing its HOLD decision."""
+        result = super().produce_action(
+            features, risk_filter, ev_result, feasibility, market_state
+        )
+        if (
+            isinstance(result, dict)
+            and result.get("action") == "HOLD"
+            and not ev_result.get("tradeable", False)
+            and str(result.get("reason") or "").startswith("negative_ev:")
+        ):
+            truthful = dict(result)
+            truthful["reason"] = (
+                "ev_below_dynamic_min: "
+                f"adjusted_ev={ev_result['adjusted_ev']:.8f} "
+                f"<= dynamic_min_ev={ev_result['dynamic_min_ev']:.8f}"
+            )
+            return truthful
+        return result
+
     def _load_learning_for_symbol(self, symbol: str, decision_cutoff: Any | None = None) -> None:
         normalized = _normalize_symbol(symbol)
         now = time.monotonic()
