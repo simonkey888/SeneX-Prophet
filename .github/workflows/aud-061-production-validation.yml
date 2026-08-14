@@ -1,0 +1,381 @@
+name: AUD-061 production validation
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aud-061-production-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate exact deployed SENEX runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TARGET_SHA: 49c5f0a69609c005da80e48b585e91d8582a5ac6
+      TARGET_TREE: 3e323bcc2795f97b29242883d3bf2a015c092ccd
+      DEPLOYED_AT: 2026-08-14T20:55:22+00:00
+      BASE_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+
+    steps:
+      - name: Checkout exact deployed source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: 49c5f0a69609c005da80e48b585e91d8582a5ac6
+
+      - name: Freeze exact source and safety code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${TARGET_TREE}"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "${TARGET_SHA}"
+          git grep -q 'LEARNING_VERSION = "proof-qualified-replay-v4-aud061-r1"' -- senecio_polymarket/oracle_runtime/institutional_core.py
+          git grep -q '"orders_enabled": False' -- senecio_polymarket/backend/authoritative_score.py
+          git grep -q '"live_capital_locked": True' -- senecio_polymarket/backend/authoritative_score.py
+          git grep -q '"allow_live":                 False' -- senecio_polymarket/backend/portfolio/execution_engine.py
+          git grep -q 'allow_live=True requires explicit LIVE_GATE unlock + adapter wiring' -- senecio_polymarket/backend/portfolio/execution_engine.py
+          printf '%s\n' "EXACT_RUNTIME_SOURCE=VERIFIED" "REAL_ORDER_ADAPTER_WIRING=ABSENT_FAIL_CLOSED"
+
+      - name: Verify production runtime truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from typing import Any
+
+          BASE = os.environ["BASE_URL"].rstrip("/")
+          TARGET_SHA = os.environ["TARGET_SHA"]
+          TARGET_TREE = os.environ["TARGET_TREE"]
+          DEPLOYED_AT = datetime.fromisoformat(os.environ["DEPLOYED_AT"])
+          EXPECTED_LEARNING = "proof-qualified-replay-v4-aud061-r1"
+          HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+          REAL = {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
+          UNAVAILABLE = {"MISSING", "SOURCE_ERROR", "NOT_APPLICABLE"}
+          captured: dict[str, Any] = {}
+
+          def parse_ts(value: Any) -> datetime | None:
+              if not isinstance(value, str) or not value:
+                  return None
+              try:
+                  result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                  return result if result.tzinfo else result.replace(tzinfo=timezone.utc)
+              except ValueError:
+                  return None
+
+          def get(path: str, *, query: dict[str, Any] | None = None) -> Any:
+              url = BASE + path
+              if query:
+                  url += "?" + urllib.parse.urlencode(query)
+              req = urllib.request.Request(url, headers={
+                  "Accept": "application/json",
+                  "User-Agent": "senex-aud-061-production-validation/1",
+              }, method="GET")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      raw = response.read().decode("utf-8", errors="replace")
+                      status = response.status
+              except urllib.error.HTTPError as exc:
+                  status = exc.code
+                  raw = exc.read().decode("utf-8", errors="replace")
+              print(f"PUBLIC_GET path={path} status={status}", flush=True)
+              if status != 200:
+                  raise RuntimeError(f"PUBLIC_ENDPOINT_HTTP_{status}:{path}")
+              return json.loads(raw)
+
+          def normalize_symbol(value: Any) -> str:
+              return str(value or "").upper().replace("/", "").replace("-", "")
+
+          def rows(payload: Any) -> list[dict[str, Any]]:
+              if not isinstance(payload, dict) or not isinstance(payload.get("predictions"), list):
+                  return []
+              return [row for row in payload["predictions"] if isinstance(row, dict)]
+
+          def new_row(payload: Any, symbol: str) -> dict[str, Any] | None:
+              for row in rows(payload):
+                  timestamp = parse_ts(row.get("ts") or row.get("timestamp"))
+                  if normalize_symbol(row.get("symbol")) == symbol and timestamp and timestamp > DEPLOYED_AT:
+                      return row
+              return None
+
+          # Wait for one genuinely new post-deploy ETH+BTC cycle persisted to Supabase.
+          health: dict[str, Any] = {}
+          state: dict[str, Any] = {}
+          btc_payload: dict[str, Any] = {}
+          eth_payload: dict[str, Any] = {}
+          btc_row = None
+          eth_row = None
+          for attempt in range(80):
+              health = get("/api/health")
+              state = get("/api/oracle/state")
+              btc_payload = get("/api/oracle/predictions/db", query={"limit": 30, "symbol": "BTCUSDT"})
+              eth_payload = get("/api/oracle/predictions/db", query={"limit": 30, "symbol": "ETHUSDT"})
+              btc_row = new_row(btc_payload, "BTCUSDT")
+              eth_row = new_row(eth_payload, "ETHUSDT")
+              oracle_health = health.get("oracle") if isinstance(health.get("oracle"), dict) else {}
+              cycle_time = parse_ts(oracle_health.get("last_cycle_at") or state.get("last_cycle_at"))
+              cycle_ok = int(oracle_health.get("cycles_run") or state.get("cycles_run") or 0) >= 1 and cycle_time and cycle_time > DEPLOYED_AT
+              if btc_row and eth_row and cycle_ok:
+                  break
+              print(f"CYCLE_WAIT attempt={attempt + 1} btc_new={bool(btc_row)} eth_new={bool(eth_row)} cycle_ok={bool(cycle_ok)}", flush=True)
+              time.sleep(15)
+          if not btc_row or not eth_row:
+              raise RuntimeError("NEW_POST_DEPLOY_BTC_ETH_PREDICTIONS_NOT_OBSERVED")
+
+          oracle_health = health.get("oracle") if isinstance(health.get("oracle"), dict) else {}
+          started_at = parse_ts(oracle_health.get("started_at") or state.get("started_at"))
+          last_cycle_at = parse_ts(oracle_health.get("last_cycle_at") or state.get("last_cycle_at"))
+          if health.get("status") != "ok" or not started_at or started_at <= DEPLOYED_AT:
+              raise RuntimeError("POST_DEPLOY_HEALTH_IDENTITY_NOT_VERIFIED")
+          if not last_cycle_at or last_cycle_at <= DEPLOYED_AT or int(state.get("cycles_run") or 0) < 1:
+              raise RuntimeError("POST_DEPLOY_CYCLE_NOT_VERIFIED")
+          if state.get("last_error") not in (None, ""):
+              raise RuntimeError(f"ORACLE_LAST_ERROR:{str(state.get('last_error'))[:120]}")
+
+          def validate_prediction(row: dict[str, Any], symbol: str) -> dict[str, Any]:
+              audit = row.get("audit")
+              if not isinstance(audit, dict):
+                  raise RuntimeError(f"{symbol}_AUDIT_MISSING")
+              replay = audit.get("decision_replay_v1")
+              if not isinstance(replay, dict) or replay.get("version") != "decision-replay-v1":
+                  raise RuntimeError(f"{symbol}_DECISION_REPLAY_MISSING")
+              if replay.get("production_writeback") is not False or not HASH_RE.fullmatch(str(replay.get("snapshot_hash") or "")):
+                  raise RuntimeError(f"{symbol}_DECISION_REPLAY_INVALID")
+              market = replay.get("market") if isinstance(replay.get("market"), dict) else {}
+              if normalize_symbol(market.get("symbol")) != symbol:
+                  raise RuntimeError(f"{symbol}_REPLAY_SYMBOL_MISMATCH")
+              observations = market.get("feature_observations") if isinstance(market.get("feature_observations"), dict) else {}
+              pipeline = audit.get("pipeline") if isinstance(audit.get("pipeline"), dict) else {}
+              step2 = pipeline.get("step2_features") if isinstance(pipeline.get("step2_features"), dict) else {}
+              pressures = step2.get("pressures") if isinstance(step2.get("pressures"), dict) else {}
+              mask = step2.get("missing_input_mask_v1")
+              if not isinstance(mask, dict) or mask.get("version") != "missing-input-mask-v1" or mask.get("missing_excluded_from_agreement_denominator") is not True:
+                  raise RuntimeError(f"{symbol}_MISSING_INPUT_MASK_INVALID")
+              masked = set(mask.get("masked_features") or [])
+
+              derivative: dict[str, Any] = {}
+              for feature, pressure_name in (("funding_signal", "funding"), ("oi_momentum", "oi")):
+                  item = observations.get(feature)
+                  if not isinstance(item, dict):
+                      raise RuntimeError(f"{symbol}_{feature}_PROVENANCE_MISSING")
+                  status = item.get("status")
+                  if status not in REAL | UNAVAILABLE:
+                      raise RuntimeError(f"{symbol}_{feature}_BAD_STATUS:{status}")
+                  if not item.get("source") or item.get("transport_status") not in {"PRIMARY_SOURCE", "FALLBACK_USED"}:
+                      raise RuntimeError(f"{symbol}_{feature}_SOURCE_PROVENANCE_INVALID")
+                  if status in REAL:
+                      if item.get("fallback_value") is not None or item.get("observed_value") is None:
+                          raise RuntimeError(f"{symbol}_{feature}_REAL_VALUE_SEMANTICS_INVALID")
+                      if feature in masked or not isinstance(pressures.get(pressure_name), (int, float)):
+                          raise RuntimeError(f"{symbol}_{feature}_REAL_INPUT_WRONGLY_MASKED")
+                  else:
+                      if item.get("fallback_value") != 0.0 or pressures.get(pressure_name) is not None or feature not in masked:
+                          raise RuntimeError(f"{symbol}_{feature}_MISSING_ZERO_CONFLATION")
+                  derivative[feature] = {
+                      "status": status,
+                      "source": item.get("source"),
+                      "transport_status": item.get("transport_status"),
+                      "observed_value": item.get("observed_value"),
+                      "observed_at": item.get("observed_at"),
+                      "instrument": item.get("instrument"),
+                      "market_type": item.get("market_type"),
+                      "masked": feature in masked,
+                  }
+
+              # A public OI level can be real while momentum correctly remains MISSING
+              # until a comparable later sample exists.
+              oi_market = market.get("open_interest") if isinstance(market.get("open_interest"), dict) else {}
+              if derivative["oi_momentum"]["status"] == "MISSING":
+                  oi_level = oi_market.get("oi_value")
+                  if not isinstance(oi_level, (int, float)) or oi_level <= 0 or "public_swap_open_interest" not in str(derivative["oi_momentum"]["source"]):
+                      raise RuntimeError(f"{symbol}_OI_WARMUP_WITHOUT_REAL_LEVEL_PROVENANCE")
+
+              learning = step2.get("learning_state_v1")
+              if not isinstance(learning, dict):
+                  raise RuntimeError(f"{symbol}_LEARNING_PROVENANCE_MISSING")
+              if learning.get("version") != EXPECTED_LEARNING or learning.get("learning_version") != EXPECTED_LEARNING:
+                  raise RuntimeError(f"{symbol}_LEARNING_VERSION_MISMATCH")
+              if learning.get("uses_only_prior_settled_evidence") is not True or learning.get("evidence_cut") != "PRE_DECISION_SNAPSHOT":
+                  raise RuntimeError(f"{symbol}_LEARNING_CAUSALITY_INVALID")
+              for key in ("source_evidence_hash", "code_hash", "config_hash", "effective_weights_hash"):
+                  if not HASH_RE.fullmatch(str(learning.get(key) or "")):
+                      raise RuntimeError(f"{symbol}_LEARNING_HASH_INVALID:{key}")
+              source_ids = learning.get("source_prediction_ids")
+              if not isinstance(source_ids, list):
+                  raise RuntimeError(f"{symbol}_LEARNING_SOURCE_IDS_INVALID")
+              row_id = row.get("id")
+              if row_id in source_ids:
+                  raise RuntimeError(f"{symbol}_LEARNING_USED_CURRENT_DECISION")
+
+              confidence = audit.get("confidence_semantics_v1")
+              if not isinstance(confidence, dict) or confidence.get("semantics") != "RAW_CONVICTION" or confidence.get("calibrated_probability") is not False:
+                  raise RuntimeError(f"{symbol}_CONFIDENCE_SEMANTICS_INVALID")
+              external = audit.get("external_markets_v1")
+              if not isinstance(external, dict) or external.get("version") != "real-market-context-v1":
+                  raise RuntimeError(f"{symbol}_EXTERNAL_CONTEXT_PROVENANCE_MISSING")
+
+              return {
+                  "id": row.get("id"),
+                  "ts": row.get("ts") or row.get("timestamp"),
+                  "symbol": normalize_symbol(row.get("symbol")),
+                  "prediction": row.get("prediction"),
+                  "exchange_used": row.get("exchange_used"),
+                  "decision_replay_version": replay.get("version"),
+                  "decision_replay_hash": replay.get("snapshot_hash"),
+                  "missing_input_mask": mask,
+                  "derivative_truth": derivative,
+                  "learning": {
+                      "version": learning.get("version"),
+                      "status": learning.get("status"),
+                      "proof_qualified_n": learning.get("proof_qualified_n"),
+                      "source_prediction_ids": source_ids,
+                      "source_evidence_hash": learning.get("source_evidence_hash"),
+                      "code_hash": learning.get("code_hash"),
+                      "config_hash": learning.get("config_hash"),
+                      "effective_weights_hash": learning.get("effective_weights_hash"),
+                      "decision_cutoff": learning.get("decision_cutoff"),
+                      "decision_cutoff_epoch": learning.get("decision_cutoff_epoch"),
+                      "uses_only_prior_settled_evidence": learning.get("uses_only_prior_settled_evidence"),
+                  },
+                  "confidence_semantics": confidence,
+                  "external_markets": external,
+              }
+
+          prediction_evidence = {
+              "BTCUSDT": validate_prediction(btc_row, "BTCUSDT"),
+              "ETHUSDT": validate_prediction(eth_row, "ETHUSDT"),
+          }
+
+          scores = {
+              symbol: get("/api/oracle/score", query={"symbol": symbol})
+              for symbol in ("BTCUSDT", "ETHUSDT")
+          }
+          for symbol, score in scores.items():
+              if score.get("score_scope") != "PER_SYMBOL" or score.get("requested_symbol") != symbol:
+                  raise RuntimeError(f"{symbol}_SCORE_SCOPE_INVALID")
+              if score.get("authority_cohort") != "INDEPENDENT_NONOVERLAP_1H" or score.get("authority_n_field") != "independent_1h_rows":
+                  raise RuntimeError(f"{symbol}_SCORE_AUTHORITY_INVALID")
+              if score.get("trade_mode") != "PAPER" or score.get("orders_enabled") is not False or score.get("live_capital_locked") is not True:
+                  raise RuntimeError(f"{symbol}_SCORE_SAFETY_INVALID")
+
+          context = get("/api/market-context")
+          safety = context.get("safety") if isinstance(context.get("safety"), dict) else {}
+          if context.get("mode") != "REAL_ONLY" or context.get("synthetic_demo_enabled") is not False:
+              raise RuntimeError("MARKET_CONTEXT_NOT_REAL_ONLY")
+          if safety != {
+              "trade_mode": "PAPER",
+              "allow_live": False,
+              "orders_enabled": False,
+              "live_capital_locked": True,
+              "read_only_market_adapters": True,
+          }:
+              raise RuntimeError("MARKET_CONTEXT_SAFETY_INVALID")
+          context_text = json.dumps({key: context.get(key) for key in ("polymarket", "kalshi", "boros")}, sort_keys=True).upper()
+          if "SYNTHETIC" in context_text:
+              raise RuntimeError("SYNTHETIC_MARKET_CONTEXT_DETECTED")
+
+          gates = {
+              symbol: get("/api/portfolio/live_gate", query={"symbol": symbol})
+              for symbol in ("BTCUSDT", "ETHUSDT")
+          }
+          for symbol, gate in gates.items():
+              if gate.get("effective_gate") != "LOCKED_BY_PAPER_POLICY" or gate.get("paper_only") is not True or gate.get("diagnostic_only") is not True:
+                  raise RuntimeError(f"{symbol}_PAPER_GATE_INVALID")
+              if gate.get("trade_mode") != "PAPER" or gate.get("live_capital_locked") is not True or gate.get("unlocked") is not False:
+                  raise RuntimeError(f"{symbol}_LIVE_GATE_UNLOCKED")
+              if gate.get("requested_symbol") != symbol or gate.get("score_scope") != "PER_SYMBOL":
+                  raise RuntimeError(f"{symbol}_LIVE_GATE_SCOPE_INVALID")
+
+          portfolio = get("/api/portfolio/state")
+          engine = portfolio.get("execution_engine") if isinstance(portfolio.get("execution_engine"), dict) else {}
+          if engine.get("trade_mode") != "PAPER" or engine.get("allow_live") is not False:
+              raise RuntimeError("PORTFOLIO_EXECUTION_NOT_PAPER_LOCKED")
+          portfolio_audit = get("/api/portfolio/audit", query={"limit": 200})
+          events = portfolio_audit.get("events") if isinstance(portfolio_audit.get("events"), list) else []
+          if any(isinstance(event, dict) and event.get("event") == "LIVE_MODE_ENABLED" for event in events):
+              raise RuntimeError("LIVE_MODE_ENABLED_EVENT_OBSERVED")
+
+          captured = {
+              "captured_at": datetime.now(timezone.utc).isoformat(),
+              "deployment": {
+                  "sha": TARGET_SHA,
+                  "tree": TARGET_TREE,
+                  "deployed_at": DEPLOYED_AT.isoformat(),
+                  "service": "senecio-h011",
+              },
+              "health": health,
+              "oracle_state": state,
+              "post_deploy_predictions": prediction_evidence,
+              "scores": scores,
+              "market_context": context,
+              "paper_live_gates": gates,
+              "portfolio_state": portfolio,
+              "portfolio_audit": portfolio_audit,
+              "safety": {
+                  "trade_mode": "PAPER",
+                  "orders_enabled": False,
+                  "live_capital_locked": True,
+                  "allow_live": False,
+                  "real_order_network_calls": 0,
+                  "payment_actions": 0,
+                  "wallet_private_key_actions": 0,
+                  "runtime017_mutations": 0,
+              },
+          }
+          Path("evidence/aud-061-production-validation.json").write_text(
+              json.dumps(captured, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("PRODUCTION_VALIDATION_RESULT " + json.dumps({
+              "health": health.get("status"),
+              "started_at": started_at.isoformat(),
+              "last_cycle_at": last_cycle_at.isoformat(),
+              "cycles_run": state.get("cycles_run"),
+              "btc_prediction_id": btc_row.get("id"),
+              "btc_prediction_ts": btc_row.get("ts"),
+              "btc_funding": prediction_evidence["BTCUSDT"]["derivative_truth"]["funding_signal"]["status"],
+              "btc_oi": prediction_evidence["BTCUSDT"]["derivative_truth"]["oi_momentum"]["status"],
+              "eth_prediction_id": eth_row.get("id"),
+              "eth_prediction_ts": eth_row.get("ts"),
+              "eth_funding": prediction_evidence["ETHUSDT"]["derivative_truth"]["funding_signal"]["status"],
+              "eth_oi": prediction_evidence["ETHUSDT"]["derivative_truth"]["oi_momentum"]["status"],
+              "learning_version": EXPECTED_LEARNING,
+              "btc_score_status": scores["BTCUSDT"].get("score_status"),
+              "btc_raw_n": scores["BTCUSDT"].get("proof_qualified_rows_raw"),
+              "btc_independent_n": scores["BTCUSDT"].get("independent_1h_rows"),
+              "eth_score_status": scores["ETHUSDT"].get("score_status"),
+              "eth_raw_n": scores["ETHUSDT"].get("proof_qualified_rows_raw"),
+              "eth_independent_n": scores["ETHUSDT"].get("independent_1h_rows"),
+              "market_context_mode": context.get("mode"),
+              "paper_locks": True,
+              "real_order_network_calls": 0,
+              "runtime017_mutations": 0,
+          }, sort_keys=True), flush=True)
+          PY
+
+      - name: Upload public production evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-061-production-validation-49c5f0a6
+          path: evidence/aud-061-production-validation.json
+          if-no-files-found: error
+          retention-days: 14
