@@ -1,0 +1,527 @@
+name: AUD-061 LAND resume
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aud-061-land-resume
+  cancel-in-progress: false
+
+jobs:
+  land:
+    name: Exact Northflank build, deploy, and CD verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: northflank-readonly-audit
+    env:
+      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+      NF_PROJECT_SLUG: seneciobot
+      NF_SERVICE_SLUG: senecio-h011
+      TARGET_REPOSITORY: https://github.com/simonkey888/SeneX-Prophet
+      TARGET_BRANCH: main
+      TARGET_SHA: 49c5f0a69609c005da80e48b585e91d8582a5ac6
+      TARGET_TREE: 3e323bcc2795f97b29242883d3bf2a015c092ccd
+
+    steps:
+      - name: Checkout and freeze exact authorized main
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: 49c5f0a69609c005da80e48b585e91d8582a5ac6
+
+      - name: Verify exact SHA, tree, and remote main
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+          test "$(git rev-parse 'HEAD^{tree}')" = "${TARGET_TREE}"
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "${remote_main}" = "${TARGET_SHA}"
+          printf '%s\n' "EXACT_MAIN=VERIFIED" "TARGET_SHA=${TARGET_SHA}" "TARGET_TREE=${TARGET_TREE}"
+
+      - name: Execute secret-backed exact build and deploy
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          mkdir -p evidence
+
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from typing import Any
+
+          API_BASE = "https://api.northflank.com/v1"
+          TOKEN = os.environ["NORTHFLANK_API_TOKEN"]
+          PROJECT_SLUG = os.environ["NF_PROJECT_SLUG"]
+          SERVICE_SLUG = os.environ["NF_SERVICE_SLUG"]
+          TARGET_REPOSITORY = os.environ["TARGET_REPOSITORY"].rstrip("/").removesuffix(".git")
+          TARGET_BRANCH = os.environ["TARGET_BRANCH"]
+          TARGET_SHA = os.environ["TARGET_SHA"]
+          TARGET_TREE = os.environ["TARGET_TREE"]
+          OUTPUT = Path("evidence/northflank-land-summary.json")
+
+          request_ledger: list[dict[str, Any]] = []
+          mutations: list[str] = []
+
+          def now() -> str:
+              return datetime.now(timezone.utc).isoformat()
+
+          def api(method: str, path: str, payload: dict[str, Any] | None = None,
+                  query: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+              if not path.startswith("/"):
+                  raise RuntimeError("INVALID_API_PATH")
+              url = API_BASE + path
+              if query:
+                  url += "?" + urllib.parse.urlencode(query, doseq=True)
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              headers = {
+                  "Authorization": f"Bearer {TOKEN}",
+                  "Accept": "application/json",
+                  "User-Agent": "senex-aud-061-land-resume/1",
+              }
+              if body is not None:
+                  headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(url, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(request, timeout=45) as response:
+                      raw = response.read().decode("utf-8", errors="replace")
+                      status = response.status
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode("utf-8", errors="replace")
+                  status = exc.code
+              except Exception as exc:
+                  request_ledger.append({"method": method, "path": path, "status": 0})
+                  raise RuntimeError(f"NORTHFLANK_REQUEST_TRANSPORT_FAILURE:{type(exc).__name__}") from None
+              try:
+                  parsed = json.loads(raw) if raw else {}
+              except json.JSONDecodeError:
+                  parsed = {}
+              request_ledger.append({"method": method, "path": path, "status": status})
+              print(f"NF_REQUEST method={method} path={path} status={status}", flush=True)
+              return status, parsed if isinstance(parsed, dict) else {}
+
+          def require(status: int, body: dict[str, Any], operation: str,
+                      accepted: tuple[int, ...] = (200,)) -> dict[str, Any]:
+              if status not in accepted:
+                  code = body.get("error") or body.get("code") or "UNAVAILABLE"
+                  if isinstance(code, (dict, list)):
+                      code = "STRUCTURED_ERROR"
+                  raise RuntimeError(f"{operation}_HTTP_{status}_{str(code)[:80]}")
+              data = body.get("data")
+              return data if isinstance(data, dict) else {}
+
+          def scalar(node: Any, keys: tuple[str, ...]) -> Any:
+              wanted = {key.lower() for key in keys}
+              queue = [node]
+              while queue:
+                  item = queue.pop(0)
+                  if isinstance(item, dict):
+                      for key, value in item.items():
+                          if str(key).lower() in wanted and isinstance(value, (str, int, float, bool)):
+                              return value
+                          if isinstance(value, (dict, list)):
+                              queue.append(value)
+                  elif isinstance(item, list):
+                      queue.extend(value for value in item if isinstance(value, (dict, list)))
+              return None
+
+          def normalize_repo(value: Any) -> str:
+              if not isinstance(value, str):
+                  return ""
+              return value.rstrip("/").removesuffix(".git")
+
+          def teams_from(body: dict[str, Any]) -> list[dict[str, Any]]:
+              data = body.get("data")
+              if isinstance(data, dict) and isinstance(data.get("teams"), list):
+                  return [x for x in data["teams"] if isinstance(x, dict)]
+              if isinstance(data, list):
+                  return [x for x in data if isinstance(x, dict)]
+              return []
+
+          def service_entries(body: dict[str, Any]) -> list[dict[str, Any]]:
+              data = body.get("data")
+              if isinstance(data, dict) and isinstance(data.get("services"), list):
+                  return [x for x in data["services"] if isinstance(x, dict)]
+              if isinstance(data, list):
+                  return [x for x in data if isinstance(x, dict)]
+              return []
+
+          # Identify the existing project without decoding or exporting the token.
+          prefixes: list[str] = []
+          teams_status, teams_body = api("GET", "/teams", query={"per_page": 100})
+          if teams_status == 200:
+              for team in teams_from(teams_body):
+                  team_id = team.get("id")
+                  if isinstance(team_id, str) and team_id:
+                      prefixes.append(f"/teams/{urllib.parse.quote(team_id)}/projects/{urllib.parse.quote(PROJECT_SLUG)}")
+          prefixes.append(f"/projects/{urllib.parse.quote(PROJECT_SLUG)}")
+
+          project_prefix = ""
+          project_data: dict[str, Any] = {}
+          for candidate in prefixes:
+              status, body = api("GET", candidate)
+              if status == 200 and isinstance(body.get("data"), dict):
+                  project_prefix = candidate
+                  project_data = body["data"]
+                  break
+          if not project_prefix:
+              raise RuntimeError("EXISTING_PROJECT_NOT_FOUND_OR_TOKEN_INSUFFICIENT")
+
+          services_path = f"{project_prefix}/services"
+          status, services_body = api("GET", services_path, query={"per_page": 100})
+          require(status, services_body, "LIST_SERVICES")
+          entries = service_entries(services_body)
+          service_entry = next((x for x in entries if x.get("id") == SERVICE_SLUG or x.get("name") == SERVICE_SLUG), None)
+          if not isinstance(service_entry, dict):
+              raise RuntimeError("EXISTING_SERVICE_NOT_FOUND")
+
+          service_id = str(service_entry.get("id") or SERVICE_SLUG)
+          service_type = str(service_entry.get("serviceType") or "")
+          if service_type != "combined":
+              raise RuntimeError(f"UNEXPECTED_SERVICE_TYPE:{service_type or 'UNKNOWN'}")
+
+          service_path = f"{project_prefix}/services/{urllib.parse.quote(service_id)}"
+          status, service_body = api("GET", service_path)
+          service_data = require(status, service_body, "GET_SERVICE")
+          status, deployment_body = api("GET", f"{service_path}/deployment")
+          deployment_data = require(status, deployment_body, "GET_DEPLOYMENT")
+
+          vcs = service_data.get("vcsData") if isinstance(service_data.get("vcsData"), dict) else {}
+          repo_before = normalize_repo(vcs.get("projectUrl") or scalar(service_data, ("projectUrl", "repositoryUrl")))
+          branch_before = vcs.get("projectBranch") or scalar(service_data, ("projectBranch", "branch"))
+          disabled_ci_before = service_entry.get("disabledCI")
+          disabled_cd_before = service_entry.get("disabledCD")
+          print("SERVICE_PREFLIGHT " + json.dumps({
+              "service_id": service_id,
+              "service_type": service_type,
+              "repository": repo_before,
+              "branch": branch_before,
+              "disabled_ci": disabled_ci_before,
+              "disabled_cd": disabled_cd_before,
+              "tracking": (deployment_data.get("internal") or {}).get("buildSHA") if isinstance(deployment_data.get("internal"), dict) else None,
+              "deployed_sha": (deployment_data.get("internal") or {}).get("deployedSHA") if isinstance(deployment_data.get("internal"), dict) else None,
+          }, sort_keys=True), flush=True)
+
+          # Change only source/CI fields if required; preserve the linked VCS identity.
+          source_needs_patch = (
+              repo_before != TARGET_REPOSITORY
+              or branch_before != TARGET_BRANCH
+              or disabled_ci_before is not False
+          )
+          if source_needs_patch:
+              preserved_vcs = {
+                  key: vcs[key]
+                  for key in ("accountLogin", "vcsLinkId", "selfHostedVcsId")
+                  if key in vcs and vcs[key] not in (None, "")
+              }
+              preserved_vcs.update({
+                  "projectUrl": TARGET_REPOSITORY,
+                  "projectType": "github",
+                  "projectBranch": TARGET_BRANCH,
+              })
+              patch_payload = {
+                  "disabledCI": False,
+                  "buildSource": "git",
+                  "vcsData": preserved_vcs,
+              }
+              patch_path = f"{project_prefix}/services/combined/{urllib.parse.quote(service_id)}"
+              status, patch_body = api("PATCH", patch_path, patch_payload)
+              require(status, patch_body, "PATCH_COMBINED_SERVICE")
+              mutations.append("PATCH_SOURCE_AND_CI")
+
+          # Re-read and independently verify source configuration before build.
+          status, services_body = api("GET", services_path, query={"per_page": 100})
+          require(status, services_body, "LIST_SERVICES_AFTER_PATCH")
+          entries = service_entries(services_body)
+          service_entry = next((x for x in entries if x.get("id") == service_id), None)
+          if not isinstance(service_entry, dict):
+              raise RuntimeError("SERVICE_DISAPPEARED_AFTER_PATCH")
+          status, service_body = api("GET", service_path)
+          service_data = require(status, service_body, "GET_SERVICE_AFTER_PATCH")
+          vcs = service_data.get("vcsData") if isinstance(service_data.get("vcsData"), dict) else {}
+          repo_after = normalize_repo(vcs.get("projectUrl") or scalar(service_data, ("projectUrl", "repositoryUrl")))
+          branch_after = vcs.get("projectBranch") or scalar(service_data, ("projectBranch", "branch"))
+          if repo_after != TARGET_REPOSITORY or branch_after != TARGET_BRANCH or service_entry.get("disabledCI") is not False:
+              raise RuntimeError("SOURCE_CI_CONFIGURATION_NOT_VERIFIED")
+
+          # Build only the authorized exact commit.
+          status, build_body = api("POST", f"{service_path}/build", {"sha": TARGET_SHA})
+          build_data = require(status, build_body, "START_EXACT_BUILD", (200, 201, 202))
+          build_id = str(build_data.get("id") or "")
+          response_sha = build_data.get("sha")
+          if response_sha not in (None, TARGET_SHA):
+              raise RuntimeError("START_BUILD_RETURNED_WRONG_SHA")
+          mutations.append("POST_EXACT_BUILD")
+
+          # If the start response omits the ID, locate only the exact target build.
+          if not build_id:
+              for _ in range(12):
+                  status, builds_body = api("GET", f"{service_path}/build", query={"per_page": 100})
+                  require(status, builds_body, "LIST_BUILDS")
+                  data = builds_body.get("data")
+                  builds = data.get("builds") if isinstance(data, dict) else data
+                  if isinstance(builds, list):
+                      match = next((x for x in builds if isinstance(x, dict) and x.get("sha") == TARGET_SHA), None)
+                      if isinstance(match, dict) and match.get("id"):
+                          build_id = str(match["id"])
+                          break
+                  time.sleep(5)
+          if not build_id:
+              raise RuntimeError("EXACT_BUILD_ID_NOT_FOUND")
+
+          build_status = "UNKNOWN"
+          build_sha = None
+          build_created_at = None
+          failure_states = {"ABORTED", "FAILURE", "SUBMISSION_FAILURE", "CRASHED", "FAILED"}
+          for _ in range(100):
+              status, detail_body = api("GET", f"{service_path}/build/{urllib.parse.quote(build_id)}")
+              detail = require(status, detail_body, "GET_EXACT_BUILD")
+              build_status = str(detail.get("status") or scalar(detail, ("status",)) or "UNKNOWN").upper()
+              build_sha = detail.get("sha") or scalar(detail, ("sha", "commitSha"))
+              build_created_at = detail.get("createdAt") or scalar(detail, ("createdAt",))
+              print(f"BUILD_POLL id={build_id} status={build_status} sha={build_sha}", flush=True)
+              if build_sha not in (None, TARGET_SHA):
+                  raise RuntimeError("BUILD_DETAIL_WRONG_SHA")
+              if build_status == "SUCCESS":
+                  break
+              if build_status in failure_states:
+                  raise RuntimeError(f"EXACT_BUILD_FAILED:{build_status}")
+              time.sleep(15)
+          if build_status != "SUCCESS" or build_sha != TARGET_SHA:
+              raise RuntimeError("EXACT_BUILD_NOT_SUCCESSFULLY_VERIFIED")
+
+          # Wait briefly for pre-existing automatic CD; otherwise deploy the exact build explicitly.
+          auto_deployed = False
+          internal: dict[str, Any] = {}
+          for _ in range(8):
+              status, deployment_body = api("GET", f"{service_path}/deployment")
+              deployment_data = require(status, deployment_body, "GET_DEPLOYMENT_AFTER_BUILD")
+              internal = deployment_data.get("internal") if isinstance(deployment_data.get("internal"), dict) else {}
+              if internal.get("deployedSHA") == TARGET_SHA:
+                  auto_deployed = True
+                  break
+              time.sleep(10)
+
+          internal_id = str(internal.get("id") or service_id)
+          if not auto_deployed:
+              exact_deploy_payload = {
+                  "internal": {
+                      "id": internal_id,
+                      "branch": TARGET_BRANCH,
+                      "buildSHA": TARGET_SHA,
+                      "buildId": build_id,
+                  }
+              }
+              status, deploy_body = api("POST", f"{service_path}/deployment", exact_deploy_payload)
+              require(status, deploy_body, "DEPLOY_EXACT_BUILD", (200, 201, 202))
+              mutations.append("POST_EXACT_DEPLOY")
+
+          deployed_sha = None
+          deployment_status = "UNKNOWN"
+          for _ in range(60):
+              status, deployment_body = api("GET", f"{service_path}/deployment")
+              deployment_data = require(status, deployment_body, "POLL_DEPLOYMENT")
+              internal = deployment_data.get("internal") if isinstance(deployment_data.get("internal"), dict) else {}
+              deployed_sha = internal.get("deployedSHA") or scalar(deployment_data, ("deployedSHA", "commitSha"))
+              status, services_body = api("GET", services_path, query={"per_page": 100})
+              require(status, services_body, "LIST_SERVICES_DEPLOY_POLL")
+              entry = next((x for x in service_entries(services_body) if x.get("id") == service_id), {})
+              status_obj = entry.get("status") if isinstance(entry.get("status"), dict) else {}
+              deploy_obj = status_obj.get("deployment") if isinstance(status_obj.get("deployment"), dict) else {}
+              deployment_status = str(deploy_obj.get("status") or "UNKNOWN").upper()
+              print(f"DEPLOY_POLL status={deployment_status} deployed_sha={deployed_sha}", flush=True)
+              if deployed_sha == TARGET_SHA and deployment_status == "COMPLETED":
+                  break
+              if deployment_status == "FAILED":
+                  raise RuntimeError("EXACT_DEPLOYMENT_FAILED")
+              time.sleep(15)
+          if deployed_sha != TARGET_SHA or deployment_status != "COMPLETED":
+              raise RuntimeError("EXACT_DEPLOYMENT_NOT_VERIFIED")
+
+          # Track latest successful main builds for future automatic CD.
+          tracking = internal.get("buildSHA")
+          status, services_body = api("GET", services_path, query={"per_page": 100})
+          require(status, services_body, "LIST_SERVICES_BEFORE_CD")
+          entry = next((x for x in service_entries(services_body) if x.get("id") == service_id), {})
+          disabled_cd = entry.get("disabledCD")
+          if tracking != "latest" or disabled_cd is not False:
+              enable_cd_payload = {
+                  "internal": {
+                      "id": internal_id,
+                      "branch": TARGET_BRANCH,
+                      "buildSHA": "latest",
+                  }
+              }
+              status, cd_body = api("POST", f"{service_path}/deployment", enable_cd_payload)
+              require(status, cd_body, "ENABLE_AUTOMATIC_CD", (200, 201, 202))
+              mutations.append("POST_ENABLE_LATEST_CD")
+
+          cd_verified = False
+          disabled_ci = None
+          disabled_cd = None
+          tracking = None
+          for _ in range(30):
+              status, deployment_body = api("GET", f"{service_path}/deployment")
+              deployment_data = require(status, deployment_body, "VERIFY_CD_DEPLOYMENT")
+              internal = deployment_data.get("internal") if isinstance(deployment_data.get("internal"), dict) else {}
+              tracking = internal.get("buildSHA")
+              deployed_sha = internal.get("deployedSHA") or scalar(deployment_data, ("deployedSHA",))
+              status, services_body = api("GET", services_path, query={"per_page": 100})
+              require(status, services_body, "VERIFY_CD_SERVICE")
+              entry = next((x for x in service_entries(services_body) if x.get("id") == service_id), {})
+              disabled_ci = entry.get("disabledCI")
+              disabled_cd = entry.get("disabledCD")
+              cd_verified = (
+                  disabled_ci is False
+                  and disabled_cd is False
+                  and tracking == "latest"
+                  and deployed_sha == TARGET_SHA
+              )
+              print(f"CD_POLL disabled_ci={disabled_ci} disabled_cd={disabled_cd} tracking={tracking} deployed_sha={deployed_sha}", flush=True)
+              if cd_verified:
+                  break
+              time.sleep(10)
+          if not cd_verified:
+              raise RuntimeError("AUTOMATIC_MAIN_CD_NOT_VERIFIED")
+
+          status, containers_body = api("GET", f"{service_path}/containers", query={"per_page": 100})
+          containers_data = require(status, containers_body, "GET_CONTAINERS")
+          containers = containers_data.get("containers") if isinstance(containers_data.get("containers"), list) else []
+          if not containers and isinstance(containers_body.get("data"), list):
+              containers = [x for x in containers_body["data"] if isinstance(x, dict)]
+          container_summary = []
+          for container in containers:
+              if not isinstance(container, dict):
+                  continue
+              container_summary.append({
+                  "status": container.get("status"),
+                  "restart_count": container.get("restartCount") or container.get("restarts") or 0,
+                  "created_at": container.get("createdAt"),
+              })
+          if not container_summary:
+              raise RuntimeError("NO_SERVICE_CONTAINERS_OBSERVED")
+          bad_container_states = {"FAILED", "CRASHED", "TERMINATED", "ERROR"}
+          if any(str(x.get("status") or "").upper() in bad_container_states for x in container_summary):
+              raise RuntimeError("UNHEALTHY_SERVICE_CONTAINER_STATE")
+
+          status, logs_body = api("GET", f"{service_path}/logs", query={
+              "type": "runtime",
+              "queryType": "range",
+              "duration": 1800,
+              "lineLimit": 500,
+              "direction": "backward",
+          })
+          log_lines = logs_body.get("data") if status == 200 and isinstance(logs_body.get("data"), list) else []
+          fatal_re = re.compile(r"(?i)\b(fatal|traceback|uncaught exception|panic)\b")
+          startup_re = re.compile(r"(?i)\b(startup|starting|started|uvicorn)\b")
+          fatal_count = 0
+          startup_count = 0
+          latest_log_timestamp = None
+          for line in log_lines:
+              if not isinstance(line, dict):
+                  continue
+              message = str(line.get("log") or "")
+              fatal_count += int(bool(fatal_re.search(message)))
+              startup_count += int(bool(startup_re.search(message)))
+              timestamp = line.get("ts")
+              if isinstance(timestamp, str) and (latest_log_timestamp is None or timestamp > latest_log_timestamp):
+                  latest_log_timestamp = timestamp
+
+          summary = {
+              "captured_at": now(),
+              "target_sha": TARGET_SHA,
+              "target_tree": TARGET_TREE,
+              "project_id": str(project_data.get("id") or PROJECT_SLUG),
+              "service_id": service_id,
+              "service_type": service_type,
+              "repository": repo_after,
+              "branch": branch_after,
+              "disabled_ci": disabled_ci,
+              "disabled_cd": disabled_cd,
+              "cd_tracking": tracking,
+              "build_id": build_id,
+              "build_sha": build_sha,
+              "build_status": build_status,
+              "build_created_at": build_created_at,
+              "deployed_sha": deployed_sha,
+              "deployment_status": deployment_status,
+              "containers": container_summary,
+              "runtime_log_line_count": len(log_lines),
+              "startup_log_matches": startup_count,
+              "fatal_log_matches": fatal_count,
+              "latest_log_timestamp": latest_log_timestamp,
+              "mutations": mutations,
+              "created_resources": 0,
+              "billing_changes": 0,
+              "runtime017_mutations": 0,
+              "request_ledger": request_ledger,
+          }
+          encoded = json.dumps(summary, indent=2, sort_keys=True)
+          if TOKEN in encoded:
+              raise RuntimeError("SECRET_LEAK_GATE_FAILED")
+          OUTPUT.write_text(encoded + "\n", encoding="utf-8")
+          print("NORTHFLANK_LAND_RESULT " + json.dumps({
+              "target_sha": TARGET_SHA,
+              "target_tree": TARGET_TREE,
+              "service_id": service_id,
+              "repository": repo_after,
+              "branch": branch_after,
+              "disabled_ci": disabled_ci,
+              "disabled_cd": disabled_cd,
+              "cd_tracking": tracking,
+              "build_id": build_id,
+              "build_status": build_status,
+              "deployed_sha": deployed_sha,
+              "deployment_status": deployment_status,
+              "container_count": len(container_summary),
+              "runtime_log_line_count": len(log_lines),
+              "startup_log_matches": startup_count,
+              "fatal_log_matches": fatal_count,
+              "created_resources": 0,
+              "billing_changes": 0,
+              "runtime017_mutations": 0,
+          }, sort_keys=True), flush=True)
+          PY
+
+      - name: Enforce secret leak gate
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("evidence/northflank-land-summary.json")
+          content = path.read_bytes()
+          token = os.environ["NORTHFLANK_API_TOKEN"].encode()
+          if not token or token in content:
+              raise SystemExit("SECRET_LEAK_GATE_FAILED")
+          PY
+
+      - name: Upload sanitized deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-061-land-northflank-49c5f0a6
+          path: evidence/northflank-land-summary.json
+          if-no-files-found: error
+          retention-days: 14
