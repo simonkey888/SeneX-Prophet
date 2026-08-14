@@ -11,6 +11,7 @@ import numpy as np
 from backend import oracle_runner
 from backend.authoritative_score import build_authoritative_score, independent_1h_cohort
 from backend.research import calibration, decision_engine
+from backend.research.coordinator import ResearchCoordinator
 from oracle_runtime import institutional_core as learning
 
 BASE = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
@@ -32,6 +33,17 @@ def proof_row(idx: int, minute: int, *, symbol="BTCUSDT", direction="LONG", outc
 
 def core():
     return learning.SingleDecisionCore(max_drawdown=0.12, ruin_probability_threshold=0.05, hard_stop=True, max_position_pct=0.25, max_leverage=1, min_confidence=0.40, min_ev_to_trade=0.001, no_trade_noise=0.60, initial_capital=1000.0)
+
+
+class _RegistrySpy:
+    def __init__(self):
+        self.gauges = []
+
+    def observe(self, *args, **kwargs):
+        return None
+
+    def set_gauge(self, name, value, labels=None):
+        self.gauges.append((name, float(value), labels))
 
 
 class IndependentAuthorityTests(unittest.TestCase):
@@ -116,16 +128,78 @@ class CalibrationTruthTests(unittest.TestCase):
         self.assertIsNone(report.brier_after)
         self.assertTrue(report.extra["in_sample_diagnostic"]["diagnostic_only"])
 
-    def test_sufficient_ordered_sample_uses_temporal_purged_oos(self):
+    def test_sufficient_timestamped_sample_uses_temporal_purged_oos(self):
+        y = np.asarray([0, 1] * 60, dtype=float)
+        p = np.asarray([0.35, 0.65] * 60, dtype=float)
+        timestamps = [(BASE + timedelta(hours=i)).isoformat() for i in range(len(y))]
+        with tempfile.TemporaryDirectory() as tmp:
+            report = calibration.fit_and_evaluate(y, p, method="platt", calibrators_dir=tmp, reliability_dir=tmp, timestamps=timestamps)
+        self.assertEqual(report.evaluation_status, "OOS_TEMPORAL_HOLDOUT")
+        self.assertEqual(report.evaluation_scope, "CHRONOLOGICAL_TRAIN_PURGE_TEST")
+        self.assertTrue(report.authority_eligible)
+        self.assertTrue(report.extra["chronology_verified"])
+        self.assertFalse(report.extra["input_reordered_by_timestamp"])
+        self.assertGreater(report.extra["n_purged"], 0)
+        self.assertGreater(report.extra["n_oos"], 0)
+
+    def test_sufficient_sample_without_timestamps_fails_closed(self):
         y = np.asarray([0, 1] * 60, dtype=float)
         p = np.asarray([0.35, 0.65] * 60, dtype=float)
         with tempfile.TemporaryDirectory() as tmp:
             report = calibration.fit_and_evaluate(y, p, method="platt", calibrators_dir=tmp, reliability_dir=tmp)
-        self.assertEqual(report.evaluation_status, "OOS_TEMPORAL_HOLDOUT")
-        self.assertEqual(report.evaluation_scope, "CHRONOLOGICAL_TRAIN_PURGE_TEST")
-        self.assertTrue(report.authority_eligible)
-        self.assertGreater(report.extra["n_purged"], 0)
-        self.assertGreater(report.extra["n_oos"], 0)
+        self.assertEqual(report.evaluation_status, "INSUFFICIENT_OOS_EVIDENCE")
+        self.assertEqual(report.evaluation_scope, "UNVERIFIED_TEMPORAL_ORDER")
+        self.assertFalse(report.authority_eligible)
+        self.assertFalse(report.extra["chronology_verified"])
+        self.assertEqual(report.extra["chronology_reason"], "TIMESTAMPS_MISSING")
+
+    def test_descending_input_is_reordered_by_verified_timestamps(self):
+        y = np.asarray([0, 1] * 60, dtype=float)
+        p = np.asarray([0.35, 0.65] * 60, dtype=float)
+        timestamps = [(BASE + timedelta(hours=i)).isoformat() for i in range(len(y))]
+        with tempfile.TemporaryDirectory() as tmp:
+            ordered = calibration.fit_and_evaluate(y, p, method="platt", calibrators_dir=tmp, reliability_dir=tmp, timestamps=timestamps)
+            descending = calibration.fit_and_evaluate(y[::-1], p[::-1], method="platt", calibrators_dir=tmp, reliability_dir=tmp, timestamps=list(reversed(timestamps)))
+        self.assertTrue(descending.authority_eligible)
+        self.assertTrue(descending.extra["chronology_verified"])
+        self.assertTrue(descending.extra["input_reordered_by_timestamp"])
+        self.assertAlmostEqual(descending.brier_after, ordered.brier_after)
+        self.assertAlmostEqual(descending.ece_after, ordered.ece_after)
+
+
+class CoordinatorCalibrationTruthTests(unittest.TestCase):
+    @staticmethod
+    def _records(n: int):
+        return [proof_row(i + 1, i * 60, outcome="WIN" if i % 2 else "LOSS", confidence=0.65) for i in range(n)]
+
+    def test_n60_insufficient_oos_propagates_without_calibration_error_or_gauge(self):
+        coord = ResearchCoordinator(config={"calibration_methods": ["platt"], "explainer_prefer_shap": False})
+        spy = _RegistrySpy()
+        coord._registry = spy
+        coord.load_predictions_from_records(self._records(60))
+        report = coord.run_full_pass(persist=False)
+        self.assertEqual(len(report.calibration_reports), 1)
+        cal = report.calibration_reports[0]
+        self.assertEqual(cal["evaluation_status"], "INSUFFICIENT_OOS_EVIDENCE")
+        self.assertFalse(cal["authority_eligible"])
+        self.assertIsNone(cal["ece_after"])
+        self.assertFalse(any(err.startswith("calibration_") for err in report.errors))
+        self.assertFalse(any(name == "senecio_last_calibration_ece" for name, _, _ in spy.gauges))
+
+    def test_descending_db_records_get_causal_timestamp_order_before_oos_authority(self):
+        coord = ResearchCoordinator(config={"calibration_methods": ["platt"], "explainer_prefer_shap": False})
+        spy = _RegistrySpy()
+        coord._registry = spy
+        coord.load_predictions_from_records(list(reversed(self._records(120))))
+        report = coord.run_full_pass(persist=False)
+        self.assertEqual(len(report.calibration_reports), 1)
+        cal = report.calibration_reports[0]
+        self.assertEqual(cal["evaluation_status"], "OOS_TEMPORAL_HOLDOUT")
+        self.assertTrue(cal["authority_eligible"])
+        self.assertTrue(cal["extra"]["chronology_verified"])
+        self.assertTrue(cal["extra"]["input_reordered_by_timestamp"])
+        self.assertFalse(any(err.startswith("calibration_") for err in report.errors))
+        self.assertTrue(any(name == "senecio_last_calibration_ece" for name, _, _ in spy.gauges))
 
 
 class MultipleTestingTests(unittest.TestCase):
