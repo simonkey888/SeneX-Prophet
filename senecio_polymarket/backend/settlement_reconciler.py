@@ -175,6 +175,7 @@ async def reconcile_once() -> dict[str, int]:
                         }
                     else:
                         audit.pop("reconciliation_conflict", None)
+                    observed_at = datetime.now(timezone.utc).isoformat()
                     audit["outcomes_dual"] = {
                         "outcome_15m": o15,
                         "outcome_1h": o1h,
@@ -182,7 +183,13 @@ async def reconcile_once() -> dict[str, int]:
                         "price_1h_later": p1h,
                         "primary_window": "1h",
                         "reconciled_by": "SENEX-SCORE-002",
-                        "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                        "reconciled_at": observed_at,
+                        "settlement_observation_v1": {
+                            "version": "settlement-observation-v1",
+                            "observed_at": observed_at,
+                            "writer": "SENEX_SCORE_002_RECONCILER",
+                            "availability_semantics": "PERSISTED_BY_COMPARE_AND_SET_AT_OR_AFTER_THIS_TIME",
+                        },
                     }
                     patch = {"price_15m_later": p15, "audit": audit}
                     # Absolute URL is intentional: this client has no base_url.

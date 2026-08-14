@@ -44,6 +44,30 @@ DOWN = "DOWN"               # 20+ consecutive failures
 DEGRADED_THRESHOLD = 5
 DOWN_THRESHOLD = 20
 
+# Explicit public linear-swap identities. Funding/OI must never reuse the spot
+# symbol merely because CCXT's defaultType option was toggled.
+DERIVATIVE_SYMBOL_FORMATS = {
+    "okx": "{base}/{quote}:{quote}",
+    "gate": "{base}/{quote}:{quote}",
+    "mexc": "{base}/{quote}:{quote}",
+    "bitget": "{base}/{quote}:{quote}",
+    "binance": "{base}/{quote}:{quote}",
+    "bybit": "{base}/{quote}:{quote}",
+}
+_OI_SNAPSHOT_CACHE: Dict[tuple[str, str], tuple[int, float]] = {}
+
+
+def resolve_public_derivative_symbol(exchange: str, spot_symbol: str) -> Optional[str]:
+    """Resolve an explicit USDT-settled swap identity for a spot symbol."""
+    template = DERIVATIVE_SYMBOL_FORMATS.get(str(exchange or "").lower())
+    parts = str(spot_symbol or "").split(":", 1)[0].split("/", 1)
+    if not template or len(parts) != 2:
+        return None
+    base, quote = (part.strip().upper() for part in parts)
+    if not base or not quote or quote != "USDT":
+        return None
+    return template.format(base=base, quote=quote)
+
 
 # ===========================================================================
 # NormalizedOrderbook
@@ -704,18 +728,14 @@ class ExchangeConnector:
 
         try:
             ex = self.exchanges[exchange]
-
-            # Funding rate requires futures/perpetual market type
-            # Temporarily switch to future if the exchange supports it
-            original_type = ex.options.get("defaultType", "spot") if hasattr(ex, 'options') else "spot"
-
-            try:
-                ex.options["defaultType"] = "future"
-                t0 = time.time()
-                raw_funding = ex.fetch_funding_rate(self.symbol)
-                latency = (time.time() - t0) * 1000.0
-            finally:
-                ex.options["defaultType"] = original_type
+            derivative_symbol = resolve_public_derivative_symbol(exchange, self.symbol)
+            if derivative_symbol is None:
+                return None
+            t0 = time.time()
+            raw_funding = ex.fetch_funding_rate(derivative_symbol)
+            latency = (time.time() - t0) * 1000.0
+            if not isinstance(raw_funding, dict) or raw_funding.get("fundingRate") is None:
+                raise ValueError("funding response missing fundingRate")
 
             rate = float(raw_funding.get("fundingRate", 0) or 0)
 
@@ -741,6 +761,9 @@ class ExchangeConnector:
             result = {
                 "exchange": exchange,
                 "symbol": self.symbol,
+                "derivative_symbol": derivative_symbol,
+                "market_type": "swap",
+                "source": f"{exchange}:public_swap_funding",
                 "rate": rate,
                 "next_funding_ms": next_funding_ms,
                 "timestamp": timestamp,
@@ -821,15 +844,14 @@ class ExchangeConnector:
 
         try:
             ex = self.exchanges[exchange]
-            original_type = ex.options.get("defaultType", "spot") if hasattr(ex, 'options') else "spot"
-
-            try:
-                ex.options["defaultType"] = "future"
-                t0 = time.time()
-                raw_oi = ex.fetch_open_interest(self.symbol)
-                latency = (time.time() - t0) * 1000.0
-            finally:
-                ex.options["defaultType"] = original_type
+            derivative_symbol = resolve_public_derivative_symbol(exchange, self.symbol)
+            if derivative_symbol is None:
+                return None
+            t0 = time.time()
+            raw_oi = ex.fetch_open_interest(derivative_symbol)
+            latency = (time.time() - t0) * 1000.0
+            if not isinstance(raw_oi, dict) or raw_oi.get("openInterestAmount") is None:
+                raise ValueError("open-interest response missing openInterestAmount")
 
             oi_amount = float(raw_oi.get("openInterestAmount", 0) or 0)
             timestamp = raw_oi.get("timestamp")
@@ -838,11 +860,31 @@ class ExchangeConnector:
             else:
                 timestamp = int(time.time() * 1000)
 
+            cache_key = (exchange, derivative_symbol)
+            prior = _OI_SNAPSHOT_CACHE.get(cache_key)
+            oi_change_pct = None
+            oi_change_observed = False
+            prior_timestamp = None
+            if prior is not None:
+                prior_timestamp, prior_amount = prior
+                if timestamp > prior_timestamp and prior_amount > 0:
+                    oi_change_pct = (oi_amount - prior_amount) / prior_amount * 100.0
+                    oi_change_observed = True
+            if prior is None or timestamp >= prior[0]:
+                _OI_SNAPSHOT_CACHE[cache_key] = (timestamp, oi_amount)
+
             result = {
                 "oi_value": round(oi_amount, 4),
-                "oi_change_24h_pct": 0.0,  # not available from snapshot; computed downstream
+                "oi_change_24h_pct": round(oi_change_pct, 8) if oi_change_pct is not None else None,
+                "oi_change_observed": oi_change_observed,
+                "comparison_timestamp": prior_timestamp,
                 "timestamp": timestamp,
                 "latency_ms": round(latency, 2),
+                "exchange": exchange,
+                "symbol": self.symbol,
+                "derivative_symbol": derivative_symbol,
+                "market_type": "swap",
+                "source": f"{exchange}:public_swap_open_interest",
             }
 
             self._record_success(exchange, latency)
@@ -1672,8 +1714,14 @@ def _run_mock_tests():
         for name, data in results.items():
             assert data["orderbook"] is not None, f"{name} orderbook is None"
             assert data["ticker"] is not None, f"{name} ticker is None"
-            assert data["trades"] is not None, f"{name} trades is None"
-            assert data["funding"] is not None, f"{name} funding is None"
+            # fetch_all intentionally omits trades because the shadow pipeline
+            # does not consume them; asserting a fetch here was stale.
+            assert data["trades"] is None, f"{name} trades should be skipped"
+            if name in DERIVATIVE_SYMBOL_FORMATS:
+                assert data["funding"] is not None, f"{name} funding is None"
+                assert data["funding"]["derivative_symbol"] == "BTC/USDT:USDT"
+            else:
+                assert data["funding"] is None, f"{name} unexpectedly exposed funding"
             assert data["ohlcv"] is not None, f"{name} ohlcv is None"
 
         print(f"  Binance: OB={results['binance']['orderbook'] is not None}, "
@@ -2300,6 +2348,77 @@ def _run_live_tests():
 DEFAULT_FALLBACK_CHAIN = ["okx", "kraken", "gate", "mexc", "bitget"]
 
 
+def build_feature_observations(
+    *, exchange: str, ohlcv: list | None, orderbook: dict | None,
+    funding: dict | None, open_interest: dict | None,
+    fallback_used: bool = False,
+) -> dict:
+    """Describe the six predictor inputs without conflating absence with zero."""
+    def observed(value: float) -> str:
+        return "REAL_OBSERVED_ZERO" if abs(float(value)) <= 1e-12 else "REAL_NONZERO"
+
+    candles_ok = bool(ohlcv and len(ohlcv) >= 2 and ohlcv[-2][4] and ohlcv[-2][5])
+    depth = (orderbook or {}).get("bid_depth_usdt") or (orderbook or {}).get("bid_depth") or 0
+    depth += (orderbook or {}).get("ask_depth_usdt") or (orderbook or {}).get("ask_depth") or 0
+    book_ok = depth > 0
+    funding_ok = funding is not None and funding.get("rate") is not None
+    # A point-in-time OI amount is not OI momentum. The connector does not have
+    # a prior comparable snapshot, so its historical 0.0 was a fallback.
+    oi_momentum_ok = bool(open_interest and open_interest.get("oi_change_observed") is True)
+    derivative_capable = exchange in DERIVATIVE_SYMBOL_FORMATS
+    transport = "FALLBACK_USED" if fallback_used else "PRIMARY_SOURCE"
+
+    def item(
+        status: str, source: str, fallback: float | None = None, *,
+        observed_value: float | None = None, observed_at: int | None = None,
+        instrument: str | None = None, market_type: str | None = None,
+    ) -> dict:
+        return {
+            "status": status, "source": source,
+            "transport_status": transport, "fallback_value": fallback,
+            "observed_value": observed_value, "observed_at": observed_at,
+            "instrument": instrument, "market_type": market_type,
+        }
+
+    price_momentum = 0.0
+    volume_delta = 0.0
+    if candles_ok:
+        price_momentum = (float(ohlcv[-1][4]) - float(ohlcv[-2][4])) / float(ohlcv[-2][4])
+        volume_delta = (float(ohlcv[-1][5]) - float(ohlcv[-2][5])) / float(ohlcv[-2][5])
+    imbalance = 0.0
+    if book_ok:
+        bid = float((orderbook or {}).get("bid_depth_usdt") or (orderbook or {}).get("bid_depth") or 0)
+        ask = float((orderbook or {}).get("ask_depth_usdt") or (orderbook or {}).get("ask_depth") or 0)
+        imbalance = (bid - ask) / (bid + ask)
+    funding_signal = -float((funding or {}).get("rate") or 0.0) * 100.0
+    oi_momentum = float((open_interest or {}).get("oi_change_24h_pct") or 0.0) / 100.0
+    unavailable = "SOURCE_ERROR" if derivative_capable else "NOT_APPLICABLE"
+    return {
+        "price_momentum": item(observed(price_momentum) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
+        "volume_delta": item(observed(volume_delta) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
+        "bidask_imbalance": item(observed(imbalance) if book_ok else "MISSING", f"{exchange}:orderbook", None if book_ok else 0.0),
+        "orderflow": item(observed(imbalance * (1.0 + abs(volume_delta))) if book_ok and candles_ok else "MISSING", f"{exchange}:orderbook+ohlcv", None if book_ok and candles_ok else 0.0),
+        "funding_signal": item(
+            observed(funding_signal) if funding_ok else unavailable,
+            str((funding or {}).get("source") or f"{exchange}:funding_public_get"),
+            None if funding_ok else 0.0,
+            observed_value=funding_signal if funding_ok else None,
+            observed_at=(funding or {}).get("timestamp"),
+            instrument=(funding or {}).get("derivative_symbol"),
+            market_type=(funding or {}).get("market_type"),
+        ),
+        "oi_momentum": item(
+            observed(oi_momentum) if oi_momentum_ok else ("MISSING" if open_interest else unavailable),
+            str((open_interest or {}).get("source") or f"{exchange}:open_interest_public_get"),
+            None if oi_momentum_ok else 0.0,
+            observed_value=oi_momentum if oi_momentum_ok else None,
+            observed_at=(open_interest or {}).get("timestamp"),
+            instrument=(open_interest or {}).get("derivative_symbol"),
+            market_type=(open_interest or {}).get("market_type"),
+        ),
+    }
+
+
 def fetch_market_snapshot_with_fallback(
     symbol: str = "BTC/USDT",
     timeframe: str = "15m",
@@ -2314,7 +2433,7 @@ def fetch_market_snapshot_with_fallback(
     chain = fallback_chain or DEFAULT_FALLBACK_CHAIN
     last_error = None
 
-    for exchange_name in chain:
+    for exchange_index, exchange_name in enumerate(chain):
         try:
             logger.info(f"Fallback chain: trying {exchange_name} for {symbol}")
             connector = ExchangeConnector(
@@ -2430,6 +2549,14 @@ def fetch_market_snapshot_with_fallback(
                 "candle_ts": candle_ts,
                 "liquidity_quality": round(liquidity_quality, 4),
                 "exchange_used": exchange_name,
+                "feature_observations": build_feature_observations(
+                    exchange=exchange_name,
+                    ohlcv=ohlcv,
+                    orderbook=orderbook,
+                    funding=funding,
+                    open_interest=oi,
+                    fallback_used=exchange_index > 0,
+                ),
             }
 
             try:
@@ -2468,4 +2595,3 @@ if __name__ == "__main__":
         # Run mock tests only (default)
         mock_ok = _run_mock_tests()
         sys.exit(0 if mock_ok else 1)
-

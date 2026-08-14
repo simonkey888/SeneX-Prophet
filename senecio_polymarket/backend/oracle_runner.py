@@ -994,8 +994,18 @@ async def _route_to_portfolio(prediction: dict, market_data: dict) -> None:
     # the proposal is built, so the RiskKernel can REJECT/REDUCE based on
     # toxic flow and the MetaLabeler can soft-scale LONG confidence.
     ohlcv_rows = market_data.get("ohlcv") or []
-    funding_rate = (market_data.get("funding") or {}).get("rate", 0.0)
-    oi_change_24h_pct = (market_data.get("open_interest") or {}).get("oi_change_24h_pct", 0.0)
+    observations = market_data.get("feature_observations") or {}
+    funding_observation = observations.get("funding_signal") or {}
+    oi_observation = observations.get("oi_momentum") or {}
+    observed_statuses = {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
+    funding_rate = (
+        (market_data.get("funding") or {}).get("rate")
+        if funding_observation.get("status") in observed_statuses else None
+    )
+    oi_change_24h_pct = (
+        (market_data.get("open_interest") or {}).get("oi_change_24h_pct")
+        if oi_observation.get("status") in observed_statuses else None
+    )
 
     # ACT-XXVI: synthesize a thin L2 orderbook snapshot from the depth
     # numbers we have. The full L2 isn't available without re-fetching, but
