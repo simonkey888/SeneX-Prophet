@@ -21,6 +21,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ def _poly_snapshot_for_prediction() -> dict[str, Any]:
         return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
     if not isinstance(raw, dict):
         return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
+    observed_at = datetime.now(timezone.utc).isoformat()
     market = raw.get("market") if isinstance(raw.get("market"), dict) else {}
     up = raw.get("up") if isinstance(raw.get("up"), dict) else {}
     down = raw.get("down") if isinstance(raw.get("down"), dict) else {}
@@ -60,6 +62,7 @@ def _poly_snapshot_for_prediction() -> dict[str, Any]:
         "source": "POLYMARKET_PUBLIC",
         "version": "polymarket-btc-5m-v1",
         "status": raw.get("status"),
+        "observed_at": observed_at,
         "eligible_for_prediction": bool(raw.get("eligible_for_prediction")),
         "ws_connected": bool(raw.get("ws_connected")),
         "slug": market.get("slug"),
@@ -96,10 +99,12 @@ def _kalshi_snapshot_for_audit() -> dict[str, Any]:
         return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
     if not isinstance(raw, dict):
         return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
+    observed_at = datetime.now(timezone.utc).isoformat()
     return {
         "source": "KALSHI_PUBLIC_REST",
         "version": "kalshi-btc-15m-context-v1",
         "status": raw.get("status"),
+        "observed_at": observed_at,
         "directional_use": False,
         "purpose": "cross_venue_prediction_market_context",
         "horizon": "15m",
@@ -117,11 +122,13 @@ def _boros_snapshot_for_audit() -> dict[str, Any]:
         return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
     if not isinstance(raw, dict):
         return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
+    observed_at = datetime.now(timezone.utc).isoformat()
     markets = raw.get("markets") if isinstance(raw.get("markets"), list) else []
     return {
         "source": "BOROS_PUBLIC_API",
         "version": "boros-funding-context-v1",
         "status": raw.get("status"),
+        "observed_at": observed_at,
         "directional_use": False,
         "purpose": "funding_yield_context_only",
         "freshness_s": raw.get("freshness_s"),
@@ -154,6 +161,10 @@ def _decision_replay_snapshot(market: dict[str, Any], result: dict[str, Any]) ->
         "risk_state": {"drawdown": 0.0, "var": 0.0, "loss_streak": 0, "capital": 1000.0},
         "execution_state": copy.deepcopy(execution) if isinstance(execution, dict) else {},
         "learning_source_prediction_ids": list(learning.get("source_prediction_ids") or []) if isinstance(learning, dict) else [],
+        "learning_source_settlement_observation_epochs": (
+            copy.deepcopy(learning.get("source_settlement_observation_epochs") or [])
+            if isinstance(learning, dict) else []
+        ),
         "learning_source_evidence_hash": learning.get("source_evidence_hash") if isinstance(learning, dict) else None,
         "effective_weights_hash": learning.get("effective_weights_hash") if isinstance(learning, dict) else None,
         "code_hash": learning.get("code_hash") if isinstance(learning, dict) else None,

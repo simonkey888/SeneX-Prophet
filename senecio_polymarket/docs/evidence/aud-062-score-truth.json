@@ -1,0 +1,49 @@
+{
+  "authority_affects_production_decision": false,
+  "authority_state": "INSUFFICIENT_EVIDENCE",
+  "paper_live_lock": true,
+  "symbol_isolation": true,
+  "symbols": {
+    "BTCUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "authority_horizon_seconds": 3600,
+      "authority_win_rate_pct": 30.0,
+      "confidence_probability_semantics": "UNVALIDATED",
+      "confidence_semantics": "RAW_CONVICTION",
+      "independent_1h_rows": 10,
+      "live_capital_locked": true,
+      "observed_win_rate_diagnostic_only": true,
+      "observed_win_rate_pct": 44.44,
+      "orders_enabled": false,
+      "proof_qualified_rows_raw": 18,
+      "reasons": [
+        "INSUFFICIENT_INDEPENDENT_1H_SAMPLE"
+      ],
+      "requested_symbol": "BTCUSDT",
+      "score_status": "INSUFFICIENT_EVIDENCE",
+      "trade_mode": "PAPER"
+    },
+    "ETHUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "authority_horizon_seconds": 3600,
+      "authority_win_rate_pct": 45.45,
+      "confidence_probability_semantics": "UNVALIDATED",
+      "confidence_semantics": "RAW_CONVICTION",
+      "independent_1h_rows": 11,
+      "live_capital_locked": true,
+      "observed_win_rate_diagnostic_only": true,
+      "observed_win_rate_pct": 34.78,
+      "orders_enabled": false,
+      "proof_qualified_rows_raw": 23,
+      "reasons": [
+        "INSUFFICIENT_INDEPENDENT_1H_SAMPLE"
+      ],
+      "requested_symbol": "ETHUSDT",
+      "score_status": "INSUFFICIENT_EVIDENCE",
+      "trade_mode": "PAPER"
+    }
+  },
+  "version": "AUD-062-decision-causality-v2"
+}

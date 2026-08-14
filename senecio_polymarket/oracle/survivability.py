@@ -352,6 +352,7 @@ class SurvivabilityFunction:
             return {
                 "reduce_risk": True,
                 "reason": f"HIGH_RUIN_PROB: {ruin_prob:.2%} > 30% threshold",
+                "ruin_prob": round(ruin_prob, 4),
                 "survival_prob": survival["survival_prob"],
                 "recommended_size_factor": round(recommended_factor, 4),
             }
@@ -362,6 +363,7 @@ class SurvivabilityFunction:
             return {
                 "reduce_risk": True,
                 "reason": f"LOSS_CLUSTERING: persistence={persistence:.2f} > 0.5",
+                "ruin_prob": round(ruin_prob, 4),
                 "survival_prob": survival["survival_prob"],
                 "recommended_size_factor": round(recommended_factor, 4),
             }
@@ -372,6 +374,7 @@ class SurvivabilityFunction:
             return {
                 "reduce_risk": True,
                 "reason": f"MODERATE_RUIN_PROB: {ruin_prob:.2%} > 15% threshold",
+                "ruin_prob": round(ruin_prob, 4),
                 "survival_prob": survival["survival_prob"],
                 "recommended_size_factor": round(recommended_factor, 4),
             }
@@ -379,6 +382,7 @@ class SurvivabilityFunction:
         return {
             "reduce_risk": False,
             "reason": f"SURVIVABLE: ruin_prob={ruin_prob:.2%} < 15%",
+            "ruin_prob": round(ruin_prob, 4),
             "survival_prob": survival["survival_prob"],
             "recommended_size_factor": 1.0,
         }

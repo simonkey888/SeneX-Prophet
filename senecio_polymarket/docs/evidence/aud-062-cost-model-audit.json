@@ -1,0 +1,55 @@
+{
+  "duplicate_penalty_detection": {
+    "entropy_present_in_core_ev_and_anchor_ev": false,
+    "entropy_reintroduced_only_in_anchor_ev": true,
+    "fee_added_twice_in_same_branch": false,
+    "risk_affects_core_ev_and_final_size": true,
+    "slippage_present_in_both_competing_net_ev_branches": true,
+    "spread_added_to_ev_and_size": false,
+    "status": "NO_LITERAL_UNIT_DOUBLE_ADD; SEMANTIC_DUPLICATION_ACROSS_INCOMPATIBLE_BRANCHES"
+  },
+  "fallback_behavior": "fixed anchor slippage and default depth silently bind",
+  "fee_schedule": {
+    "maker_taker": "maker_claim_only",
+    "primary_source_provenance": null,
+    "source": "code_constant",
+    "value_per_side": 0.0002
+  },
+  "instrument_assumed": "NO_SINGLE_EXECUTABLE_INSTRUMENT",
+  "market_impact": {
+    "default_depth_usdt": 500000.0,
+    "orderbook_depth_used": false,
+    "source": "fixed 2bp plus position/default_depth heuristic"
+  },
+  "market_vs_limit_assumption": "contradictory: maker fee claim with modeled slippage and unspecified fill style",
+  "minimum_correction": "Choose and document one paper instrument; bind primary-source fee/depth provenance; serialize every anchor term; remove or reconcile the competing EV branch under a separately authorized behavior-change order.",
+  "observed_inputs": "OKX spot ticker/OHLCV/orderbook plus OKX USDT-swap funding/OI",
+  "paper_action_target": "unspecified maker-style crypto round trip",
+  "production_parameter_change": false,
+  "row_count": 348,
+  "slippage": {
+    "core": "max(1bp, half observed spot spread) then doubled round-trip",
+    "market_anchor": "independent fixed 2bp deduction",
+    "refresh": "per decision for core; never for anchor default"
+  },
+  "spread": {
+    "ev_inclusion": false,
+    "execution_size_only": true,
+    "full_or_half": "full spread for size adjustment",
+    "source": "OKX spot BBO"
+  },
+  "status": "CONCEPTUALLY_MISMATCHED_UNSUPPORTED_PARAMETERS",
+  "unit_contract": {
+    "anchor_slippage_bps": 2.0,
+    "anchor_slippage_decimal": 0.0002,
+    "basis_points": "1bp=0.0001 decimal return",
+    "commission_per_side_bps": 2.0,
+    "commission_per_side_decimal": 0.0002,
+    "commission_round_trip_bps": 4.0,
+    "commission_round_trip_decimal": 0.0004,
+    "decimal_return": "1.0=100%; 0.0001=1bp",
+    "normalization_status": "ARITHMETIC_UNITS_RECONCILED",
+    "percent": "1%=0.01 decimal return=100bp"
+  },
+  "version": "AUD-062-decision-causality-v2"
+}

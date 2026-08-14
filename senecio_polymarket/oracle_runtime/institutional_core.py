@@ -321,6 +321,13 @@ def replay_authoritative_learning(
     independent = independent_1h_cohort(available)
     proof_qualified_available_before_decision = len(independent)
     qualified = independent[-MAX_LEARNING_EXAMPLES:]
+    source_settlement_observation_epochs = [
+        {
+            "prediction_id": row.get("id"),
+            "observed_at_epoch": _settlement_observed_epoch(row),
+        }
+        for row in qualified
+    ]
 
     wins = sum(1 for row in qualified if row.get("outcome") == "WIN")
     losses = sum(1 for row in qualified if row.get("outcome") == "LOSS")
@@ -363,6 +370,11 @@ def replay_authoritative_learning(
         "wins": wins,
         "losses": losses,
         "source_prediction_ids": [row.get("id") for row in qualified],
+        # Persist the exact observation epochs consumed by ``_evidence_hash``.
+        # Some legacy rows have no durable settlement-observation timestamp and
+        # therefore use the bounded query snapshot marker.  Without this map a
+        # future replay can recover the IDs but not the original hash input.
+        "source_settlement_observation_epochs": source_settlement_observation_epochs,
         "source_evidence_hash": _evidence_hash(qualified),
         "decision_cutoff_epoch": cutoff_epoch,
         "learning_snapshot_cutoff_epoch": cutoff_epoch,

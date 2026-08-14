@@ -1,0 +1,12 @@
+{
+  "authority_affects_production_direction_or_ev": false,
+  "authority_feedback_loop": "NO",
+  "direct_authority_reject_n": 0,
+  "learning_feedback_decision_changes_in_paired_replay": 0,
+  "learning_feedback_rows": 17,
+  "learning_feedback_status": "BOUNDED_COMPONENT_EFFECT_WITH_INSUFFICIENT_CAUSAL_PROVENANCE",
+  "poor_score_to_lower_current_ev_loop": "NOT_DEMONSTRATED",
+  "score_authority_state": "INSUFFICIENT_EVIDENCE",
+  "separate_learning_feedback_present": true,
+  "version": "AUD-062-decision-causality-v2"
+}

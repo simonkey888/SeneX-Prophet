@@ -1,0 +1,18 @@
+{
+  "external_boros_horizon": "FUNDING_PRODUCT_MISMATCH",
+  "external_exact_horizon_match_rate": 0.0,
+  "external_kalshi_horizon": "15m_MISMATCH",
+  "external_polymarket_horizon": "5m_SUBWINDOW_NOT_SAME_TARGET",
+  "label_window_shift": "NOT_DETECTED_IN_PROOF_ROWS",
+  "lookahead_leakage": "NOT_DETECTED_IN_PROOF_ROWS",
+  "overlap_policy": "INDEPENDENT_NONOVERLAP_1H_FOR_AUTHORITY",
+  "primary_prediction_horizon": "1h",
+  "proof_rows_checked": 41,
+  "status": "PARTIAL_PROVENANCE_GAPS",
+  "version": "AUD-062-decision-causality-v2",
+  "violations": {},
+  "window_checks": {
+    "15m": 41,
+    "1h": 41
+  }
+}

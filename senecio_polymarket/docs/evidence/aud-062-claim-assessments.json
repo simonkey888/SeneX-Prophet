@@ -1,0 +1,30 @@
+{
+  "A": {
+    "evidence": "EV is first binding gate for 170 FLAT rows.",
+    "status": "CONFIRMED"
+  },
+  "B": {
+    "evidence": "159 rows have base_ev>0 and adjusted_ev<0.",
+    "status": "CONFIRMED"
+  },
+  "C": {
+    "evidence": "348 rows expose core ruin_prob=0 with a 50% survivability reason and no second machine field.",
+    "status": "CONFIRMED"
+  },
+  "D": {
+    "evidence": "All persisted Polymarket pressure components are 0 and external_applied=0.",
+    "status": "CONFIRMED"
+  },
+  "E": {
+    "evidence": "Masked rows: 2; missing inputs are excluded from agreement.",
+    "status": "CONFIRMED"
+  },
+  "F": {
+    "evidence": "Effective weights reproduce at N=10/11 while score authority is insufficient; component pairs=8.",
+    "status": "CONFIRMED"
+  },
+  "G": {
+    "evidence": "Polymarket 5m, Kalshi 15m, Boros funding, and SENEX 1h are mismatched targets; causal explanatory power across targets is not estimable.",
+    "status": "PARTIALLY_CONFIRMED"
+  }
+}

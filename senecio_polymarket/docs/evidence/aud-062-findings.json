@@ -1,0 +1,438 @@
+{
+  "dataset_provenance": {
+    "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
+    "RAW_OR_DERIVED": "DERIVED",
+    "ROW_COUNT": 9,
+    "SHA256": "7f5fb7b62a77c1b748635a0215b68096d1e1518038f25e90f14fe1b1e17988da",
+    "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
+    "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
+    "TRANSFORMATION": "MATERIAL_FINDING_CLASSIFICATION",
+    "VERSION": "AUD-062-dataset-provenance-v1"
+  },
+  "falsified_hypotheses_and_negative_findings": [
+    "Authority score status directly forces production FLAT",
+    "Missing OI momentum is fabricated as observed zero after restart",
+    "Polymarket/Kalshi/Boros directional pressure is active in production",
+    "Current risk-state ruin probability itself is 50%",
+    "A long/short sign inversion explains the reconstructible EV rows"
+  ],
+  "finding_count": 9,
+  "findings": [
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle/institutional_core.py:750-806",
+        "senecio_polymarket/oracle/market_ev.py:280-324"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "pipeline.step4_ev.adjusted_ev",
+        "tradeable",
+        "prediction"
+      ],
+      "CAUSAL_IMPACT": "The min() selects an anchor built from raw conviction, single-candle volatility, entropy, and default costs; it can turn core-positive EV into negative adjusted EV and FLAT.",
+      "EVIDENCE": {
+        "core_tradeable_anchor_rejected_n": 175,
+        "market_anchor_binding_n": 317,
+        "positive_base_to_negative_n": 159
+      },
+      "FINDING_ID": "AUD062-F001",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Under a separate behavior-change order, select one instrument-bound EV formula or fully reconcile/serialize the anchor terms.",
+      "REGRESSION_GATE": "Assert no unexplained residual and no alternate branch with undocumented probability/cost semantics.",
+      "REPRODUCTION": "python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output <dir>",
+      "SAFETY_IMPACT": "Over-abstention, not increased trading.",
+      "SEVERITY": "HIGH",
+      "STATISTICAL_IMPACT": "Observed directional coverage is materially changed by an unsupported alternate model.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "A hidden, semantically different market-EV branch dominates abstention",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Tests assert market EV does not exceed model EV but do not reconcile the two incompatible formulas or serialize the bridge."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle/institutional_core.py:593-664",
+        "senecio_polymarket/oracle/survivability.py:330-383"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "step3_risk.ruin_prob",
+        "step3_risk.surv_reason"
+      ],
+      "CANDIDATE_REMEDIATION": {
+        "decision_semantics_changed": false,
+        "historical_rows_unchanged": true,
+        "new_machine_field": "pipeline.step3_risk.survivability_ruin_prob",
+        "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+      },
+      "CAUSAL_IMPACT": "Distinct risk models are serialized as if one numeric field explained the human reason.",
+      "EVIDENCE": {
+        "contradictory_rows": 348
+      },
+      "FINDING_ID": "AUD062-F002",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Serialize both named ruin probabilities and generate reason from the matching field.",
+      "REGRESSION_GATE": "Machine/reason same-authority invariant.",
+      "REPRODUCTION": "test_aud_062.RiskSemanticsTests",
+      "SAFETY_IMPACT": "Can cause false risk interpretation; current survivability factor reduces size only.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "The 50% value is an insufficient-data prior, not the core ruin estimate.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "Persisted risk state says ruin_prob=0 while its human reason says HIGH_RUIN_PROB=50%",
+      "WHY_EXISTING_TESTS_MISSED_IT": "No invariant binds reason text to a named machine field."
+    },
+    {
+      "AFFECTED_PATHS": [
+        ".github/workflows/oracle.yml:10-14,110-120",
+        "GitHub branch settings",
+        "Northflank main tracking"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "production lineage"
+      ],
+      "CAUSAL_IMPACT": "A direct/UI/workflow/app write to main can become a Northflank deployment without the intended audit gate.",
+      "EVIDENCE": {
+        "paths": [
+          "direct push to unprotected main",
+          "force push unless separately denied at actor/repository level",
+          "GitHub UI edit committing to main",
+          "manual oracle.yml workflow_dispatch with contents:write and git push",
+          "merge without required checks/reviews",
+          "stale or unaudited PR merge",
+          "bot/app repository-content write followed by automatic Northflank build"
+        ],
+        "protected": false,
+        "rulesets": 0
+      },
+      "FINDING_ID": "AUD062-F003",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Apply the exact guardrails listed in governance evidence.",
+      "REGRESSION_GATE": "Protected main + required checks + no contents-write direct-push workflow.",
+      "REPRODUCTION": "GET /repos/simonkey888/SeneX-Prophet/branches/main and inspect oracle.yml",
+      "SAFETY_IMPACT": "Production trust-boundary bypass.",
+      "SEVERITY": "HIGH",
+      "STATISTICAL_IMPACT": "Unaudited code/evidence can replace the reviewed lineage.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "Unprotected main plus automatic Northflank CD permits unaudited repository-write-to-production paths",
+      "WHY_EXISTING_TESTS_MISSED_IT": "CI checks code, not repository settings or auto-CD trust boundaries."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle_runtime/institutional_core.py:129-178,209-374",
+        "senecio_polymarket/oracle_runtime/predict_only.py:48-165"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "source_evidence_hash",
+        "feature_availability_v1.observed_at",
+        "decision_replay_v1"
+      ],
+      "CANDIDATE_REMEDIATION": {
+        "external": {
+          "decision_semantics_changed": false,
+          "external_directional_activation": false,
+          "new_field": "external_markets_v1.<source>.observed_at",
+          "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+        },
+        "features": {
+          "combined_orderflow_observed_at": "max(ohlcv_timestamp,orderbook_timestamp)",
+          "decision_semantics_changed": false,
+          "historical_rows_unchanged": true,
+          "ohlcv_features_observed_at": "last_candle_timestamp",
+          "orderbook_features_observed_at": "orderbook_source_timestamp",
+          "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+        },
+        "learning": {
+          "decision_semantics_changed": false,
+          "historical_rows_unchanged": true,
+          "new_field": "decision_replay_v1.learning_source_settlement_observation_epochs",
+          "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+        }
+      },
+      "CAUSAL_IMPACT": "Exact weights/actions can be replayed from IDs, but the hashed evidence snapshot cannot be independently reconstructed.",
+      "EVIDENCE": {
+        "component_pairs": 8,
+        "missing_timestamp_counts": {
+          "BTCUSDT|bidask_imbalance": 174,
+          "BTCUSDT|orderflow": 174,
+          "BTCUSDT|price_momentum": 172,
+          "BTCUSDT|volume_delta": 174,
+          "ETHUSDT|bidask_imbalance": 174,
+          "ETHUSDT|orderflow": 174,
+          "ETHUSDT|price_momentum": 173,
+          "ETHUSDT|volume_delta": 174
+        },
+        "source_hash_matches": 0
+      },
+      "FINDING_ID": "AUD062-F004",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+      "MINIMUM_CORRECTION": "Persist the query observation epoch and per-feature/external snapshot timestamps in decision_replay_v1.",
+      "REGRESSION_GATE": "Offline source_evidence_hash equals persisted hash without invented fields.",
+      "REPRODUCTION": "test_aud_062.LearningProvenanceTests and FeatureTruthTests",
+      "SAFETY_IMPACT": "No direct trading activation; auditability gap.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "Full frozen-vs-learned A/B fails closed as insufficient causal provenance.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "Decision replay omits the exact query-observation epoch and several feature/external snapshot timestamps",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Tests verify deterministic hashes in-memory, not reconstruction from persisted rows."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle/predict_only.py:64,371-383",
+        "senecio_polymarket/oracle/institutional_core.py:722-735",
+        "senecio_polymarket/oracle/market_ev.py:57-78"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "estimated_cost",
+        "adjusted_ev",
+        "tradeable"
+      ],
+      "CAUSAL_IMPACT": "Fixed defaults and mixed spot/swap semantics can bind EV without matching an executable paper instrument.",
+      "EVIDENCE": {
+        "duplicate_penalty_detection": {
+          "entropy_present_in_core_ev_and_anchor_ev": false,
+          "entropy_reintroduced_only_in_anchor_ev": true,
+          "fee_added_twice_in_same_branch": false,
+          "risk_affects_core_ev_and_final_size": true,
+          "slippage_present_in_both_competing_net_ev_branches": true,
+          "spread_added_to_ev_and_size": false,
+          "status": "NO_LITERAL_UNIT_DOUBLE_ADD; SEMANTIC_DUPLICATION_ACROSS_INCOMPATIBLE_BRANCHES"
+        },
+        "fallback_behavior": "fixed anchor slippage and default depth silently bind",
+        "fee_schedule": {
+          "maker_taker": "maker_claim_only",
+          "primary_source_provenance": null,
+          "source": "code_constant",
+          "value_per_side": 0.0002
+        },
+        "instrument_assumed": "NO_SINGLE_EXECUTABLE_INSTRUMENT",
+        "market_impact": {
+          "default_depth_usdt": 500000.0,
+          "orderbook_depth_used": false,
+          "source": "fixed 2bp plus position/default_depth heuristic"
+        },
+        "market_vs_limit_assumption": "contradictory: maker fee claim with modeled slippage and unspecified fill style",
+        "minimum_correction": "Choose and document one paper instrument; bind primary-source fee/depth provenance; serialize every anchor term; remove or reconcile the competing EV branch under a separately authorized behavior-change order.",
+        "observed_inputs": "OKX spot ticker/OHLCV/orderbook plus OKX USDT-swap funding/OI",
+        "paper_action_target": "unspecified maker-style crypto round trip",
+        "production_parameter_change": false,
+        "row_count": 348,
+        "slippage": {
+          "core": "max(1bp, half observed spot spread) then doubled round-trip",
+          "market_anchor": "independent fixed 2bp deduction",
+          "refresh": "per decision for core; never for anchor default"
+        },
+        "spread": {
+          "ev_inclusion": false,
+          "execution_size_only": true,
+          "full_or_half": "full spread for size adjustment",
+          "source": "OKX spot BBO"
+        },
+        "status": "CONCEPTUALLY_MISMATCHED_UNSUPPORTED_PARAMETERS",
+        "unit_contract": {
+          "anchor_slippage_bps": 2.0,
+          "anchor_slippage_decimal": 0.0002,
+          "basis_points": "1bp=0.0001 decimal return",
+          "commission_per_side_bps": 2.0,
+          "commission_per_side_decimal": 0.0002,
+          "commission_round_trip_bps": 4.0,
+          "commission_round_trip_decimal": 0.0004,
+          "decimal_return": "1.0=100%; 0.0001=1bp",
+          "normalization_status": "ARITHMETIC_UNITS_RECONCILED",
+          "percent": "1%=0.01 decimal return=100bp"
+        },
+        "version": "AUD-062-decision-causality-v2"
+      },
+      "FINDING_ID": "AUD062-F005",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Instrument-bind fees, spread, slippage, and depth in a separately authorized order.",
+      "REGRESSION_GATE": "Cost provenance and unit contract fixture.",
+      "REPRODUCTION": "test_aud_062.EVFormulaTests",
+      "SAFETY_IMPACT": "Conservative but potentially false abstention.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "EV labels cannot be interpreted as instrument-realized expectancy.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "The paper cost model has no single executable instrument or primary fee/depth provenance",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Unit tests validate arithmetic monotonicity, not primary-source parameter provenance."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle/institutional_core.py:500-548",
+        "senecio_polymarket/oracle_runtime/institutional_core.py:605-620"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "step2_features.up_prob",
+        "step2_features.down_prob"
+      ],
+      "CAUSAL_IMPACT": "A displayed or reported '96% UP' can be mistaken for P(correct), though it is sigmoid(total_pressure*5).",
+      "EVIDENCE": {
+        "audit_confidence_semantics_rows": 152,
+        "fields": {
+          "confidence": {
+            "calibrated_probability": false,
+            "class": "RAW_CONVICTION",
+            "source": "step2.conviction"
+          },
+          "down_prob": {
+            "calibrated_probability": false,
+            "class": "HEURISTIC_TRANSFORM",
+            "formula": "sigmoid(-total_pressure*5)"
+          },
+          "kalshi.yes_probability": {
+            "calibrated_probability": false,
+            "class": "MARKET_IMPLIED_PROBABILITY"
+          },
+          "observed_win_rate_pct": {
+            "class": "EMPIRICAL_WIN_RATE",
+            "diagnostic_only": true
+          },
+          "polymarket.up_probability": {
+            "calibrated_probability": false,
+            "class": "MARKET_IMPLIED_PROBABILITY"
+          },
+          "raw_conviction": {
+            "calibrated_probability": false,
+            "class": "RAW_CONVICTION"
+          },
+          "score.authoritative_score_pct": {
+            "available": false,
+            "class": "CALIBRATED_PROBABILITY"
+          },
+          "up_prob": {
+            "calibrated_probability": false,
+            "class": "HEURISTIC_TRANSFORM",
+            "formula": "sigmoid(total_pressure*5)"
+          }
+        },
+        "max_observed_up_prob": 0.99956,
+        "probability_like_mislabel_present": true,
+        "reported_96pct_up_interpretation": "HEURISTIC_TRANSFORM_NOT_P_CORRECT",
+        "version": "AUD-062-decision-causality-v2"
+      },
+      "FINDING_ID": "AUD062-F006",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Rename to heuristic_up_score/down_score or attach explicit semantics at every API/UI boundary.",
+      "REGRESSION_GATE": "Probability-like field semantic registry.",
+      "REPRODUCTION": "test_aud_062.ConfidenceSemanticsTests",
+      "SAFETY_IMPACT": "False confidence semantics.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "No OOS calibration supports probability interpretation.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "up_prob/down_prob are probability-like names for an uncalibrated heuristic transform",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Confidence is labeled, but up_prob/down_prob are not."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle_runtime/institutional_core.py:298-439",
+        "senecio_polymarket/oracle/institutional_core.py:1001-1030"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "learning_state_v1",
+        "effective_weights",
+        "final_size"
+      ],
+      "CAUSAL_IMPACT": "The same 10/11 independent rows affect pressures/EV through weights and size through calibration; score authority remains insufficient.",
+      "EVIDENCE": {
+        "decision_changed_n": 0,
+        "paired_n": 8,
+        "status": "INSUFFICIENT_CAUSAL_PROVENANCE"
+      },
+      "FINDING_ID": "AUD062-F007",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+      "MINIMUM_CORRECTION": "Prospectively preregister learning authority and separate/justify the calibration cohort before changing behavior.",
+      "REGRESSION_GATE": "Learning-authority contract and independent cohort accounting.",
+      "REPRODUCTION": "test_aud_062.LearningProvenanceTests",
+      "SAFETY_IMPACT": "Bounded +/-25% and PAPER-only; no live activation.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "No independent evidence justifies treating N=10/11 as production-learning authority.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "Small-N evidence mutates weights and also feeds size calibration before score authority exists",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Tests enforce the configured N=10 and drift bound but do not compare it with reporting authority or double-use."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/oracle/institutional_core.py:974-978"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "action_vector.reason",
+        "decision_waterfall_v1.raw_reason"
+      ],
+      "CANDIDATE_REMEDIATION": {
+        "decision_semantics_changed": false,
+        "new_reason_prefix": "ev_below_dynamic_min",
+        "serialized_terms": [
+          "adjusted_ev",
+          "dynamic_min_ev"
+        ],
+        "threshold_changed": false
+      },
+      "CAUSAL_IMPACT": "The decision remains FLAT, but its machine/human reason falsely states negative EV instead of positive EV below the configured threshold.",
+      "EVIDENCE": {
+        "affected_prediction_ids": [
+          9,
+          35,
+          65,
+          78,
+          89,
+          94,
+          164,
+          174,
+          182,
+          203,
+          225,
+          235,
+          242,
+          250,
+          251,
+          255,
+          266,
+          285,
+          291,
+          306,
+          333,
+          336
+        ],
+        "positive_ev_mislabeled_n": 22
+      },
+      "FINDING_ID": "AUD062-F008",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "NOT_PROVEN",
+      "MINIMUM_CORRECTION": "Serialize adjusted_ev and dynamic_min_ev under an ev_below_dynamic_min reason without changing the gate.",
+      "REGRESSION_GATE": "Reason sign/threshold coherence plus decision-invariance fixture.",
+      "REPRODUCTION": "test_aud_062.ActionReasonSemanticsTests",
+      "SAFETY_IMPACT": "Incorrect operator diagnosis can motivate the wrong remediation.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "Sign and threshold failure are conflated in abstention attribution.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "The persisted negative_ev reason mislabels positive EV that only fails the dynamic minimum",
+      "WHY_EXISTING_TESTS_MISSED_IT": "Tests asserted HOLD behavior but not reason-to-numeric-field coherence."
+    },
+    {
+      "AFFECTED_PATHS": [
+        "senecio_polymarket/backend/research/aud062_forensics.py:external_shadow_ledger"
+      ],
+      "AFFECTED_RUNTIME_FIELDS": [
+        "external_markets_v1.polymarket",
+        "AUD-062 shadow evidence"
+      ],
+      "CAUSAL_IMPACT": "A snapshot observed inside the same 5m market window is compared with that market's own settlement while SENEX targets 1h; it cannot establish incremental edge.",
+      "EVIDENCE": {
+        "exact_snapshot_timestamp_coverage": 0.0,
+        "horizon_match_rate": 0.0,
+        "resolved_rows": 166,
+        "same_market_resolved_label_agreement": 0.813253
+      },
+      "FINDING_ID": "AUD062-F009",
+      "FIRST_BAD_OR_RELEVANT_COMMIT": "c17f27800f614e9afc69862484a17576f376d39f",
+      "MINIMUM_CORRECTION": "Fail closed as NOT_ESTIMABLE and call the metric same-market resolved-label agreement.",
+      "REGRESSION_GATE": "No external accuracy/value-add claim without aligned OOS labels and exact observation times.",
+      "REPRODUCTION": "test_aud_062.ExternalShadowTests",
+      "SAFETY_IMPACT": "Could otherwise be used to justify prohibited directional activation.",
+      "SEVERITY": "MEDIUM",
+      "STATISTICAL_IMPACT": "No causally aligned OOS label, exact snapshot timestamp, independent sampling policy, or preregistered blend exists.",
+      "STATUS": "CONFIRMED",
+      "TITLE": "The 5m Polymarket resolved-label agreement is not a causal predictive-accuracy or value-add estimate",
+      "WHY_EXISTING_TESTS_MISSED_IT": "The first harness named the descriptive agreement metric directional_accuracy despite caveats."
+    }
+  ],
+  "material_finding_count": 9,
+  "severity_counts": {
+    "HIGH": 2,
+    "MEDIUM": 7
+  },
+  "version": "AUD-062-decision-causality-v2"
+}

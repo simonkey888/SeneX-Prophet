@@ -1,0 +1,40 @@
+{
+  "affected_prediction_ids": [
+    9,
+    35,
+    65,
+    78,
+    89,
+    94,
+    164,
+    174,
+    182,
+    203,
+    225,
+    235,
+    242,
+    250,
+    251,
+    255,
+    266,
+    285,
+    291,
+    306,
+    333,
+    336
+  ],
+  "candidate_remediation": {
+    "decision_semantics_changed": false,
+    "new_reason_prefix": "ev_below_dynamic_min",
+    "serialized_terms": [
+      "adjusted_ev",
+      "dynamic_min_ev"
+    ],
+    "threshold_changed": false
+  },
+  "historical_reason_contract": "NEGATIVE_EV_LABEL_CONFLATES_SIGN_WITH_DYNAMIC_THRESHOLD_FAILURE",
+  "negative_ev_reason_rows": 170,
+  "observed_rows": 348,
+  "positive_adjusted_ev_mislabeled_negative_n": 22,
+  "version": "AUD-062-decision-causality-v2"
+}

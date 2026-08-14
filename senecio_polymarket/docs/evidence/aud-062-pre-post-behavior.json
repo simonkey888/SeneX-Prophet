@@ -1,0 +1,68 @@
+{
+  "cohorts": {
+    "POST_AUD061": {
+      "binding_gates": {
+        "EV_NEGATIVE": 7
+      },
+      "feature_availability_schema_n": 8,
+      "flat_n": 7,
+      "flat_rate": 0.875,
+      "learning_n": [
+        10,
+        11
+      ],
+      "long_n": 0,
+      "mean_adjusted_ev_proxy": -9.659e-05,
+      "mean_aggregate_pressure": 0.35472413,
+      "mean_raw_conviction": 0.50450775,
+      "n": 8,
+      "short_n": 1
+    },
+    "PRE_AUD061": {
+      "binding_gates": {
+        "EV_BELOW_DYNAMIC_MIN": 22,
+        "EV_NEGATIVE": 141,
+        "NO_DIRECTIONAL_SIGNAL": 16,
+        "OTHER_EXPLICIT": 39,
+        "REGIME_REJECT": 28
+      },
+      "feature_availability_schema_n": 0,
+      "flat_n": 246,
+      "flat_rate": 0.723529,
+      "learning_n": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "long_n": 47,
+      "mean_adjusted_ev_proxy": 1.03e-05,
+      "mean_aggregate_pressure": -0.04805939,
+      "mean_raw_conviction": 0.45749272,
+      "n": 340,
+      "short_n": 47
+    }
+  },
+  "normalization": "COMMON_EXECUTABLE_PIPELINE_FIELDS_ONLY",
+  "version": "AUD-062-decision-causality-v2"
+}

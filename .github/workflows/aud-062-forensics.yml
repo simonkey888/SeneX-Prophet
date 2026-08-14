@@ -1,0 +1,159 @@
+name: AUD-062 Decision Causality Forensics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aud-062-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  forensic-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Exact base head tree and scope gate
+        shell: bash
+        env:
+          EXPECTED_BASE: 49c5f0a69609c005da80e48b585e91d8582a5ac6
+          EXPECTED_TREE: 3e323bcc2795f97b29242883d3bf2a015c092ccd
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_BASE" = "$EXPECTED_BASE"
+          test "$(git rev-parse "$EXPECTED_BASE^{tree}")" = "$EXPECTED_TREE"
+          test "$(git rev-parse HEAD)" = "$EVENT_HEAD"
+          test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
+          git diff --name-only "$EXPECTED_BASE"...HEAD > /tmp/aud062-changed-paths.txt
+          test -s /tmp/aud062-changed-paths.txt
+          if grep -Eiv '^(.github/workflows/aud-062-forensics\.yml|senecio_polymarket/(backend/research/aud062_forensics\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/test_aud_062\.py|docs/AUD-062-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
+            echo 'AUD-062 scope violation'
+            exit 1
+          fi
+          if grep -Ei 'runtime.?017|RUNTIME017' /tmp/aud062-changed-paths.txt; then
+            echo 'RUNTIME017 path touched'
+            exit 1
+          fi
+          git diff --exit-code "$EXPECTED_BASE" -- \
+            senecio_polymarket/oracle_runtime/institutional_core_real.py \
+            senecio_polymarket/backend/main_real.py \
+            senecio_polymarket/backend/oracle_runner.py \
+            senecio_polymarket/backend/portfolio \
+            senecio_polymarket/start_single_authority.sh \
+            senecio_polymarket/Dockerfile Dockerfile
+          if git diff --unified=0 "$EXPECTED_BASE"...HEAD -- \
+            senecio_polymarket/oracle/institutional_core.py \
+            senecio_polymarket/oracle/survivability.py \
+            senecio_polymarket/oracle/exchange_connector.py \
+            senecio_polymarket/oracle_runtime/institutional_core.py \
+            senecio_polymarket/oracle_runtime/predict_only.py \
+            | grep -P '^[+-](?![+-]).*(min_ev_to_trade|MIN_LEARNING_EXAMPLES|MAX_LEARNING_EXAMPLES|MAX_RELATIVE_DRIFT|base_weights|effective_weights)\s*='; then
+            echo 'threshold or weight tuning detected'
+            exit 1
+          fi
+          if git diff --unified=0 "$EXPECTED_BASE"...HEAD -- \
+            senecio_polymarket/oracle_runtime/predict_only.py \
+            | grep -P '^\+(?!\+).*(directional_use\s*[:=]\s*True|external_applied\s*[:=]\s*1)'; then
+            echo 'external directional activation detected'
+            exit 1
+          fi
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: senecio_polymarket/requirements.txt
+
+      - name: Install repository dependencies
+        run: |
+          pip install -r senecio_polymarket/requirements.txt
+          pip install detect-secrets==1.5.0
+
+      - name: Compile full Python tree
+        working-directory: senecio_polymarket
+        run: python -m compileall -q .
+
+      - name: AUD-062 deterministic regression and forensic tests
+        working-directory: senecio_polymarket
+        run: python -m unittest tests.test_aud_062 -v 2>&1 | tee /tmp/aud062-tests.log
+
+      - name: Full repository regression with nonzero discovery proof
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/aud062-full-regression.log
+          grep -Eq 'Ran [1-9][0-9]* tests' /tmp/aud062-full-regression.log
+          grep -q '^OK$' /tmp/aud062-full-regression.log
+
+      - name: Deterministic artifact rerun and tracked-evidence proof
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          left="$(mktemp -d)"
+          right="$(mktemp -d)"
+          python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$left"
+          python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$right"
+          diff -ru "$left" "$right"
+          for tracked in docs/evidence/aud-062-*; do
+            name="$(basename "$tracked")"
+            cmp "$tracked" "$left/$name"
+          done
+          sha256sum "$left"/aud-062-* > /tmp/aud062-artifact-sha256.txt
+
+      - name: No secret no mutation and safety-lock gates
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('docs/evidence')
+          manifest = json.loads((root / 'aud-062-manifest.json').read_text())
+          assert manifest['production_mutations'] == 0
+          assert manifest['northflank_mutations'] == 0
+          assert manifest['database_mutations'] == 0
+          assert manifest['runtime017_mutations'] == 0
+          assert manifest['merge'] is False and manifest['deploy'] is False
+          assert manifest['threshold_changes'] is False
+          assert manifest['weight_changes'] is False
+          assert manifest['external_directional_activation'] is False
+          assert manifest['production_decision_semantics_changed'] is False
+          external = json.loads((root / 'aud-062-external-shadow-ledger.json').read_text())
+          assert all(row['external_applied'] == 0 for row in external['ledger'])
+          assert all(row['external_applied'] == 0 for row in external['kalshi_ledger'])
+          assert all(row['external_applied'] == 0 for row in external['boros_ledger'])
+          scan = json.loads((root / 'aud-062-publication-sanitization.json').read_text())
+          assert scan['PUBLICATION_SECRET_SCAN'] == 'PASS'
+          assert scan['PUBLICATION_PII_REVIEW'] == 'PASS'
+          assert scan['PUBLICATION_SCOPE_REVIEW'] == 'PASS'
+          assert scan['PUBLICATION_NONPUBLIC_DATA'] == 'NONE'
+          assert scan['PUBLICATION_AUTH_HEADERS'] == 'NONE'
+          assert scan['PUBLICATION_CREDENTIALS'] == 'NONE'
+          assert all(item['confirmed_secret_count'] == 0 for item in scan['scanners'])
+          PY
+
+      - name: Upload exact-head forensic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: aud-062-${{ github.event.pull_request.head.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            senecio_polymarket/docs/AUD-062-REPORT.md
+            senecio_polymarket/docs/evidence/aud-062-*
+            senecio_polymarket/docs/evidence/aud062-public-inputs.json.gz

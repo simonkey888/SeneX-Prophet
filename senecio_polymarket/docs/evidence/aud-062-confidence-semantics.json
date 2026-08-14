@@ -1,0 +1,44 @@
+{
+  "audit_confidence_semantics_rows": 152,
+  "fields": {
+    "confidence": {
+      "calibrated_probability": false,
+      "class": "RAW_CONVICTION",
+      "source": "step2.conviction"
+    },
+    "down_prob": {
+      "calibrated_probability": false,
+      "class": "HEURISTIC_TRANSFORM",
+      "formula": "sigmoid(-total_pressure*5)"
+    },
+    "kalshi.yes_probability": {
+      "calibrated_probability": false,
+      "class": "MARKET_IMPLIED_PROBABILITY"
+    },
+    "observed_win_rate_pct": {
+      "class": "EMPIRICAL_WIN_RATE",
+      "diagnostic_only": true
+    },
+    "polymarket.up_probability": {
+      "calibrated_probability": false,
+      "class": "MARKET_IMPLIED_PROBABILITY"
+    },
+    "raw_conviction": {
+      "calibrated_probability": false,
+      "class": "RAW_CONVICTION"
+    },
+    "score.authoritative_score_pct": {
+      "available": false,
+      "class": "CALIBRATED_PROBABILITY"
+    },
+    "up_prob": {
+      "calibrated_probability": false,
+      "class": "HEURISTIC_TRANSFORM",
+      "formula": "sigmoid(total_pressure*5)"
+    }
+  },
+  "max_observed_up_prob": 0.99956,
+  "probability_like_mislabel_present": true,
+  "reported_96pct_up_interpretation": "HEURISTIC_TRANSFORM_NOT_P_CORRECT",
+  "version": "AUD-062-decision-causality-v2"
+}

@@ -1,0 +1,133 @@
+{
+  "candidate_remediation": {
+    "combined_orderflow_observed_at": "max(ohlcv_timestamp,orderbook_timestamp)",
+    "decision_semantics_changed": false,
+    "historical_rows_unchanged": true,
+    "ohlcv_features_observed_at": "last_candle_timestamp",
+    "orderbook_features_observed_at": "orderbook_source_timestamp",
+    "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+  },
+  "classification_counts": {
+    "LEGACY|BTCUSDT|bidask_imbalance": {
+      "REAL_NONZERO": 170
+    },
+    "LEGACY|BTCUSDT|funding_signal": {
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+    },
+    "LEGACY|BTCUSDT|oi_momentum": {
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+    },
+    "LEGACY|BTCUSDT|orderflow": {
+      "REAL_NONZERO": 170
+    },
+    "LEGACY|BTCUSDT|price_momentum": {
+      "REAL_NONZERO": 168,
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 2
+    },
+    "LEGACY|BTCUSDT|volume_delta": {
+      "REAL_NONZERO": 170
+    },
+    "LEGACY|ETHUSDT|bidask_imbalance": {
+      "REAL_NONZERO": 170
+    },
+    "LEGACY|ETHUSDT|funding_signal": {
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+    },
+    "LEGACY|ETHUSDT|oi_momentum": {
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+    },
+    "LEGACY|ETHUSDT|orderflow": {
+      "REAL_NONZERO": 170
+    },
+    "LEGACY|ETHUSDT|price_momentum": {
+      "REAL_NONZERO": 169,
+      "UNKNOWN_LEGACY_ZERO_CONFLATED": 1
+    },
+    "LEGACY|ETHUSDT|volume_delta": {
+      "REAL_NONZERO": 170
+    },
+    "POST_AUD061|BTCUSDT|bidask_imbalance": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|BTCUSDT|funding_signal": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|BTCUSDT|oi_momentum": {
+      "MISSING": 1,
+      "REAL_NONZERO": 3
+    },
+    "POST_AUD061|BTCUSDT|orderflow": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|BTCUSDT|price_momentum": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|BTCUSDT|volume_delta": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|ETHUSDT|bidask_imbalance": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|ETHUSDT|funding_signal": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|ETHUSDT|oi_momentum": {
+      "MISSING": 1,
+      "REAL_NONZERO": 3
+    },
+    "POST_AUD061|ETHUSDT|orderflow": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|ETHUSDT|price_momentum": {
+      "REAL_NONZERO": 4
+    },
+    "POST_AUD061|ETHUSDT|volume_delta": {
+      "REAL_NONZERO": 4
+    }
+  },
+  "dataset_provenance": {
+    "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
+    "RAW_OR_DERIVED": "DERIVED",
+    "ROW_COUNT": 2,
+    "SHA256": "d3b68b9e42848d07d3ee3c98458735ef5a0c4787f37f8aeebbf69ed64477b2dd",
+    "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
+    "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
+    "TRANSFORMATION": "MISSING_INPUT_MASK_EXTRACTION",
+    "VERSION": "AUD-062-dataset-provenance-v1"
+  },
+  "masked_rows": [
+    {
+      "first_binding_gate": "EV_NEGATIVE",
+      "masked_features": [
+        "oi_momentum"
+      ],
+      "prediction_id": 342,
+      "symbol": "BTCUSDT"
+    },
+    {
+      "first_binding_gate": "EV_NEGATIVE",
+      "masked_features": [
+        "oi_momentum"
+      ],
+      "prediction_id": 341,
+      "symbol": "ETHUSDT"
+    }
+  ],
+  "missing_excluded_from_agreement_denominator": true,
+  "missing_feature_observation_timestamp_counts": {
+    "BTCUSDT|bidask_imbalance": 174,
+    "BTCUSDT|orderflow": 174,
+    "BTCUSDT|price_momentum": 172,
+    "BTCUSDT|volume_delta": 174,
+    "ETHUSDT|bidask_imbalance": 174,
+    "ETHUSDT|orderflow": 174,
+    "ETHUSDT|price_momentum": 173,
+    "ETHUSDT|volume_delta": 174
+  },
+  "missing_is_not_real_zero": true,
+  "missing_material_counterfactual": "NOT_ESTIMABLE_UNKNOWN_TRUE_VALUES",
+  "provenance_complete": false,
+  "provenance_cutoff_violations": [],
+  "source_error_is_not_real_zero": true,
+  "version": "AUD-062-decision-causality-v2"
+}

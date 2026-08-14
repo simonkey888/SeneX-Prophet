@@ -2382,10 +2382,13 @@ def build_feature_observations(
 
     price_momentum = 0.0
     volume_delta = 0.0
+    candle_observed_at = None
     if candles_ok:
         price_momentum = (float(ohlcv[-1][4]) - float(ohlcv[-2][4])) / float(ohlcv[-2][4])
         volume_delta = (float(ohlcv[-1][5]) - float(ohlcv[-2][5])) / float(ohlcv[-2][5])
+        candle_observed_at = int(ohlcv[-1][0])
     imbalance = 0.0
+    book_observed_at = (orderbook or {}).get("timestamp")
     if book_ok:
         bid = float((orderbook or {}).get("bid_depth_usdt") or (orderbook or {}).get("bid_depth") or 0)
         ask = float((orderbook or {}).get("ask_depth_usdt") or (orderbook or {}).get("ask_depth") or 0)
@@ -2394,10 +2397,30 @@ def build_feature_observations(
     oi_momentum = float((open_interest or {}).get("oi_change_24h_pct") or 0.0) / 100.0
     unavailable = "SOURCE_ERROR" if derivative_capable else "NOT_APPLICABLE"
     return {
-        "price_momentum": item(observed(price_momentum) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
-        "volume_delta": item(observed(volume_delta) if candles_ok else "MISSING", f"{exchange}:ohlcv", None if candles_ok else 0.0),
-        "bidask_imbalance": item(observed(imbalance) if book_ok else "MISSING", f"{exchange}:orderbook", None if book_ok else 0.0),
-        "orderflow": item(observed(imbalance * (1.0 + abs(volume_delta))) if book_ok and candles_ok else "MISSING", f"{exchange}:orderbook+ohlcv", None if book_ok and candles_ok else 0.0),
+        "price_momentum": item(
+            observed(price_momentum) if candles_ok else "MISSING",
+            f"{exchange}:ohlcv", None if candles_ok else 0.0,
+            observed_at=candle_observed_at,
+        ),
+        "volume_delta": item(
+            observed(volume_delta) if candles_ok else "MISSING",
+            f"{exchange}:ohlcv", None if candles_ok else 0.0,
+            observed_at=candle_observed_at,
+        ),
+        "bidask_imbalance": item(
+            observed(imbalance) if book_ok else "MISSING",
+            f"{exchange}:orderbook", None if book_ok else 0.0,
+            observed_at=book_observed_at if book_ok else None,
+        ),
+        "orderflow": item(
+            observed(imbalance * (1.0 + abs(volume_delta))) if book_ok and candles_ok else "MISSING",
+            f"{exchange}:orderbook+ohlcv", None if book_ok and candles_ok else 0.0,
+            observed_at=(
+                max(int(candle_observed_at), int(book_observed_at))
+                if candle_observed_at is not None and book_observed_at is not None
+                else None
+            ),
+        ),
         "funding_signal": item(
             observed(funding_signal) if funding_ok else unavailable,
             str((funding or {}).get("source") or f"{exchange}:funding_public_get"),

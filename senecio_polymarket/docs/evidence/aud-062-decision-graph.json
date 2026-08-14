@@ -1,0 +1,429 @@
+{
+  "dataset_provenance": {
+    "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
+    "RAW_OR_DERIVED": "DERIVED",
+    "ROW_COUNT": 16,
+    "SHA256": "7777f88e7dd850a59e9a96f8291cf7ca4c8d0e542c8987f6026d62dab10e3869",
+    "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
+    "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
+    "TRANSFORMATION": "STATIC_CODE_CAUSAL_GRAPH",
+    "VERSION": "AUD-062-dataset-provenance-v1"
+  },
+  "edges": [
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction+EV",
+      "error_behavior": "status not numeric zero",
+      "fallback_behavior": "explicit fallback",
+      "input_fields": [
+        "ohlcv",
+        "orderbook",
+        "funding",
+        "open_interest"
+      ],
+      "missing_behavior": "MISSING/SOURCE_ERROR",
+      "output_fields": [
+        "feature_observations"
+      ],
+      "range_domain": "public OKX observations",
+      "source": "RAW_MARKET",
+      "source_function": "exchange_connector.fetch_market_snapshot",
+      "target": "FEATURE_OBSERVATIONS",
+      "units": "mixed raw + provenance",
+      "zero_behavior": "REAL_OBSERVED_ZERO"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction+EV",
+      "error_behavior": "masked",
+      "fallback_behavior": "numeric 0 with mask",
+      "input_fields": [
+        "orderflow",
+        "volume_delta",
+        "bidask_imbalance",
+        "funding_signal",
+        "oi_momentum",
+        "price_momentum"
+      ],
+      "missing_behavior": "masked",
+      "output_fields": [
+        "orderflow",
+        "volume_delta",
+        "bidask_imbalance",
+        "funding_signal",
+        "oi_momentum",
+        "price_momentum",
+        "feature_availability_v1"
+      ],
+      "range_domain": "finite real",
+      "source": "FEATURE_OBSERVATIONS",
+      "source_function": "oracle_runtime.institutional_core.SingleDecisionCore.ingest_market",
+      "target": "MARKET_STATE",
+      "units": "decimal pressures",
+      "zero_behavior": "observed neutral"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction+EV",
+      "error_behavior": "fail-open core",
+      "fallback_behavior": "base weights",
+      "input_fields": [
+        "orderflow",
+        "volume_delta",
+        "bidask_imbalance",
+        "funding_signal",
+        "oi_momentum",
+        "price_momentum"
+      ],
+      "missing_behavior": "excluded",
+      "output_fields": [
+        "pressures",
+        "missing_input_mask_v1"
+      ],
+      "range_domain": "unbounded then sigmoid",
+      "source": "MARKET_STATE",
+      "source_function": "SingleDecisionCore.compress_features",
+      "target": "NORMALIZED_PRESSURES",
+      "units": "weighted decimal",
+      "zero_behavior": "included neutral"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": false,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction+EV+size",
+      "error_behavior": "base weights",
+      "fallback_behavior": "base weights",
+      "input_fields": [
+        "prior proof rows",
+        "decision cutoff"
+      ],
+      "missing_behavior": "row excluded",
+      "output_fields": [
+        "effective_weights",
+        "hash"
+      ],
+      "range_domain": "base +/-25%",
+      "source": "LEARNING_EVIDENCE",
+      "source_function": "replay_authoritative_learning",
+      "target": "EFFECTIVE_WEIGHTS",
+      "units": "weight multiplier",
+      "zero_behavior": "zero pressure ignored"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction+EV",
+      "error_behavior": "noise=1 if none",
+      "fallback_behavior": "sum",
+      "input_fields": [
+        "pressures",
+        "effective_weights"
+      ],
+      "missing_behavior": "excluded denominator",
+      "output_fields": [
+        "total_pressure",
+        "agreement",
+        "noise"
+      ],
+      "range_domain": "finite",
+      "source": "NORMALIZED_PRESSURES",
+      "source_function": "compress_features",
+      "target": "AGGREGATE_PRESSURE",
+      "units": "decimal pressure",
+      "zero_behavior": "observed zero denominator member"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "direction",
+      "error_behavior": "NEUTRAL",
+      "fallback_behavior": "NEUTRAL",
+      "input_fields": [
+        "total_pressure"
+      ],
+      "missing_behavior": "NEUTRAL",
+      "output_fields": [
+        "direction"
+      ],
+      "range_domain": "LONG >.05; SHORT <-.05",
+      "source": "AGGREGATE_PRESSURE",
+      "source_function": "compress_features",
+      "target": "DIRECTION_CANDIDATE",
+      "units": "decimal",
+      "zero_behavior": "NEUTRAL"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV+size",
+      "error_behavior": "0",
+      "fallback_behavior": "0",
+      "input_fields": [
+        "total_pressure",
+        "noise"
+      ],
+      "missing_behavior": "0",
+      "output_fields": [
+        "up_prob",
+        "down_prob",
+        "conviction"
+      ],
+      "range_domain": "0..1",
+      "source": "DIRECTION_CANDIDATE",
+      "source_function": "compress_features",
+      "target": "RAW_CONVICTION",
+      "units": "heuristic 0..1",
+      "zero_behavior": "0"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV",
+      "error_behavior": "no exception guard",
+      "fallback_behavior": "single-candle volatility",
+      "input_fields": [
+        "p_win",
+        "ATR",
+        "commission",
+        "slippage"
+      ],
+      "missing_behavior": "defaults",
+      "output_fields": [
+        "base_ev",
+        "estimated_cost"
+      ],
+      "range_domain": "finite",
+      "source": "RAW_CONVICTION",
+      "source_function": "SingleDecisionCore.compute_ev",
+      "target": "CORE_BASE_EV",
+      "units": "decimal return",
+      "zero_behavior": "valid"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV",
+      "error_behavior": "no guard",
+      "fallback_behavior": "1",
+      "input_fields": [
+        "base_ev",
+        "risk_score"
+      ],
+      "missing_behavior": "1",
+      "output_fields": [
+        "survival_discount"
+      ],
+      "range_domain": ".2..1",
+      "source": "CORE_BASE_EV",
+      "source_function": "compute_ev",
+      "target": "CORE_SURVIVAL_EV",
+      "units": "multiplier",
+      "zero_behavior": "1"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV",
+      "error_behavior": "no guard",
+      "fallback_behavior": "default depth/slippage",
+      "input_fields": [
+        "conviction",
+        "noise",
+        "single-candle volatility",
+        "default costs"
+      ],
+      "missing_behavior": "defaults",
+      "output_fields": [
+        "market_ev"
+      ],
+      "range_domain": "finite",
+      "source": "RAW_CONVICTION",
+      "source_function": "oracle.market_ev.compute_market_ev",
+      "target": "MARKET_ANCHOR_EV",
+      "units": "decimal return",
+      "zero_behavior": "valid"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV",
+      "error_behavior": "no guard",
+      "fallback_behavior": "anchor available",
+      "input_fields": [
+        "core",
+        "anchor"
+      ],
+      "missing_behavior": "anchor default",
+      "output_fields": [
+        "adjusted_ev"
+      ],
+      "range_domain": "minimum branch",
+      "source": "CORE_SURVIVAL_EV",
+      "source_function": "min(core_survival_ev, market_anchor_ev)",
+      "target": "ADJUSTED_EV",
+      "units": "decimal return",
+      "zero_behavior": "valid"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV gate",
+      "error_behavior": "no guard",
+      "fallback_behavior": "volatility",
+      "input_fields": [
+        "ATR/vol_ref",
+        "min_ev_to_trade"
+      ],
+      "missing_behavior": "low-vol tier",
+      "output_fields": [
+        "dynamic_min_ev",
+        "tradeable"
+      ],
+      "range_domain": "5%-100% base threshold",
+      "source": "ADJUSTED_EV",
+      "source_function": "compute_ev",
+      "target": "DYNAMIC_MIN_EV",
+      "units": "decimal return",
+      "zero_behavior": "low-vol tier"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "EV+size",
+      "error_behavior": "KILL on core threshold",
+      "fallback_behavior": "fresh zero state",
+      "input_fields": [
+        "drawdown",
+        "VaR",
+        "loss streak",
+        "survivability"
+      ],
+      "missing_behavior": "zero risk",
+      "output_fields": [
+        "verdict",
+        "risk_score",
+        "size_multiplier"
+      ],
+      "range_domain": "0..1",
+      "source": "RISK_STATE",
+      "source_function": "filter_risk",
+      "target": "RISK_GATE",
+      "units": "probability/multiplier",
+      "zero_behavior": "zero risk"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "size+gate",
+      "error_behavior": "reject",
+      "fallback_behavior": "fixed defaults",
+      "input_fields": [
+        "tradeable",
+        "spread",
+        "slippage",
+        "latency",
+        "liquidity"
+      ],
+      "missing_behavior": "defaults",
+      "output_fields": [
+        "feasible",
+        "size_adjustment"
+      ],
+      "range_domain": "0..1",
+      "source": "DYNAMIC_MIN_EV",
+      "source_function": "check_execution_feasibility",
+      "target": "FEASIBILITY",
+      "units": "bps/multiplier",
+      "zero_behavior": "valid"
+    },
+    {
+      "can_change_direction": false,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "size",
+      "error_behavior": "HOLD",
+      "fallback_behavior": "0",
+      "input_fields": [
+        "conviction",
+        "entropy",
+        "calibration",
+        "risk",
+        "execution"
+      ],
+      "missing_behavior": "0",
+      "output_fields": [
+        "final_size"
+      ],
+      "range_domain": "0..0.25",
+      "source": "ALL_GATES",
+      "source_function": "produce_action",
+      "target": "POSITION_SIZE",
+      "units": "equity fraction",
+      "zero_behavior": "0"
+    },
+    {
+      "can_change_direction": true,
+      "can_force_flat": true,
+      "causal_at_decision_time": true,
+      "changes_ev_or_size": "final",
+      "error_behavior": "FLAT",
+      "fallback_behavior": "FLAT",
+      "input_fields": [
+        "ordered gates",
+        "side",
+        "size"
+      ],
+      "missing_behavior": "FLAT",
+      "output_fields": [
+        "LONG|SHORT|FLAT"
+      ],
+      "range_domain": "3 states",
+      "source": "POSITION_SIZE",
+      "source_function": "produce_action + predict_only.run_prediction",
+      "target": "FINAL_DECISION",
+      "units": "categorical",
+      "zero_behavior": "FLAT"
+    }
+  ],
+  "external_directional_applied": 0,
+  "nodes": [
+    "ADJUSTED_EV",
+    "AGGREGATE_PRESSURE",
+    "ALL_GATES",
+    "CORE_BASE_EV",
+    "CORE_SURVIVAL_EV",
+    "DIRECTION_CANDIDATE",
+    "DYNAMIC_MIN_EV",
+    "EFFECTIVE_WEIGHTS",
+    "FEASIBILITY",
+    "FEATURE_OBSERVATIONS",
+    "FINAL_DECISION",
+    "LEARNING_EVIDENCE",
+    "MARKET_ANCHOR_EV",
+    "MARKET_STATE",
+    "NORMALIZED_PRESSURES",
+    "POSITION_SIZE",
+    "RAW_CONVICTION",
+    "RAW_MARKET",
+    "RISK_GATE",
+    "RISK_STATE"
+  ],
+  "version": "AUD-062-decision-causality-v2"
+}

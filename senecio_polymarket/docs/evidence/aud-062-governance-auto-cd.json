@@ -1,0 +1,29 @@
+{
+  "AUTO_CD_SAFE_UNDER_CURRENT_GOVERNANCE": "NO",
+  "RECOMMENDED_GUARDRAILS": [
+    "protect main with required pull requests and at least one owner/AUD approval",
+    "require exact-head SCORE-001, SCORE-002, smoke, and audit checks",
+    "block force pushes and deletions",
+    "restrict bypass to no standing actor; use time-bounded break-glass only",
+    "change oracle.yml to contents:read or remove its direct git push job",
+    "pin/approve GitHub Apps allowed to write contents",
+    "require deployment environment approval bound to reviewed SHA before Northflank production rollout"
+  ],
+  "UNREVIEWED_MAIN_TO_PROD_PATHS": [
+    "direct push to unprotected main",
+    "force push unless separately denied at actor/repository level",
+    "GitHub UI edit committing to main",
+    "manual oracle.yml workflow_dispatch with contents:write and git push",
+    "merge without required checks/reviews",
+    "stale or unaudited PR merge",
+    "bot/app repository-content write followed by automatic Northflank build"
+  ],
+  "auto_cd_evidence": "Northflank bot deployment/status for exact main SHA plus configured main tracking from AUD-061-LAND checkpoint",
+  "branch_protected": false,
+  "deployed_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "northflank_status_context": "northflank/simondalmassos-team/seneciobot/senecio-h011",
+  "required_status_checks": [],
+  "ruleset_count": 0,
+  "settings_mutated": false,
+  "version": "AUD-062-decision-causality-v2"
+}

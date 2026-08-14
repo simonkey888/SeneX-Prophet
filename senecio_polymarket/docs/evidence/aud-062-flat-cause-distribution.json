@@ -1,0 +1,58 @@
+{
+  "by_symbol": {
+    "BTCUSDT": {
+      "flat_n": 127,
+      "flat_rate": 0.729885,
+      "long_n": 25,
+      "n": 174,
+      "short_n": 22
+    },
+    "ETHUSDT": {
+      "flat_n": 126,
+      "flat_rate": 0.724138,
+      "long_n": 22,
+      "n": 174,
+      "short_n": 26
+    }
+  },
+  "flat_by_first_binding_gate": {
+    "EV_BELOW_DYNAMIC_MIN": 22,
+    "EV_NEGATIVE": 148,
+    "NO_DIRECTIONAL_SIGNAL": 16,
+    "OTHER_EXPLICIT": 39,
+    "REGIME_REJECT": 28
+  },
+  "flat_by_regime_gate": {
+    "PASS": 225,
+    "REJECT": 28
+  },
+  "flat_rate_due_to_authority": 0.0,
+  "flat_rate_due_to_ev": 0.488506,
+  "flat_rate_due_to_risk": 0.0,
+  "flat_rate_when_features_missing": 1.0,
+  "flat_rate_when_raw_conviction_high": 0.5,
+  "flat_rate_when_raw_direction_exists": 0.713855,
+  "post_aud061": {
+    "flat_n": 7,
+    "flat_rate": 0.875,
+    "long_n": 0,
+    "n": 8,
+    "short_n": 1
+  },
+  "pre_aud061": {
+    "flat_n": 246,
+    "flat_rate": 0.723529,
+    "long_n": 47,
+    "n": 340,
+    "short_n": 47
+  },
+  "total": {
+    "flat_n": 253,
+    "flat_rate": 0.727011,
+    "long_n": 47,
+    "n": 348,
+    "short_n": 48
+  },
+  "unknown_causal_path_n": 0,
+  "version": "AUD-062-decision-causality-v2"
+}

@@ -1,0 +1,111 @@
+{
+  "candidate_remediation": {
+    "decision_semantics_changed": false,
+    "historical_rows_unchanged": true,
+    "new_machine_field": "pipeline.step3_risk.survivability_ruin_prob",
+    "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
+  },
+  "contradictory_display_state_n": 348,
+  "current_fresh_risk_state": {
+    "core_ruin_prob": 0.0,
+    "drawdown": 0.0,
+    "loss_streak": 0,
+    "var": 0.0
+  },
+  "dataset_provenance": {
+    "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
+    "RAW_OR_DERIVED": "DERIVED",
+    "ROW_COUNT": 12,
+    "SHA256": "e450f76711467f61910603ff7885ed0d6a79f3c57534e7e8ab00b19cac4f8dbe",
+    "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
+    "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
+    "TRANSFORMATION": "RISK_SEMANTICS_CONTRADICTION_SAMPLE",
+    "VERSION": "AUD-062-dataset-provenance-v1"
+  },
+  "examples": [
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 348,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 347,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 346,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 345,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 344,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 343,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 342,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 341,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 340,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 339,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 338,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    },
+    {
+      "core_ruin_prob": 0.0,
+      "prediction_id": 337,
+      "reason": "HIGH_RUIN_PROB: 50.00% > 30% threshold",
+      "survivability_reason_ruin_prob": 0.5
+    }
+  ],
+  "human_survivability_field": "pipeline.step3_risk.surv_reason",
+  "machine_core_field": "pipeline.step3_risk.ruin_prob",
+  "minimum_correction": "Persist core_ruin_prob and survivability_ruin_prob as distinct machine fields and generate reasons from the latter field.",
+  "missing_machine_field": "pipeline.step3_risk.survivability_ruin_prob",
+  "risk_affects_ev": true,
+  "risk_affects_size": true,
+  "risk_fields_coherent": false,
+  "rows": 348,
+  "ruin_prob_contradiction": "CONFIRMED",
+  "semantics": "The values originate in distinct models, but the persisted payload does not name/serialize the second numeric authority.",
+  "survivability_affects_size_only": true,
+  "version": "AUD-062-decision-causality-v2"
+}

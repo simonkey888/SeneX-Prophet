@@ -1,0 +1,87 @@
+{
+  "artifact_hashes": {
+    "aud-062-action-reason-semantics.json": "8c039ff74bb19f24d8add32ebaddaa0450bc61e5fb24b656b761053cb83e3b62",
+    "aud-062-authority-feedback-loop.json": "11c0152837be932bccc72d036e89715590f958ae57679d6da2ae0f28c7b2a6a6",
+    "aud-062-claim-assessments.json": "85395df7a5f38a8d22a3f318c96300bd87c2d20b84fd9feedf4cf20df8ed99c3",
+    "aud-062-confidence-semantics.json": "37a63446ee98c5b8938a1e0ca8f3b81bf30d0b07508044d0c52fb8e17d567c57",
+    "aud-062-cost-model-audit.json": "4fee80e64860a8e82f5002797e987bed88af23ba61caef905e88bdd311d99da4",
+    "aud-062-dataset-provenance.json": "d29170bb7ef078a3eacdccddd91486bed6527a4f23b562f7edee0b74f71510b1",
+    "aud-062-decision-attribution.csv": "9ada0f836c17511ef106d23ec427f0c219ae407718fe14a00c6c1ccbc8214a52",
+    "aud-062-decision-attribution.json": "93add40c039c4dd2ebe4687ecdcff2c2a988c68dffa8daa6339143abcf14d7a8",
+    "aud-062-decision-graph.json": "501ee71247f1b6af7f2c34a4b8181b851e98f6bafa3330f4db783ef42d9fcf67",
+    "aud-062-ev-bridge.json": "ab0f49bfd7e53a532a26a2045d6442aba8de33653cc13e52211a1426b80ed9ca",
+    "aud-062-external-shadow-ledger.json": "6ebc33d69409f2cbde4409e73381ae30319e0114b1d097f94dff692753a4c423",
+    "aud-062-feature-availability.json": "1d9289450a6b31ea3405032454c2582ff60ac069ef256438a4b7ea930a42188b",
+    "aud-062-findings.json": "9f11496bddcd1a638d78ef648d7413ed43172590b3bd68243e043cae47061df3",
+    "aud-062-flat-cause-distribution.json": "5920d0f52aa853039ec5849b92000f15392726b126f009d287d0d6fd65db6337",
+    "aud-062-governance-auto-cd.json": "16990aec70e4286c8a0bb21ab60cac92009168d53f9147e82b43f2103fe81825",
+    "aud-062-horizon-alignment.json": "82e2329cc181cc74b19dd6f398f27ecbd6f159e3e19e6fda35d12fc0b527a833",
+    "aud-062-learning-frozen-vs-learned.json": "854d2da047ac437c93a3334c293d74c9e0638ef9e466f6ec2b2ec138a0ee544b",
+    "aud-062-pre-post-behavior.json": "ed24835bd683d4270d0a0167e1724f530057b01a8c5a59be3497def4811eb4db",
+    "aud-062-publication-sanitization.json": "26c299138ce88a42caacb128595f98767a84459f7b415f0c05f6c83b841e5f8e",
+    "aud-062-risk-survivability-audit.json": "48b3acdbca8fe0fb89e35917884290aab88e4211553af4aa9278565705030ffa",
+    "aud-062-score-truth.json": "4a164824fffe62441295596e561ac8455e0f0403e857ef37bbbbc62f81bbd024"
+  },
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "candidate_head": {
+    "binding": "CI_EXACT_HEAD",
+    "command": "git rev-parse HEAD"
+  },
+  "candidate_instrumentation_corrections": [
+    "survivability_ruin_prob_machine_field",
+    "ev_below_dynamic_min_truthful_reason",
+    "feature_observation_timestamps",
+    "learning_source_observation_epochs",
+    "external_snapshot_observed_at"
+  ],
+  "candidate_tree": {
+    "binding": "CI_EXACT_HEAD_TREE",
+    "command": "git rev-parse HEAD^{tree}"
+  },
+  "commands_executed": [
+    "python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output docs/evidence"
+  ],
+  "database_mutations": 0,
+  "deploy": false,
+  "excluded_rows": [],
+  "external_directional_activation": false,
+  "finding_count": 9,
+  "github_settings_mutations": 0,
+  "input_hashes": {
+    "btc_score": "ccdae6e37ce77cc11416d1aec4a5ff8733e6c8137a1f30e47490b8b1febc3cab",
+    "eth_score": "dcff9a6d0a27d1765fd1b3aa24e0b1d3ead18c85cd82d6e243f5f7b2e6514243",
+    "market_context": "5d263039346f081ce6c29f2a780ef922bbaa0fbefad59c63531be2baff5a5692",
+    "polymarket_resolutions": "64f9a11b8d5d34af431165a0da6e5ac6e3779b64c0afd2cf22b7c505bda160ff",
+    "predictions": "4f5735aaae3f40d6494b8c0edd0dab4b77267b9c7c25da290dc576f79402ef3e"
+  },
+  "material_finding_count": 9,
+  "merge": false,
+  "northflank_mutations": 0,
+  "production_decision_semantics_changed": false,
+  "production_mutations": 0,
+  "row_counts": {
+    "btc": 174,
+    "eth": 174,
+    "external_shadow_boros": 334,
+    "external_shadow_kalshi": 167,
+    "external_shadow_polymarket": 167,
+    "post_deploy_decisions": 8,
+    "total_decisions": 348
+  },
+  "runtime017_mutations": 0,
+  "runtime_public_endpoints_read": [
+    "https://h011-web--senecio-h011--wbjggn89fnf8.code.run/api/oracle/predictions/db?limit=500",
+    "https://h011-web--senecio-h011--wbjggn89fnf8.code.run/api/market-context",
+    "https://h011-web--senecio-h011--wbjggn89fnf8.code.run/api/oracle/score?symbol=BTCUSDT",
+    "https://h011-web--senecio-h011--wbjggn89fnf8.code.run/api/oracle/score?symbol=ETHUSDT",
+    "https://gamma-api.polymarket.com/events/slug/{slug}",
+    "https://api.github.com/repos/simonkey888/SeneX-Prophet/branches/main",
+    "https://api.github.com/repos/simonkey888/SeneX-Prophet/rulesets",
+    "https://api.github.com/repos/simonkey888/SeneX-Prophet/deployments?sha=49c5f0a69609c005da80e48b585e91d8582a5ac6",
+    "https://api.github.com/repos/simonkey888/SeneX-Prophet/commits/49c5f0a69609c005da80e48b585e91d8582a5ac6/status"
+  ],
+  "threshold_changes": false,
+  "version": "AUD-062-decision-causality-v2",
+  "weight_changes": false
+}
