@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#07090d" />
 <title>SENEX ORACLE — REAL Market Cockpit</title>
-<meta name="oracle-version" content="REAL-MARKET-V1-AUD055" />
+<meta name="oracle-version" content="AUD060-DASHBOARD-TRUTH-V1" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -15,38 +15,48 @@
       <div class="logo">⬡</div>
       <div>
         <div class="title">SENEX ORACLE</div>
-        <div class="subtitle">REAL-only • Polymarket + Kalshi + Boros • PAPER</div>
+        <div class="subtitle">[STATIC_POLICY] read-only observability • PAPER-only target</div>
       </div>
     </div>
-    <div id="conn-status" class="pill pill-amber">loading real market…</div>
+    <div id="conn-status" class="pill pill-amber" data-claim-class="UNKNOWN/STALE">loading real market…</div>
     <div class="topbar-stats">
-      <span class="stat">mode: <b id="stat-mode">—</b></span>
-      <span class="stat">CLOB: <b id="stat-clob">—</b></span>
-      <span class="stat">oracle: <b id="stat-oracle">—</b></span>
-      <span class="stat">live: <b>LOCKED</b></span>
+      <span class="stat">mode: <b id="stat-mode" data-claim-class="UNKNOWN/STALE">—</b></span>
+      <span class="stat">CLOB: <b id="stat-clob" data-claim-class="UNKNOWN/STALE">—</b></span>
+      <span class="stat">oracle: <b id="stat-oracle" data-claim-class="UNKNOWN/STALE">—</b></span>
+      <span class="stat">live: <b id="stat-live" data-claim-class="UNKNOWN/STALE">UNKNOWN</b></span>
     </div>
   </header>
 
+  <div id="domain-health" aria-live="polite">
+    <div id="health-context" class="domain-health unknown" data-claim-class="UNKNOWN/STALE">MARKET CONTEXT · LOADING · UNKNOWN</div>
+    <div id="health-score" class="domain-health unknown" data-claim-class="UNKNOWN/STALE">BTC SCORE · LOADING · UNKNOWN</div>
+    <div id="health-predictions" class="domain-health unknown" data-claim-class="UNKNOWN/STALE">DB PREDICTIONS · LOADING · UNKNOWN</div>
+  </div>
+
   <main>
     <section class="col col-oracle">
-      <div class="panel">
+      <div id="score-panel" class="panel" data-domain="score context" data-claim-class="API_DERIVED">
         <div class="panel-head">
           <h2>Authoritative score · 1h gate</h2>
-          <span id="oracle-score-meta" class="meta">UNKNOWN · awaiting evidence</span>
+          <span id="oracle-score-meta" class="meta">[UNKNOWN/STALE] awaiting BTC evidence</span>
         </div>
         <div class="oracle-score-grid">
-          <div class="score-card"><div class="score-label">Total</div><div class="score-value" id="score-total">—</div></div>
-          <div class="score-card"><div class="score-label">Proof-qualified</div><div class="score-value" id="score-verified">—</div></div>
-          <div class="score-card score-win"><div class="score-label">Authoritative</div><div class="score-value" id="score-winrate">—</div></div>
-          <div class="score-card"><div class="score-label">Next cycle</div><div class="score-value" id="score-next" style="font-size:13px">—</div></div>
+          <div class="score-card"><div class="score-label">BTC input rows · API scope</div><div class="score-value" id="score-total">—</div></div>
+          <div class="score-card"><div class="score-label">Proof-qualified raw · diagnostic N</div><div class="score-value" id="score-proof-raw">—</div></div>
+          <div class="score-card"><div class="score-label">Independent 1h · authority N</div><div class="score-value" id="score-independent">—</div></div>
+          <div class="score-card score-win"><div class="score-label">Authority WR · independent cohort</div><div class="score-value" id="score-authority-wr">—</div></div>
+          <div class="score-card score-win"><div class="score-label">Authoritative score</div><div class="score-value" id="score-authoritative">—</div></div>
+          <div class="score-card"><div class="score-label">Score status</div><div class="score-value compact" id="score-status">UNKNOWN</div></div>
+          <div class="score-card diagnostic-card" data-claim-class="DIAGNOSTIC"><div class="score-label">Raw observed WR · DIAGNOSTIC ONLY</div><div class="score-value" id="score-raw-diagnostic">—</div></div>
+          <div class="score-card"><div class="score-label">Next oracle cycle · runtime</div><div class="score-value compact" id="score-next">—</div></div>
         </div>
       </div>
 
-      <div class="panel" style="flex:1">
-        <div class="panel-head"><h2>Oracle predictions · Supabase</h2><span id="oracle-pred-meta" class="meta">—</span></div>
+      <div id="predictions-panel" class="panel" data-domain="predictions" data-claim-class="API_DERIVED" style="flex:1">
+        <div class="panel-head"><h2>Oracle predictions · Supabase</h2><span id="oracle-pred-meta" class="meta">[UNKNOWN/STALE] cross-symbol DB scope</span></div>
         <div class="table-wrap">
           <table id="oracle-table" class="table">
-            <thead><tr><th>TS</th><th>SYM</th><th>PRED</th><th>CONF</th><th>LEARN</th><th>POLY</th><th>OUT</th></tr></thead>
+            <thead><tr><th>TS</th><th>SYM</th><th>PRED</th><th>RAW CONV</th><th>LEARN SNAPSHOT</th><th>POLY SNAPSHOT</th><th>OUT</th></tr></thead>
             <tbody><tr><td colspan="7" class="placeholder">loading…</td></tr></tbody>
           </table>
         </div>
@@ -54,12 +64,12 @@
     </section>
 
     <section class="col col-left">
-      <div class="panel">
-        <div class="panel-head"><h2>Polymarket · BTC Up/Down 5m</h2><span id="poly-meta" class="meta">public read-only · directional default OFF</span></div>
+      <div id="poly-panel" class="panel" data-domain="context" data-claim-class="RUNTIME_OBSERVED">
+        <div class="panel-head"><h2>Polymarket · BTC Up/Down 5m</h2><span id="poly-meta" class="meta">[UNKNOWN/STALE] awaiting API</span></div>
         <div class="risk-grid">
           <div class="risk-cell"><div class="label">UP probability</div><div class="value pos" id="poly-up">—</div></div>
           <div class="risk-cell"><div class="label">DOWN probability</div><div class="value neg" id="poly-down">—</div></div>
-          <div class="risk-cell"><div class="label">Diagnostic pressure</div><div class="value" id="poly-pressure">—</div></div>
+          <div class="risk-cell" data-claim-class="DIAGNOSTIC"><div class="label">Diagnostic pressure · raw</div><div class="value" id="poly-pressure">—</div></div>
           <div class="risk-cell"><div class="label">Closes in</div><div class="value" id="poly-close">—</div></div>
         </div>
         <div class="panel-body" style="padding:10px 12px;font-family:var(--mono);font-size:11px">
@@ -69,7 +79,7 @@
         </div>
       </div>
 
-      <div class="panel">
+      <div id="poly-book-panel" class="panel" data-domain="context" data-claim-class="RUNTIME_OBSERVED">
         <div class="panel-head"><h2>Polymarket CLOB · real orderbook</h2><span id="poly-book-meta" class="meta">—</span></div>
         <div class="table-wrap">
           <table class="table">
@@ -79,15 +89,15 @@
         </div>
       </div>
 
-      <div class="panel" style="flex:1">
-        <div class="panel-head"><h2>CLOB live events</h2><span class="meta">WebSocket public</span></div>
+      <div id="poly-feed-panel" class="panel" data-domain="context" data-claim-class="RUNTIME_OBSERVED" style="flex:1">
+        <div class="panel-head"><h2>CLOB live events</h2><span class="meta">[RUNTIME_OBSERVED] public WebSocket payload</span></div>
         <div id="poly-feed" class="feed"></div>
       </div>
     </section>
 
     <section class="col col-mid">
-      <div class="panel">
-        <div class="panel-head"><h2>Kalshi · BTC Up/Down 15m</h2><span id="kalshi-meta" class="meta">cross-venue only · directional OFF</span></div>
+      <div id="kalshi-panel" class="panel" data-domain="context" data-claim-class="DIAGNOSTIC">
+        <div class="panel-head"><h2>Kalshi · BTC Up/Down 15m</h2><span id="kalshi-meta" class="meta">[UNKNOWN/STALE] cross-venue diagnostic</span></div>
         <div class="risk-grid">
           <div class="risk-cell"><div class="label">YES / Up</div><div class="value pos" id="kalshi-yes">—</div></div>
           <div class="risk-cell"><div class="label">NO / Down</div><div class="value neg" id="kalshi-no">—</div></div>
@@ -101,8 +111,8 @@
         </div>
       </div>
 
-      <div class="panel" style="flex:1">
-        <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">informational · directional OFF</span></div>
+      <div id="boros-panel" class="panel" data-domain="context" data-claim-class="DIAGNOSTIC" style="flex:1">
+        <div class="panel-head"><h2>Boros · real funding context</h2><span id="boros-meta" class="meta">[UNKNOWN/STALE] funding diagnostic</span></div>
         <div class="table-wrap">
           <table class="table">
             <thead><tr><th>PAIR</th><th>MARKET</th><th>MID APR</th><th>MARK APR</th><th>ASSET PX</th><th>VOL 24H</th><th>OI</th></tr></thead>
@@ -111,45 +121,49 @@
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-head"><h2>Latest BTC decision context</h2><span class="meta">audit</span></div>
+      <div id="decision-panel" class="panel" data-domain="predictions" data-claim-class="DECISION_TIME_SNAPSHOT">
+        <div class="panel-head"><h2>Latest BTC decision context</h2><span class="meta">[DECISION_TIME_SNAPSHOT] historical · not live market</span></div>
         <div id="decision-context" class="decision-trace"><div class="placeholder">awaiting prediction…</div></div>
       </div>
     </section>
 
     <section class="col col-right">
-      <div class="panel">
-        <div class="panel-head"><h2>Runtime & safety</h2></div>
+      <div id="safety-panel" class="panel" data-domain="context" data-claim-class="API_DERIVED">
+        <div class="panel-head"><h2>Runtime & safety</h2><span class="meta">[API_DERIVED] missing fields = UNKNOWN</span></div>
         <div class="risk-grid">
           <div class="risk-cell"><div class="label">Market mode</div><div class="value" id="safe-market-mode">—</div></div>
           <div class="risk-cell"><div class="label">Trade mode</div><div class="value" id="safe-trade-mode">—</div></div>
-          <div class="risk-cell"><div class="label">Live capital</div><div class="value pos" id="safe-live">LOCKED</div></div>
-          <div class="risk-cell"><div class="label">Synthetic scheduler</div><div class="value pos" id="safe-synth">OFF</div></div>
+          <div class="risk-cell"><div class="label">Live capital</div><div class="value" id="safe-live">UNKNOWN</div></div>
+          <div class="risk-cell"><div class="label">Orders enabled</div><div class="value" id="safe-orders">UNKNOWN</div></div>
+          <div class="risk-cell"><div class="label">Synthetic scheduler</div><div class="value" id="safe-synth">UNKNOWN</div></div>
+          <div class="risk-cell"><div class="label">Market adapters</div><div class="value" id="safe-adapters">UNKNOWN</div></div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-head"><h2>Learning loop</h2><span class="meta">proof-qualified replay</span></div>
+      <div id="learning-panel" class="panel" data-domain="predictions" data-claim-class="DECISION_TIME_SNAPSHOT">
+        <div class="panel-head"><h2>Learning loop</h2><span class="meta">[DECISION_TIME_SNAPSHOT] replay provenance · not authority N</span></div>
         <div class="risk-grid">
-          <div class="risk-cell"><div class="label">BTC state</div><div class="value" id="learn-state">—</div></div>
-          <div class="risk-cell"><div class="label">Qualified N</div><div class="value" id="learn-n">—</div></div>
-          <div class="risk-cell"><div class="label">Mutations</div><div class="value" id="learn-mutations">—</div></div>
-          <div class="risk-cell"><div class="label">Poly directional</div><div class="value" id="learn-poly-weight">OFF · 0.00</div></div>
+          <div class="risk-cell"><div class="label">BTC replay state · at decision</div><div class="value" id="learn-state">—</div></div>
+          <div class="risk-cell"><div class="label">Learning replay N · at decision</div><div class="value" id="learn-n">—</div></div>
+          <div class="risk-cell"><div class="label">Replay mutations · at decision</div><div class="value" id="learn-mutations">—</div></div>
+          <div class="risk-cell"><div class="label">Poly directional · at decision</div><div class="value" id="learn-poly-weight">UNKNOWN</div></div>
         </div>
       </div>
 
-      <div class="panel" style="flex:1">
-        <div class="panel-head"><h2>Source integrity</h2></div>
-        <div id="source-integrity" class="decision-trace"></div>
+      <div id="source-panel" class="panel" data-domain="context" data-claim-class="API_DERIVED" style="flex:1">
+        <div class="panel-head"><h2>Source integrity</h2><span class="meta">[API_DERIVED] / [STATIC_POLICY]</span></div>
+        <div id="source-integrity" class="decision-trace"><div class="placeholder">UNKNOWN · awaiting market context</div></div>
       </div>
     </section>
   </main>
 
   <footer>
-    <span>SENEX REAL-MARKET-V1 • no synthetic market feed • PAPER-only • no wallet/signer/orders</span>
-    <span id="footer-freshness">—</span>
+    <span data-claim-class="STATIC_POLICY">[STATIC_POLICY] PAPER-only target • no wallet/signer/order calls from dashboard</span>
+    <span id="footer-safety" data-claim-class="UNKNOWN/STALE">[UNKNOWN/STALE] runtime safety awaiting API</span>
+    <span id="footer-freshness" data-claim-class="UNKNOWN/STALE">[UNKNOWN/STALE] source freshness awaiting API</span>
   </footer>
 </div>
+<script src="/static/dashboard_truth.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
