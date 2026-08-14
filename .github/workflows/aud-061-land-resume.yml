@@ -1,9 +1,7 @@
 name: AUD-061 LAND resume
 
 on:
-  push:
-    branches:
-      - ops/aud-061-land-resume-5297988917
+  workflow_dispatch:
 
 permissions:
   contents: read
