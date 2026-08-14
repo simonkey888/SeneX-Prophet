@@ -15,6 +15,7 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -138,6 +139,20 @@ def _float(value: Any, default: float | None = None) -> float | None:
 
 def _rate(numerator: int, denominator: int) -> float | None:
     return round(numerator / denominator, 6) if denominator else None
+
+
+def _decimal_mean(values: list[float], places: int = 8) -> float | None:
+    """Return a cross-Python-version deterministic rounded mean.
+
+    Python 3.12 changed float summation accuracy, so native ``sum`` can make
+    byte-pinned evidence differ from Python 3.11 despite identical inputs.
+    Decimal-from-string preserves the persisted decimal values exactly.
+    """
+    if not values:
+        return None
+    total = sum((Decimal(str(value)) for value in values), Decimal(0))
+    quantum = Decimal(1).scaleb(-places)
+    return float((total / Decimal(len(values))).quantize(quantum))
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -1013,9 +1028,9 @@ def pre_post_behavior(attribution: list[dict[str, Any]]) -> dict[str, Any]:
         adjusted = [float(item["adjusted_ev"] or 0.0) for item in items]
         result[name] = {
             **_distribution(items),
-            "mean_raw_conviction": round(sum(convictions) / len(convictions), 8) if convictions else None,
-            "mean_aggregate_pressure": round(sum(pressures) / len(pressures), 8) if pressures else None,
-            "mean_adjusted_ev_proxy": round(sum(adjusted) / len(adjusted), 8) if adjusted else None,
+            "mean_raw_conviction": _decimal_mean(convictions),
+            "mean_aggregate_pressure": _decimal_mean(pressures),
+            "mean_adjusted_ev_proxy": _decimal_mean(adjusted),
             "binding_gates": dict(sorted(Counter(item["first_binding_gate"] for item in items if item["final_decision"] == "FLAT").items())),
             "feature_availability_schema_n": sum(bool(item["feature_statuses"]) for item in items),
             "learning_n": sorted({item["learning_source_n"] for item in items if item["learning_source_n"] is not None}),
