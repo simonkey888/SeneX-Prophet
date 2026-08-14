@@ -88,6 +88,7 @@ body {
   flex-wrap: wrap;
 }
 .topbar-stats .stat b { color: var(--text); font-weight: 600; margin-left: 4px; }
+.topbar-stats .stat b[data-claim-class="UNKNOWN/STALE"] { color: var(--danger); }
 
 /* ============= DOMAIN HEALTH / FRESHNESS ============= */
 #domain-health {

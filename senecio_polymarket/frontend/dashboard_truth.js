@@ -55,7 +55,7 @@
       ? pipeline.step2_features : {};
   }
 
-  function decisionView(row, score) {
+  function decisionView(row) {
     const step2 = step2Of(row);
     const learning = step2.learning_state_v1 && typeof step2.learning_state_v1 === 'object'
       ? step2.learning_state_v1 : {};
@@ -63,7 +63,6 @@
       learningReplayN: display(learning.proof_qualified_n),
       learningStatus: display(learning.status || 'UNKNOWN'),
       learningMutations: display(learning.mutations),
-      authorityN: display(score && score.independent_1h_rows),
       claimClass: 'DECISION_TIME_SNAPSHOT',
     };
   }

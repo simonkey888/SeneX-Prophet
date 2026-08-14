@@ -4,6 +4,13 @@ Base: `4e9ba38347bb9db3d0ce74266035cd979bc78778`
 
 This inventory covers the complete dashboard. Runtime truth remains read-only; no backend authority, production wiring, database, execution, or runtime017 behavior is changed.
 
+## AUD-060-R1 consolidated corrections
+
+| Finding | Reviewed-head defect | Consolidated correction | Regression sequence |
+|---|---|---|---|
+| AUD060-R1-001 | A context failure left current-looking/green topbar stats behind | Connection pill becomes ERROR/red and every context-backed topbar stat retains its value only with visible `STALE` plus `UNKNOWN/STALE`; success restores current values/classes | context LIVE_WS success → HTTP 503 → recovery |
+| AUD060-R1-002 | Current score authority N was mislabeled as a stored decision snapshot | Remove current authority N from the historical decision surface and remove the score-to-decision render dependency; authority N remains in the dedicated score panel | score+predictions success → score HTTP 503 with prediction snapshot preserved → recovery |
+
 ## Defects found and fixed
 
 | # | Surface | Defect at exact base | Resolution | Claim class |

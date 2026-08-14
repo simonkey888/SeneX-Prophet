@@ -74,7 +74,7 @@ class DashboardTruthModelTests(unittest.TestCase):
         self.assertEqual(output["rawObservedClaim"], "DIAGNOSTIC")
         self.assertEqual(output["authorityClaim"], "API_DERIVED")
 
-    def test_learning_replay_n_never_inherits_authority_n(self):
+    def test_learning_snapshot_excludes_current_score_authority_n(self):
         module = (FRONTEND / "dashboard_truth.js").as_posix()
         row = {
             "symbol": "BTCUSDT",
@@ -99,9 +99,8 @@ class DashboardTruthModelTests(unittest.TestCase):
             """
         )
         self.assertEqual(output["learningReplayN"], "7")
-        self.assertEqual(output["authorityN"], "10")
         self.assertEqual(output["claimClass"], "DECISION_TIME_SNAPSHOT")
-        self.assertNotEqual(output["learningReplayN"], output["authorityN"])
+        self.assertNotIn("authorityN", output)
 
     def test_fetch_failure_preserves_last_success_but_marks_stale_then_recovers(self):
         module = (FRONTEND / "dashboard_truth.js").as_posix()
@@ -190,7 +189,13 @@ class DashboardTruthModelTests(unittest.TestCase):
           oracle: {cycles_run: 2},
           safety: {trade_mode: 'PAPER', live_capital_locked: true, orders_enabled: false, read_only_market_adapters: true},
         };
-        const predictions = {total_in_db: 100, predictions: []};
+        const predictions = {total_in_db: 100, predictions: [{
+          ts: '2026-08-14T02:57:00Z', symbol: 'BTCUSDT', prediction: 'LONG', confidence: 0.73,
+          audit: {pipeline: {step2_features: {
+            learning_state_v1: {status: 'ACTIVE', proof_qualified_n: 7, mutations: 0},
+            polymarket_context_v1: {directional_use: false, up_probability: 0.54},
+          }}},
+        }]};
         global.fetch = async (url) => {
           const isScore = url.includes('/score');
           const isContext = url.includes('market-context');
@@ -202,31 +207,78 @@ class DashboardTruthModelTests(unittest.TestCase):
         (async () => {
           const api = window.__SENEX_DASHBOARD__;
           await Promise.all([api.refreshContext(), api.refreshScore(), api.refreshPredictions()]);
-          const before = get('#score-proof-raw').textContent;
-          failScore = true; failContext = true;
-          await Promise.all([api.refreshContext(), api.refreshScore()]);
-          const stale = {
-            scoreHealth: get('#health-score').textContent,
-            contextHealth: get('#health-context').textContent,
-            preserved: get('#score-proof-raw').textContent,
+          const before = {
+            score: get('#score-proof-raw').textContent,
+            connText: get('#conn-status').textContent,
+            connClass: get('#conn-status').className,
+            decision: get('#decision-context').innerHTML,
           };
-          failScore = false; failContext = false;
-          await Promise.all([api.refreshContext(), api.refreshScore()]);
-          console.log(JSON.stringify({before, stale, recovered: {
+
+          failScore = true;
+          await api.refreshScore();
+          const scoreStale = {
+            scoreHealth: get('#health-score').textContent,
+            preserved: get('#score-proof-raw').textContent,
+            decision: get('#decision-context').innerHTML,
+          };
+          failScore = false;
+          await api.refreshScore();
+
+          failContext = true;
+          await api.refreshContext();
+          const contextStale = {
+            contextHealth: get('#health-context').textContent,
+            connText: get('#conn-status').textContent,
+            connClass: get('#conn-status').className,
+            connClaim: get('#conn-status').dataset.claimClass,
+            stats: ['#stat-mode', '#stat-clob', '#stat-oracle', '#stat-live'].map((selector) => ({
+              text: get(selector).textContent,
+              claim: get(selector).dataset.claimClass,
+            })),
+          };
+          failContext = false;
+          await api.refreshContext();
+          console.log(JSON.stringify({before, scoreStale, contextStale, recovered: {
             scoreHealth: get('#health-score').textContent,
             contextHealth: get('#health-context').textContent,
+            connText: get('#conn-status').textContent,
+            connClass: get('#conn-status').className,
+            stats: ['#stat-mode', '#stat-clob', '#stat-oracle', '#stat-live'].map((selector) => ({
+              text: get(selector).textContent,
+              claim: get(selector).dataset.claimClass,
+            })),
           }}));
         })().catch((error) => { console.error(error); process.exitCode = 1; });
         """.replace("__MODULE__", module).replace("__APP__", app)
         output = self._run_node(source)
-        self.assertEqual(output["before"], "18")
-        self.assertEqual(output["stale"]["preserved"], "18")
-        self.assertIn("ERROR", output["stale"]["scoreHealth"])
-        self.assertIn("STALE", output["stale"]["scoreHealth"])
-        self.assertIn("ERROR", output["stale"]["contextHealth"])
-        self.assertIn("STALE", output["stale"]["contextHealth"])
+        self.assertEqual(output["before"]["score"], "18")
+        self.assertIn("LIVE_WS", output["before"]["connText"])
+        self.assertIn("pill-green", output["before"]["connClass"])
+        self.assertIn("DECISION_TIME_SNAPSHOT", output["before"]["decision"])
+        self.assertNotIn("Current authority N", output["before"]["decision"])
+
+        self.assertEqual(output["scoreStale"]["preserved"], "18")
+        self.assertIn("ERROR", output["scoreStale"]["scoreHealth"])
+        self.assertIn("STALE", output["scoreStale"]["scoreHealth"])
+        self.assertIn("DECISION_TIME_SNAPSHOT", output["scoreStale"]["decision"])
+        self.assertNotIn("Current authority N", output["scoreStale"]["decision"])
+
+        self.assertIn("ERROR", output["contextStale"]["contextHealth"])
+        self.assertIn("STALE", output["contextStale"]["contextHealth"])
+        self.assertIn("ERROR", output["contextStale"]["connText"])
+        self.assertIn("pill-red", output["contextStale"]["connClass"])
+        self.assertEqual(output["contextStale"]["connClaim"], "UNKNOWN/STALE")
+        for stat in output["contextStale"]["stats"]:
+            self.assertIn("STALE", stat["text"])
+            self.assertEqual(stat["claim"], "UNKNOWN/STALE")
+
         self.assertIn("OK", output["recovered"]["scoreHealth"])
         self.assertIn("OK", output["recovered"]["contextHealth"])
+        self.assertNotIn("STALE", output["recovered"]["connText"])
+        self.assertIn("pill-green", output["recovered"]["connClass"])
+        for stat in output["recovered"]["stats"]:
+            self.assertNotIn("STALE", stat["text"])
+            self.assertEqual(stat["claim"], "API_DERIVED")
 
 
 class DashboardDomContractTests(unittest.TestCase):
@@ -276,6 +328,7 @@ class DashboardDomContractTests(unittest.TestCase):
         self.assertIn("DECISION_TIME_SNAPSHOT", self.html)
         self.assertIn("not live market", self.html.lower())
         self.assertIn("cross-symbol", self.html.lower())
+        self.assertNotIn("Current authority N", self.app + self.html)
 
     def test_responsive_contract_and_javascript_syntax(self):
         for breakpoint in ("1280px", "1024px", "900px", "768px", "480px"):

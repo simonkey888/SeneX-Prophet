@@ -39,7 +39,6 @@
   const state = {
     context: null,
     predictions: [],
-    score: null,
     domains: {
       context: truth.domainState(),
       score: truth.domainState(),
@@ -97,6 +96,7 @@
       footerSafety.dataset.claimClass = 'UNKNOWN/STALE';
       footerFreshness.textContent = '[UNKNOWN/STALE] retained source freshness · context ERROR';
       footerFreshness.dataset.claimClass = 'UNKNOWN/STALE';
+      markContextTopbarStale(error);
     }
     renderDomainHealth();
   }
@@ -110,6 +110,20 @@
       ? `${live ? 'POLYMARKET' : 'MARKET'} ${status}`
       : 'MARKET UNKNOWN';
     element.dataset.claimClass = status ? 'RUNTIME_OBSERVED' : 'UNKNOWN/STALE';
+  }
+
+  function markContextTopbarStale(error) {
+    const message = error instanceof Error ? error.message : String(error || 'UNKNOWN_ERROR');
+    const connection = $('#conn-status');
+    connection.className = 'pill pill-red';
+    connection.textContent = `MARKET CONTEXT ERROR · ${message}`;
+    connection.dataset.claimClass = 'UNKNOWN/STALE';
+    ['#stat-mode', '#stat-clob', '#stat-oracle', '#stat-live'].forEach((selector) => {
+      const element = $(selector);
+      const retained = String(element.textContent || 'UNKNOWN').replace(/\s*·\s*STALE$/, '');
+      element.textContent = `${retained} · STALE`;
+      element.dataset.claimClass = 'UNKNOWN/STALE';
+    });
   }
 
   function sourceRow(name, detail, claimClass) {
@@ -347,7 +361,7 @@
     const poly = step2.polymarket_context_v1 || {};
     const external = auditOf(row).external_markets_v1 || {};
     const kalshiMarket = external.kalshi?.market || {};
-    const decision = truth.decisionView(row, state.score || {});
+    const decision = truth.decisionView(row);
     $('#learn-state').textContent = decision.learningStatus;
     $('#learn-n').textContent = decision.learningReplayN;
     $('#learn-mutations').textContent = decision.learningMutations;
@@ -371,12 +385,10 @@
       ['Polymarket UP 5m snapshot', poly.up_probability != null ? pct(poly.up_probability) : '—'],
       ['Kalshi YES 15m snapshot', kalshiMarket.yes_probability != null ? pct(kalshiMarket.yes_probability) : '—'],
       ['Learning replay N snapshot', decision.learningReplayN],
-      ['Current authority N · separate API', decision.authorityN],
     ].map(([name, detail]) => sourceRow(name, detail, 'DECISION_TIME_SNAPSHOT')).join('');
   }
 
   function renderScore(score) {
-    state.score = score;
     // Contract: scoreView consumes authoritative_score_pct as authority and
     // observed_win_rate_pct only as the separately labeled raw diagnostic.
     const view = truth.scoreView(score);
@@ -388,8 +400,6 @@
     $('#score-status').textContent = view.status;
     $('#score-raw-diagnostic').textContent = view.rawObservedWr;
     $('#oracle-score-meta').textContent = `[API_DERIVED] ${view.status} · scope ${view.scope} · cohort ${view.cohort}`;
-    const btc = state.predictions.find((row) => symbolKey(row.symbol) === 'BTCUSDT');
-    if (btc) renderDecisionContext(btc);
   }
 
   async function refreshContext() {
@@ -399,10 +409,6 @@
       domainSuccess('context');
     } catch (error) {
       domainFailure('context', error);
-      const element = $('#conn-status');
-      element.className = 'pill pill-red';
-      element.textContent = `MARKET CONTEXT ERROR · ${error.message || error}`;
-      element.dataset.claimClass = 'UNKNOWN/STALE';
     }
   }
 
