@@ -1,0 +1,193 @@
+name: AUD-063 LAND production read-only probe
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+    paths:
+      - .github/workflows/aud-063-land-prod-probe.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aud-063-land-production-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe deployed settlement pipeline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BASE_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+      MERGE_SHA: 2c4dbf284b23d3cf81b93dcfbd262660ab03dd43
+      MERGE_TREE: 0cb5abaa024f1325bf88e5fd3390dcec8f5f972d
+      NORTHFLANK_BUILD_AT: 2026-08-15T05:23:28+00:00
+    steps:
+      - name: Public production settlement probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+
+          BASE=os.environ['BASE_URL'].rstrip('/')
+          BUILD_AT=datetime.fromisoformat(os.environ['NORTHFLANK_BUILD_AT'])
+
+          def parse_ts(v):
+              if not isinstance(v,str) or not v: return None
+              try:
+                  d=datetime.fromisoformat(v.replace('Z','+00:00'))
+                  return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+              except Exception: return None
+
+          def get(path, query=None):
+              url=BASE+path
+              if query: url += '?' + urllib.parse.urlencode(query)
+              req=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'senex-aud063-land-probe/1'},method='GET')
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  raw=r.read().decode('utf-8','replace')
+                  if r.status != 200: raise RuntimeError(f'HTTP_{r.status}:{path}')
+              return json.loads(raw)
+
+          def audit(row):
+              a=row.get('audit')
+              if isinstance(a,dict): return a
+              if isinstance(a,str):
+                  try:
+                      x=json.loads(a); return x if isinstance(x,dict) else {}
+                  except Exception: return {}
+              return {}
+
+          def norm(v): return str(v or '').upper().replace('/','').replace('-','').strip()
+
+          # Wait only for the already configured main-tracking CD to expose a
+          # post-build runtime. This workflow never mutates Northflank or DB.
+          health=state=context=None
+          for attempt in range(30):
+              health=get('/api/health')
+              state=get('/api/oracle/state')
+              context=get('/api/market-context')
+              started=parse_ts((health.get('oracle') or {}).get('started_at') or state.get('started_at'))
+              verify=parse_ts(state.get('last_verify_at'))
+              if health.get('status')=='ok' and started and started > BUILD_AT and verify and verify >= started:
+                  break
+              print(json.dumps({'wait_attempt':attempt+1,'health':health.get('status'),'started_at':str(started),'last_verify_at':str(verify)},sort_keys=True),flush=True)
+              time.sleep(10)
+          else:
+              raise RuntimeError('POST_BUILD_RUNTIME_OR_VERIFIER_NOT_OBSERVED')
+
+          # start_single_authority exits if reconciler has no completed heartbeat
+          # after 120s. A healthy post-build runtime older than 130s therefore
+          # proves at least one real repair-only reconcile cycle completed.
+          started=parse_ts((health.get('oracle') or {}).get('started_at') or state.get('started_at'))
+          age=(datetime.now(timezone.utc)-started).total_seconds()
+          if age < 130:
+              for _ in range(20):
+                  time.sleep(10)
+                  health=get('/api/health'); state=get('/api/oracle/state')
+                  started=parse_ts((health.get('oracle') or {}).get('started_at') or state.get('started_at'))
+                  age=(datetime.now(timezone.utc)-started).total_seconds()
+                  if age >= 130 and health.get('status')=='ok': break
+          if health.get('status')!='ok' or age < 130:
+              raise RuntimeError('RECONCILER_HEARTBEAT_LIVENESS_NOT_PROVEN')
+
+          btc_payload=get('/api/oracle/predictions/db',{'limit':500,'symbol':'BTCUSDT'})
+          eth_payload=get('/api/oracle/predictions/db',{'limit':500,'symbol':'ETHUSDT'})
+          btc_score=get('/api/oracle/score',{'symbol':'BTCUSDT'})
+          eth_score=get('/api/oracle/score',{'symbol':'ETHUSDT'})
+          context=get('/api/market-context')
+
+          now=datetime.now(timezone.utc)
+          cutoff=now.timestamp()-3660
+          def classify(payload,symbol):
+              rows=[r for r in payload.get('predictions',[]) if isinstance(r,dict)]
+              eligible=[]; settled_missing_dual=[]; structurally_repairable=[]; settled_aud063=[]
+              for r in rows:
+                  if norm(r.get('symbol'))!=symbol: continue
+                  ts=parse_ts(r.get('ts') or r.get('timestamp'))
+                  direction=str(r.get('prediction') or '').upper()
+                  a=audit(r); dual=a.get('outcomes_dual') if isinstance(a,dict) else None
+                  if direction in {'LONG','SHORT'} and r.get('outcome') is None and ts and ts.timestamp() <= cutoff:
+                      eligible.append(r)
+                  if direction in {'LONG','SHORT'} and r.get('outcome') in {'WIN','LOSS'}:
+                      if not isinstance(dual,dict):
+                          settled_missing_dual.append(r)
+                          origin=a.get('origin_price_v1') if isinstance(a,dict) else None
+                          try: price=float(r.get('price_now') or 0)
+                          except Exception: price=0
+                          source=norm(r.get('exchange_used')).lower()
+                          origin_source=norm((origin or {}).get('source')).lower() if isinstance(origin,dict) else ''
+                          origin_ts=parse_ts((origin or {}).get('timestamp')) if isinstance(origin,dict) else None
+                          if isinstance(origin,dict) and origin.get('version')=='origin-price-v1' and price>0 and source and source==origin_source and origin_ts==ts:
+                              structurally_repairable.append(r)
+                      elif dual.get('settlement_contract_version')=='aud063-v1':
+                          settled_aud063.append(r)
+              return {
+                  'visible_rows':len(rows),
+                  'eligible_directional_null_older_1h_maturity':len(eligible),
+                  'eligible_ids':[r.get('id') for r in eligible[:25]],
+                  'settled_missing_dual':len(settled_missing_dual),
+                  'structurally_repairable_missing_dual':len(structurally_repairable),
+                  'structurally_repairable_ids':[r.get('id') for r in structurally_repairable[:25]],
+                  'aud063_dual_settled_visible':len(settled_aud063),
+              }
+
+          btc=classify(btc_payload,'BTCUSDT'); eth=classify(eth_payload,'ETHUSDT')
+          safety=context.get('safety') or {}
+          if safety.get('trade_mode')!='PAPER' or safety.get('orders_enabled') is not False or safety.get('live_capital_locked') is not True or safety.get('allow_live') is not False:
+              raise RuntimeError('PAPER_LOCKS_FAILED')
+          if context.get('synthetic_demo_enabled') is not False:
+              raise RuntimeError('SYNTHETIC_DEMO_UNEXPECTEDLY_ENABLED')
+          if state.get('legacy_startup_backfill_status')!='QUARANTINED_NO_READ_NO_WRITE':
+              raise RuntimeError('AUD063_R1_STARTUP_QUARANTINE_SENTINEL_MISSING')
+          if state.get('last_verify_restart_safe_stateless') is not True:
+              raise RuntimeError('AUD063_R1_RESTART_SAFE_SENTINEL_MISSING')
+          if int(state.get('last_verify_fairness_bound_rows') or 0)!=200:
+              raise RuntimeError('AUD063_R1_FAIRNESS_BOUND_SENTINEL_MISSING')
+
+          summary={
+              'merge_sha':os.environ['MERGE_SHA'],
+              'merge_tree':os.environ['MERGE_TREE'],
+              'runtime_started_at':started.isoformat(),
+              'runtime_age_seconds':round(age,1),
+              'health':'PASS',
+              'cycles_run':state.get('cycles_run'),
+              'last_cycle_at':state.get('last_cycle_at'),
+              'last_verify_at':state.get('last_verify_at'),
+              'last_verify_count':state.get('last_verify_count'),
+              'last_verify_rows_scanned':state.get('last_verify_rows_scanned'),
+              'last_verify_pages_scanned':state.get('last_verify_pages_scanned'),
+              'last_verify_scan_cap_hit':state.get('last_verify_scan_cap_hit'),
+              'last_verify_pass_complete':state.get('last_verify_scan_pass_complete'),
+              'last_verify_fairness_scope':state.get('last_verify_fairness_scope'),
+              'last_verify_unresolved_proof':state.get('last_verify_unresolved_proof'),
+              'last_verify_unresolved_price':state.get('last_verify_unresolved_price'),
+              'last_verify_cas_conflicts':state.get('last_verify_cas_conflicts'),
+              'last_verify_no_progress_reason':state.get('last_verify_no_progress_reason'),
+              'eligible_directional_pending_count_runtime':state.get('eligible_directional_pending_count'),
+              'oldest_eligible_directional_pending_id':state.get('oldest_eligible_directional_pending_id'),
+              'btc':btc,
+              'eth':eth,
+              'btc_score':{
+                  'score_status':btc_score.get('score_status'),
+                  'authoritative_score_pct':btc_score.get('authoritative_score_pct'),
+                  'proof_qualified_rows_raw':btc_score.get('proof_qualified_rows_raw'),
+                  'independent_1h_rows':btc_score.get('independent_1h_rows'),
+              },
+              'eth_score':{
+                  'score_status':eth_score.get('score_status'),
+                  'authoritative_score_pct':eth_score.get('authoritative_score_pct'),
+                  'proof_qualified_rows_raw':eth_score.get('proof_qualified_rows_raw'),
+                  'independent_1h_rows':eth_score.get('independent_1h_rows'),
+              },
+              'paper_locks':'PASS',
+              'synthetic_demo_enabled':context.get('synthetic_demo_enabled'),
+              'legacy_startup_backfill_status':state.get('legacy_startup_backfill_status'),
+              'reconciler_cycle_proof':'HEALTHY_RUNTIME_OLDER_THAN_130S_WITH_120S_HEARTBEAT_FAIL_CLOSED_GUARD',
+          }
+          print('AUD063_LAND_PROD_SUMMARY='+json.dumps(summary,sort_keys=True,separators=(',',':')),flush=True)
+          PY
