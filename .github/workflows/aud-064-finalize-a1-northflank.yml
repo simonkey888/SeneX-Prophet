@@ -37,6 +37,23 @@ jobs:
             echo "::add-mask::$token"
             echo "${token_name}_RAW_LEN=${#raw}"
             echo "${token_name}_NORMALIZED_LEN=${#token}"
+            TOKEN="$token" TOKEN_NAME="$token_name" python - <<'PY'
+          import base64, json, os, time
+          name=os.environ['TOKEN_NAME']; token=os.environ['TOKEN']
+          parts=token.split('.')
+          print(f'{name}_SEGMENTS={len(parts)}')
+          if len(parts)==3:
+              try:
+                  raw=parts[1]+'='*((4-len(parts[1])%4)%4)
+                  payload=json.loads(base64.urlsafe_b64decode(raw.encode()))
+                  exp=payload.get('exp'); iat=payload.get('iat'); now=int(time.time())
+                  print(f'{name}_JWT_EXP={exp if isinstance(exp,(int,float)) else "NONE"}')
+                  print(f'{name}_JWT_IAT={iat if isinstance(iat,(int,float)) else "NONE"}')
+                  print(f'{name}_JWT_NOW={now}')
+                  print(f'{name}_JWT_EXPIRED={str(bool(isinstance(exp,(int,float)) and exp < now)).lower()}')
+              except Exception:
+                  print(f'{name}_JWT_PARSE=UNAVAILABLE')
+          PY
             for scope in project team; do
               if [ "$scope" = project ]; then
                 base="https://api.northflank.com/v1/projects/$PROJECT_ID"
