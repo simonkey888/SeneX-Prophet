@@ -32,6 +32,18 @@ jobs:
         run: |
           set -euo pipefail
           python senecio_polymarket/scripts/aud063_r1_apply_patch.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('senecio_polymarket/tests/test_aud_063.py')
+          text=p.read_text(encoding='utf-8')
+          marker='\n\nif __name__ == "__main__":\n    unittest.main()\n'
+          if marker not in text:
+              raise SystemExit('unittest footer not found')
+          before, after = text.split(marker, 1)
+          if 'test_t28_open_candle_seconds_01_30_59_rejected_until_close' not in after:
+              raise SystemExit('R1 adversarial methods not found after footer')
+          p.write_text(before.rstrip() + '\n' + after.rstrip() + marker, encoding='utf-8')
+          PY
       - name: Generate evidence and verify focused suite
         shell: bash
         run: |
