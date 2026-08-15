@@ -1,0 +1,22 @@
+{
+  "availability_authority": "SETTLEMENT_OBSERVATION_TIME_NOT_TARGET_TIME",
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "earlier_cutoff_source_ids": [],
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "later_cutoff_source_ids_if_fully_proof_qualified": [
+    1
+  ],
+  "order": "AUD-063",
+  "same_row_leakage": false,
+  "scenario": {
+    "earlier_decision_cutoff": "2026-01-01T01:30:00+00:00",
+    "later_decision_cutoff": "2026-01-01T03:00:00+00:00",
+    "one_hour_target": "2026-01-01T01:00:00+00:00",
+    "prediction_time": "2026-01-01T00:00:00+00:00",
+    "recovery_observed_at": "2026-01-01T02:00:00+00:00"
+  },
+  "source_class": "DETERMINISTIC_CAUSAL_REPLAY_CONTRACT",
+  "symbol_isolation": true,
+  "weight_changes": 0
+}

@@ -2,31 +2,100 @@
   "captured_at_utc": "2026-08-15T03:06:06.339908+00:00",
   "counts": {
     "directional_backlog_by_symbol_age_bucket": {
-      "BTCUSDT": {"1_2h": 0, "2_6h": 2, "6_24h": 21, "gt_24h": 8},
-      "ETHUSDT": {"1_2h": 0, "2_6h": 2, "6_24h": 17, "gt_24h": 7}
+      "BTCUSDT": {
+        "1_2h": 0,
+        "2_6h": 2,
+        "6_24h": 21,
+        "gt_24h": 8
+      },
+      "ETHUSDT": {
+        "1_2h": 0,
+        "2_6h": 2,
+        "6_24h": 17,
+        "gt_24h": 7
+      }
     },
     "eligible_directional_null_gt_1h": 57,
-    "first_100_null_by_direction": {"FLAT": 100},
-    "null_by_direction": {"FLAT": 290, "LONG": 32, "SHORT": 25},
+    "first_100_null_by_direction": {
+      "FLAT": 100
+    },
+    "null_by_direction": {
+      "FLAT": 290,
+      "LONG": 32,
+      "SHORT": 25
+    },
     "old_flat_null_rows_ahead_of_oldest_directional": 104,
     "outcome_null": 347,
     "total_rows_visible": 388
   },
-  "health_minimized": {"cycles_failed": null, "cycles_run": null, "last_error": null, "predictions_count": null, "status": "ok", "version": "ACT-XXIX-systemic-antifragility"},
-  "http": {
-    "health": {"error": null, "status": 200},
-    "predictions_db_limit_500": {"error": null, "status": 200},
-    "scores": {"BTCUSDT": {"error": null, "http_status": 200}, "ETHUSDT": {"error": null, "http_status": 200}},
-    "state": {"error": null, "status": 200}
+  "health_minimized": {
+    "cycles_failed": null,
+    "cycles_run": null,
+    "last_error": null,
+    "predictions_count": null,
+    "status": "ok",
+    "version": "ACT-XXIX-systemic-antifragility"
   },
-  "oldest_eligible_directional": {"id": 146, "prediction": "LONG", "symbol": "BTCUSDT", "ts": "2026-08-13T20:05:52.490613+00:00"},
+  "http": {
+    "health": {
+      "error": null,
+      "status": 200
+    },
+    "predictions_db_limit_500": {
+      "error": null,
+      "status": 200
+    },
+    "scores": {
+      "BTCUSDT": {
+        "error": null,
+        "http_status": 200
+      },
+      "ETHUSDT": {
+        "error": null,
+        "http_status": 200
+      }
+    },
+    "state": {
+      "error": null,
+      "status": 200
+    }
+  },
+  "oldest_eligible_directional": {
+    "id": 146,
+    "prediction": "LONG",
+    "symbol": "BTCUSDT",
+    "ts": "2026-08-13T20:05:52.490613+00:00"
+  },
   "order": "AUD-063",
   "public_base_origin": "https://h011-web--senecio-h011--wbjggn89fnf8.code.run",
   "sanitization": "ALLOWLISTED_FIELDS_ONLY_NO_AUTH_HEADERS_NO_RAW_PAYLOAD",
   "scores": {
-    "BTCUSDT": {"authoritative_score_pct": null, "authority_cohort": "INDEPENDENT_NONOVERLAP_1H", "available": true, "independent_1h_rows": 10, "proof_qualified_rows_raw": 18, "score_status": "INSUFFICIENT_EVIDENCE"},
-    "ETHUSDT": {"authoritative_score_pct": null, "authority_cohort": "INDEPENDENT_NONOVERLAP_1H", "available": true, "independent_1h_rows": 11, "proof_qualified_rows_raw": 23, "score_status": "INSUFFICIENT_EVIDENCE"}
+    "BTCUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "available": true,
+      "independent_1h_rows": 10,
+      "proof_qualified_rows_raw": 18,
+      "score_status": "INSUFFICIENT_EVIDENCE"
+    },
+    "ETHUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "available": true,
+      "independent_1h_rows": 11,
+      "proof_qualified_rows_raw": 23,
+      "score_status": "INSUFFICIENT_EVIDENCE"
+    }
   },
   "source_class": "PUBLIC_READ_ONLY_HTTP",
-  "verifier": {"cycles_failed": 0, "cycles_run": 24, "last_cycle_at": "2026-08-15T02:51:08.564094+00:00", "last_error": null, "last_verify_at": "2026-08-15T02:51:10.478569+00:00", "last_verify_count": 0, "last_verify_ids": [], "verified_total": 41}
+  "verifier": {
+    "cycles_failed": 0,
+    "cycles_run": 24,
+    "last_cycle_at": "2026-08-15T02:51:08.564094+00:00",
+    "last_error": null,
+    "last_verify_at": "2026-08-15T02:51:10.478569+00:00",
+    "last_verify_count": 0,
+    "last_verify_ids": [],
+    "verified_total": 41
+  }
 }

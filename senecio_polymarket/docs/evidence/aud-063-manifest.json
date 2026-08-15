@@ -1,0 +1,35 @@
+{
+  "artifact_count_excluding_manifest": 12,
+  "artifacts": {
+    "../AUD-063-REPORT.md": "ef2bb2f85c2a707732f652eb0fbc4b610f75ebd51ea49713d716fc9714051b72",
+    "aud-063-authority-impact.json": "f1966998ab8b824f0fe83f2c85aaf4701140f559ff4d27bb490fff312a4a6263",
+    "aud-063-backlog-inventory.json": "8331961837d219bb3f9eb827d7964c06ff347ea2e19727eb9eb094acca08e913",
+    "aud-063-backlog-recovery-simulation.json": "891ad43198aac258759b48418d454a33f60f0c34eefc29fc71fbd8c200ffa101",
+    "aud-063-cursor-fairness.json": "59354c2f833a906d8f333174db1ddc8cbec7e4c21d8a2a8e8d1afd748ce279c6",
+    "aud-063-findings.json": "f578f0b1cc1cd2176deca5eee6e05fde87200512f1e77018bf4e17a2d818a8b8",
+    "aud-063-historical-price-contract.json": "9bcfc3623bad2046a728e8ea929246454d8fa88e306c463fe07fd45ed595331d",
+    "aud-063-learning-temporal-safety.json": "9e2d9efdcfd05f9183559fa3e8d1651c1912c60dd85e007aa29af708541ec64a",
+    "aud-063-race-idempotence.json": "b59d829a8fdca7d1f2dc4c50d53846ba1b4e252d5fb2aed4e4631a29af1c5058",
+    "aud-063-runtime-baseline.json": "e10aed3542ddf3b6bc999944af39ccc8e649abb785e9e6cddd2760a007448393",
+    "aud-063-selection-contract.json": "52d69a025b16ab2ee221109fe65fc1fcc1cd40df4323f23f1705dc4979bef612",
+    "aud-063-starvation-reproduction.json": "6523ad5b470281e11d4cdb4db6a1d634baf94f83b133728cbb8cbeef78d380a8"
+  },
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "database_mutations": 0,
+  "deploy": false,
+  "external_directional_activation": 0,
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "merge": false,
+  "order": "AUD-063",
+  "prefix_capture": {
+    "artifact_id": 9240533706,
+    "run_id": 31860917485
+  },
+  "production_mutations": 0,
+  "publication_secret_scan_required": true,
+  "runtime017_mutations": 0,
+  "source_class": "DETERMINISTIC_SHA256_INVENTORY",
+  "threshold_changes": 0,
+  "weight_changes": 0
+}

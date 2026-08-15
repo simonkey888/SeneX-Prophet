@@ -1,0 +1,32 @@
+{
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "bounded_batch": 100,
+  "cursor_rule": "advance_after_scan_even_if_row_unsettled; reset_at_end_of_pass_for_retry",
+  "failed_row_retryable_next_pass": true,
+  "flat_can_enter_verifier_page": false,
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "observability": [
+    "eligible_directional_pending_count",
+    "oldest_eligible_directional_pending_id",
+    "oldest_eligible_directional_pending_ts",
+    "oldest_eligible_directional_pending_age_seconds",
+    "last_verify_rows_scanned",
+    "last_verify_count",
+    "last_verify_unresolved_proof",
+    "last_verify_unresolved_price",
+    "last_verify_scan_cap_hit",
+    "last_verify_cursor",
+    "last_verify_scan_pass_complete",
+    "last_verify_no_progress_reason"
+  ],
+  "order": "ts.asc,id.asc",
+  "pagination": "STABLE_KEYSET_TS_ID",
+  "poison_row_can_permanently_block_later_rows": false,
+  "server_side_filters": {
+    "horizon": "ts<=now-1h",
+    "outcome": "is.null",
+    "prediction": "in.(LONG,SHORT)"
+  },
+  "source_class": "SOURCE_CONTRACT"
+}

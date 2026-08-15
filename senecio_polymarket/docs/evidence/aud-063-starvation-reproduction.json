@@ -1,19 +1,39 @@
 {
   "actual_query_params": [
-    {"limit": "100", "order": "ts.asc", "outcome": "is.null", "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit", "ts": "lt.2026-08-15T02:06:16.250102+00:00"},
-    {"limit": "100", "order": "ts.asc", "outcome": "is.null", "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit", "ts": "lt.2026-08-15T02:06:16.250329+00:00"}
+    {
+      "limit": "100",
+      "order": "ts.asc",
+      "outcome": "is.null",
+      "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit",
+      "ts": "lt.2026-08-15T02:06:16.250102+00:00"
+    },
+    {
+      "limit": "100",
+      "order": "ts.asc",
+      "outcome": "is.null",
+      "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit",
+      "ts": "lt.2026-08-15T02:06:16.250329+00:00"
+    }
   ],
   "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
-  "first_page_by_direction": {"FLAT": 100},
-  "fixture": {"batch_limit": 100, "later_directional_null": 1, "old_flat_null": 125},
+  "capture_artifact_id": 9240533706,
+  "capture_artifact_zip_sha256": "0206e22a44828c96e2ba12ea26caae21cec16c05c73b6b9f6d5b2c6fd917ef46",
+  "capture_run_id": 31860917485,
+  "first_page_by_direction": {
+    "FLAT": 100
+  },
+  "fixture": {
+    "batch_limit": 100,
+    "later_directional_null": 1,
+    "old_flat_null": 125
+  },
   "generated_at_utc": "2026-08-15T03:06:16.249716+00:00",
   "later_directional_id_seen": false,
   "order": "AUD-063",
-  "second_page_by_direction": {"FLAT": 100},
+  "second_page_by_direction": {
+    "FLAT": 100
+  },
   "server_side_direction_filter_present": false,
   "source_class": "EXACT_MAIN_IMPLEMENTATION_WITH_IN_MEMORY_POSTGREST_BOUNDARY",
-  "starvation_reproduced": true,
-  "capture_run_id": 31860917485,
-  "capture_artifact_id": 9240533706,
-  "capture_artifact_zip_sha256": "0206e22a44828c96e2ba12ea26caae21cec16c05c73b6b9f6d5b2c6fd917ef46"
+  "starvation_reproduced": true
 }

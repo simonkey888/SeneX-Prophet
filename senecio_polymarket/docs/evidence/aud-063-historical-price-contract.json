@@ -1,0 +1,27 @@
+{
+  "allowed_public_sources": [
+    "okx",
+    "kraken",
+    "gate",
+    "mexc",
+    "bitget"
+  ],
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "both_windows_required_before_primary_cas": true,
+  "canonical_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",
+  "containment": "candle_open_ms <= target_ms < candle_open_ms+60000",
+  "equal_price_rule": "LOSS_FOR_LONG_AND_SHORT",
+  "external_directional_market_price_source": false,
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "legacy_without_historical_price_evidence": "RAW_UNVERIFIED",
+  "live_current_price_fallback": false,
+  "order": "AUD-063",
+  "same_source_as_origin_required": true,
+  "source_class": "SOURCE_AND_DETERMINISTIC_CANDLE_CONTRACT",
+  "unsupported_source_fallback": null,
+  "windows_seconds": [
+    900,
+    3600
+  ]
+}

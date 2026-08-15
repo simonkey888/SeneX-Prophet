@@ -1,0 +1,43 @@
+{
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "directional_backlog_by_symbol_age_bucket": {
+    "BTCUSDT": {
+      "1_2h": 0,
+      "2_6h": 2,
+      "6_24h": 21,
+      "gt_24h": 8
+    },
+    "ETHUSDT": {
+      "1_2h": 0,
+      "2_6h": 2,
+      "6_24h": 17,
+      "gt_24h": 7
+    }
+  },
+  "eligible_directional_null_gt_1h": 57,
+  "first_100_null_by_direction": {
+    "FLAT": 100
+  },
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "old_flat_null_rows_ahead_of_oldest_directional": 104,
+  "oldest_eligible_directional": {
+    "id": 146,
+    "prediction": "LONG",
+    "symbol": "BTCUSDT",
+    "ts": "2026-08-13T20:05:52.490613+00:00"
+  },
+  "order": "AUD-063",
+  "production_mutations": 0,
+  "runtime_verifier": {
+    "cycles_failed": 0,
+    "cycles_run": 24,
+    "last_cycle_at": "2026-08-15T02:51:08.564094+00:00",
+    "last_error": null,
+    "last_verify_at": "2026-08-15T02:51:10.478569+00:00",
+    "last_verify_count": 0,
+    "last_verify_ids": [],
+    "verified_total": 41
+  },
+  "source_class": "SANITIZED_PUBLIC_READ_ONLY_BASELINE_DERIVATION"
+}

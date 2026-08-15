@@ -1,0 +1,22 @@
+{
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "live_potential_settleable": "NOT_ESTIMABLE_WITHOUT_PER_ROW_CAUSAL_PROOF_AND_HISTORICAL_PRICE_READ",
+  "order": "AUD-063",
+  "outcome_authority_rule": "only primary NULL CAS creates outcome; reconciler is already-settled repair only",
+  "production_recovery_executed": false,
+  "production_rows_mutated": 0,
+  "public_baseline_eligible_directional_null": 57,
+  "recovery_observation_rule": "persist actual recovery observation time; never backdate to target/prediction time",
+  "source_class": "CODE_ONLY_DETERMINISTIC_RECOVERY_SIMULATION_NOT_PRODUCTION",
+  "synthetic_fixture_counts": {
+    "already_settled": 1,
+    "conflict": 1,
+    "eligible": 7,
+    "legacy_not_authority_eligible": 1,
+    "simulation_settled": 2,
+    "unresolved_missing_historical_price": 1,
+    "unresolved_missing_origin_or_source_proof": 1
+  }
+}

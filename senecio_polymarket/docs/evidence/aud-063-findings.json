@@ -1,0 +1,79 @@
+{
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "findings": [
+    {
+      "evidence": "pre-fix run 31860917485 reproduced 100/100 FLAT twice and later LONG unseen",
+      "fix": "server-side LONG/SHORT filter + stable ts,id keyset",
+      "id": "AUD063-F001",
+      "regression": "T1-T7",
+      "remaining_limitation": "production backlog intentionally not mutated",
+      "root_cause": "NULL selector ordered ts.asc limit100 without server-side direction filter; verifier skipped FLAT after fetch",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "evidence": "source trace oracle_runner._fetch_price_at_time vs persisted exchange_used",
+      "fix": "same-source historical evidence tied to origin witness; unsupported source fails closed",
+      "id": "AUD063-F002",
+      "regression": "T8-T10,T19",
+      "remaining_limitation": "public venue historical availability may still fail, leaving row unresolved",
+      "root_cause": "primary verifier always fetched OKX historical candles even when origin exchange_used differed",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "evidence": "source trace",
+      "fix": "require exact 1m containing candle open<=target<open+60s and persist target/candle identity",
+      "id": "AUD063-F003",
+      "regression": "T10",
+      "remaining_limitation": "1m candle close is the declared settlement estimator, not tick-level truth",
+      "root_cause": "historical helper selected closest candle at/before target without explicit containment proof",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "evidence": "legacy dual payload could qualify without per-window historical provenance",
+      "fix": "AUD063 proof requires aud063-v1 dual + both price_evidence_v1 records + same source",
+      "id": "AUD063-F004",
+      "regression": "T19,T23",
+      "remaining_limitation": "legacy rows remain RAW_UNVERIFIED until independently reconstructible",
+      "root_cause": "proof gate did not require persisted historical source/candle identities",
+      "severity": "HIGH",
+      "status": "CLOSED_FAIL_CLOSED_LEGACY"
+    },
+    {
+      "evidence": "source trace",
+      "fix": "repair-only reconciler uses exact origin source and no fallback; never NULL writer",
+      "id": "AUD063-F005",
+      "regression": "T18",
+      "remaining_limitation": "conflicting old outcome remains unchanged and non-repaired",
+      "root_cause": "reconciler could fallback unsupported exchange to OKX",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "evidence": "baseline last_verify_count=0 while 57 eligible directionals existed",
+      "fix": "verifier state now exposes eligible count, oldest, scanned, unresolved, cap, cursor and no-progress reason",
+      "id": "AUD063-F006",
+      "regression": "T25",
+      "remaining_limitation": "dashboard rendering may expose only fields already surfaced by state endpoint",
+      "root_cause": "runtime did not expose directional backlog/cursor/no-progress diagnostics",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "evidence": "runtime replay already checks settlement observed epoch <= decision cutoff",
+      "fix": "new settlement writes actual observed_at; proof requires it after 1h target; tests pin earlier exclusion/later inclusion",
+      "id": "AUD063-F007",
+      "regression": "T20-T24",
+      "remaining_limitation": "legacy rows without durable observation provenance fail authority gate",
+      "root_cause": "late recovery could only be causal if learning keys availability to actual persistence observation",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    }
+  ],
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "order": "AUD-063",
+  "source_class": "AUD063_SOURCE_FORENSICS_AND_REGRESSION_EVIDENCE"
+}

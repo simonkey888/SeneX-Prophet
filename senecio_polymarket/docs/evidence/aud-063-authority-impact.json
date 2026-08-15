@@ -1,0 +1,31 @@
+{
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "baseline": {
+    "BTCUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "available": true,
+      "independent_1h_rows": 10,
+      "proof_qualified_rows_raw": 18,
+      "score_status": "INSUFFICIENT_EVIDENCE"
+    },
+    "ETHUSDT": {
+      "authoritative_score_pct": null,
+      "authority_cohort": "INDEPENDENT_NONOVERLAP_1H",
+      "available": true,
+      "independent_1h_rows": 11,
+      "proof_qualified_rows_raw": 23,
+      "score_status": "INSUFFICIENT_EVIDENCE"
+    }
+  },
+  "edge_claim": "NO",
+  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "observable_eligible_directional_backlog": 57,
+  "order": "AUD-063",
+  "post_fix_actual_settleable_rows": "NOT_ESTIMABLE_WITHOUT_MUTATING_OR_READING_PRIVATE_PER_ROW_PROOF",
+  "post_fix_authority_delta": "NOT_ESTIMABLE",
+  "source_class": "SANITIZED_PUBLIC_BASELINE_PLUS_FAIL_CLOSED_COUNTERFACTUAL",
+  "threshold_changes": 0,
+  "weight_tuning": 0
+}
