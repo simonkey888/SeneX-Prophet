@@ -128,9 +128,19 @@ jobs:
         if: always()
         working-directory: senecio_polymarket
         run: |
+          set -euo pipefail
           diagnostic="${RUNNER_TEMP}/aud062-diagnostic"
           mkdir -p "$diagnostic"
           python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$diagnostic"
+          python - "$diagnostic/aud-062-publication-sanitization.json" <<'PY'
+          from pathlib import Path
+          import sys
+          report = Path(sys.argv[1]).read_text(encoding="utf-8")
+          print("AUD062_SANITIZATION_JSON_BEGIN")
+          print(report, end="")
+          print("AUD062_SANITIZATION_JSON_END")
+          PY
+          sha256sum "$diagnostic"/aud-062-*
 
       - name: Upload regenerated evidence diagnostic
         if: always()
