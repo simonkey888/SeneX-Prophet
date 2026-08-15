@@ -1,0 +1,182 @@
+name: AUD-063 LAND final production acceptance
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+    paths:
+      - .github/workflows/aud-063-land-final-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Classify production settlement state
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact landed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 2c4dbf284b23d3cf81b93dcfbd262660ab03dd43
+          fetch-depth: 1
+      - name: Read-only production classification
+        shell: bash
+        env:
+          BASE_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+          PYTHONPATH: senecio_polymarket
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json, os, urllib.parse, urllib.request
+          from datetime import datetime, timezone, timedelta
+          from backend.authoritative_score import build_authoritative_score
+          from backend.settlement_proof import is_proof_qualified
+          from backend.settlement_contract import normalize_exchange, parse_utc
+
+          BASE=os.environ['BASE_URL'].rstrip('/')
+          def get(path,q=None):
+              u=BASE+path
+              if q: u += '?' + urllib.parse.urlencode(q)
+              req=urllib.request.Request(u,headers={'Accept':'application/json','User-Agent':'senex-aud063-final/1'},method='GET')
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  return json.loads(r.read().decode('utf-8','replace'))
+          def audit(row):
+              a=row.get('audit')
+              if isinstance(a,dict): return a
+              if isinstance(a,str):
+                  try:
+                      x=json.loads(a); return x if isinstance(x,dict) else {}
+                  except Exception: return {}
+              return {}
+          def symbol(v): return str(v or '').upper().replace('/','').replace('-','').strip()
+          def dt(v): return parse_utc(v)
+
+          health=get('/api/health')
+          state=get('/api/oracle/state')
+          context=get('/api/market-context')
+          started=dt((health.get('oracle') or {}).get('started_at') or state.get('started_at'))
+          now=datetime.now(timezone.utc)
+          if not started: raise RuntimeError('MISSING_RUNTIME_START')
+
+          payloads={s:get('/api/oracle/predictions/db',{'limit':500,'symbol':s}) for s in ('BTCUSDT','ETHUSDT')}
+          all_rows=[]
+          for p in payloads.values(): all_rows.extend([r for r in p.get('predictions',[]) if isinstance(r,dict)])
+          # Endpoint is symbol-filtered before limit. If a symbol returns 500, coverage is not provably complete.
+          coverage={s:(len(payloads[s].get('predictions',[])) < 500) for s in payloads}
+
+          out={}
+          newly_settled_all=[]
+          newly_proof_all=[]
+          remaining_missing_dual_all=[]
+          remaining_structural_all=[]
+          for s,p in payloads.items():
+              rows=[r for r in p.get('predictions',[]) if isinstance(r,dict) and symbol(r.get('symbol'))==s]
+              current_eligible=[]
+              pre_start_current_null=[]
+              new_primary=[]
+              new_proof=[]
+              missing_dual=[]
+              structural=[]
+              repaired_after_start=[]
+              aud063_rows=[]
+              for r in rows:
+                  direction=str(r.get('prediction') or '').upper()
+                  ts=dt(r.get('ts'))
+                  a=audit(r)
+                  dual=a.get('outcomes_dual') if isinstance(a,dict) else None
+                  if direction in {'LONG','SHORT'} and r.get('outcome') is None and ts:
+                      if ts <= now-timedelta(seconds=3660): current_eligible.append(r)
+                      if ts <= started-timedelta(seconds=3660): pre_start_current_null.append(r)
+                  if r.get('outcome') in {'WIN','LOSS'} and direction in {'LONG','SHORT'}:
+                      if not isinstance(dual,dict):
+                          missing_dual.append(r)
+                          origin=a.get('origin_price_v1') if isinstance(a,dict) else None
+                          src=normalize_exchange(r.get('exchange_used'))
+                          origin_src=normalize_exchange((origin or {}).get('source')) if isinstance(origin,dict) else None
+                          try: px=float(r.get('price_now') or 0)
+                          except Exception: px=0
+                          if isinstance(origin,dict) and origin.get('version')=='origin-price-v1' and px>0 and src and src==origin_src and dt(origin.get('timestamp'))==ts:
+                              structural.append(r)
+                      else:
+                          if dual.get('settlement_contract_version')=='aud063-v1': aud063_rows.append(r)
+                          obs=dual.get('settlement_observation_v1') if isinstance(dual,dict) else None
+                          obs_dt=dt((obs or {}).get('observed_at')) if isinstance(obs,dict) else None
+                          writer=(obs or {}).get('writer') if isinstance(obs,dict) else None
+                          if obs_dt and obs_dt >= started:
+                              if writer=='SENEX_PRIMARY_DUAL_WINDOW_VERIFIER_V2':
+                                  new_primary.append(r)
+                                  if is_proof_qualified(r): new_proof.append(r)
+                              elif writer=='SENEX_SCORE_002_RECONCILER_REPAIR_ONLY':
+                                  repaired_after_start.append(r)
+              # Exact pre-start directional NULL reconstruction: current rows that were already mature at
+              # runtime start + rows whose persisted primary settlement observation proves NULL->settled after start.
+              newly_that_were_mature=[r for r in new_primary if dt(r.get('ts')) and dt(r.get('ts')) <= started-timedelta(seconds=3660)]
+              before_reconstructed=len(pre_start_current_null)+len(newly_that_were_mature)
+              score=build_authoritative_score(rows,symbol=s)
+              out[s]={
+                  'coverage_complete':coverage[s],
+                  'rows_visible':len(rows),
+                  'directional_null_before_runtime_reconstructed':before_reconstructed if coverage[s] else None,
+                  'directional_null_after_now':len(current_eligible) if coverage[s] else None,
+                  'new_primary_settlements_since_runtime_start':len(new_primary),
+                  'new_primary_settlement_ids':[r.get('id') for r in new_primary],
+                  'new_proof_qualified_since_runtime_start':len(new_proof),
+                  'reconciler_repairs_since_runtime_start':len(repaired_after_start),
+                  'settled_missing_dual_remaining':len(missing_dual) if coverage[s] else None,
+                  'structurally_repairable_missing_dual_remaining':len(structural) if coverage[s] else None,
+                  'structurally_repairable_ids':[r.get('id') for r in structural],
+                  'aud063_dual_settled_visible':len(aud063_rows),
+                  'proof_qualified_rows_raw_after':score.get('proof_qualified_rows_raw'),
+                  'independent_1h_rows_after':score.get('independent_1h_rows'),
+                  'score_status_after':score.get('score_status'),
+                  'authoritative_score_pct_after':score.get('authoritative_score_pct'),
+              }
+              newly_settled_all += new_primary
+              newly_proof_all += new_proof
+              remaining_missing_dual_all += missing_dual
+              remaining_structural_all += structural
+
+          safety=context.get('safety') or {}
+          summary={
+              'health':health.get('status'),
+              'runtime_started_at':started.isoformat(),
+              'runtime_age_seconds':round((now-started).total_seconds(),1),
+              'cycles_run':state.get('cycles_run'),
+              'last_cycle_at':state.get('last_cycle_at'),
+              'last_verify_at':state.get('last_verify_at'),
+              'last_verify_count':state.get('last_verify_count'),
+              'last_verify_rows_scanned':state.get('last_verify_rows_scanned'),
+              'last_verify_pages_scanned':state.get('last_verify_pages_scanned'),
+              'last_verify_scan_cap_hit':state.get('last_verify_scan_cap_hit'),
+              'last_verify_scan_pass_complete':state.get('last_verify_scan_pass_complete'),
+              'last_verify_unresolved_proof':state.get('last_verify_unresolved_proof'),
+              'last_verify_unresolved_price':state.get('last_verify_unresolved_price'),
+              'last_verify_cas_conflicts':state.get('last_verify_cas_conflicts'),
+              'last_verify_no_progress_reason':state.get('last_verify_no_progress_reason'),
+              'eligible_directional_pending_count_runtime':state.get('eligible_directional_pending_count'),
+              'last_verify_fairness_scope':state.get('last_verify_fairness_scope'),
+              'last_verify_restart_safe_stateless':state.get('last_verify_restart_safe_stateless'),
+              'last_verify_fairness_bound_rows':state.get('last_verify_fairness_bound_rows'),
+              'legacy_startup_backfill_status':state.get('legacy_startup_backfill_status'),
+              'paper_locks': safety.get('trade_mode')=='PAPER' and safety.get('orders_enabled') is False and safety.get('live_capital_locked') is True and safety.get('allow_live') is False,
+              'synthetic_demo_enabled':context.get('synthetic_demo_enabled'),
+              'newly_settled_total':len(newly_settled_all),
+              'newly_proof_qualified_total':len(newly_proof_all),
+              'settled_missing_dual_remaining_total':len(remaining_missing_dual_all) if all(coverage.values()) else None,
+              'structurally_repairable_missing_dual_remaining_total':len(remaining_structural_all) if all(coverage.values()) else None,
+              'by_symbol':out,
+          }
+          # Acceptance invariants that can be proven from public runtime only.
+          assert summary['health']=='ok'
+          assert summary['runtime_started_at'] > '2026-08-15T05:23:28+00:00'
+          assert summary['paper_locks'] is True
+          assert summary['synthetic_demo_enabled'] is False
+          assert summary['legacy_startup_backfill_status']=='QUARANTINED_NO_READ_NO_WRITE'
+          assert summary['last_verify_restart_safe_stateless'] is True
+          assert int(summary['last_verify_fairness_bound_rows'] or 0)==200
+          assert all(coverage.values())
+          print('AUD063_FINAL_ACCEPTANCE='+json.dumps(summary,sort_keys=True,separators=(',',':')),flush=True)
+          PY
