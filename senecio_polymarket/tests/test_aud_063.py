@@ -37,11 +37,20 @@ class FakeResponse:
 
 
 class FakePostgrest:
+    """Minimal PostgREST boundary with numeric semantics for integer id columns."""
+
     def __init__(self, rows):
         self.rows = copy.deepcopy(rows)
         self.calls = []
         self.is_closed = False
         self.patch_no_representation = False
+
+    @staticmethod
+    def _id_gt(left, right):
+        try:
+            return int(left) > int(right)
+        except (TypeError, ValueError):
+            return str(left) > str(right)
 
     def _selected(self, params):
         rows = [r for r in self.rows if r.get("outcome") is None]
@@ -50,17 +59,23 @@ class FakePostgrest:
         ts_filter = str(params.get("ts", ""))
         if ts_filter.startswith(("lt.", "lte.")):
             cutoff = datetime.fromisoformat(ts_filter.split(".", 1)[1].replace("Z", "+00:00"))
-            rows = [r for r in rows if datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")) <= cutoff]
+            rows = [
+                r for r in rows
+                if datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00")) <= cutoff
+            ]
         cursor = params.get("or")
         if cursor:
-            # Production keyset syntax is deterministic; obtain cursor values from the literal.
             prefix = "(ts.gt."
             middle = ",and(ts.eq."
             tail = ",id.gt."
             body = cursor[len(prefix):-2]
             cursor_ts, rest = body.split(middle, 1)
             same_ts, cursor_id = rest.split(tail, 1)
-            rows = [r for r in rows if str(r["ts"]) > cursor_ts or (str(r["ts"]) == same_ts and str(r["id"]) > cursor_id)]
+            rows = [
+                r for r in rows
+                if str(r["ts"]) > cursor_ts
+                or (str(r["ts"]) == same_ts and self._id_gt(r["id"], cursor_id))
+            ]
         rows.sort(key=lambda r: (str(r.get("ts")), int(r.get("id"))))
         return rows
 
@@ -69,12 +84,14 @@ class FakePostgrest:
         self.calls.append(("GET", params))
         if "id" in params and str(params["id"]).startswith("eq."):
             wanted = str(params["id"])[3:]
-            found = [r for r in self.rows if str(r.get("id")) == wanted]
-            return FakeResponse(found)
+            return FakeResponse([r for r in self.rows if str(r.get("id")) == wanted])
         selected = self._selected(params)
         total = len(selected)
         limit = int(params.get("limit", "100"))
-        return FakeResponse(selected[:limit], headers={"content-range": f"0-{max(0, min(limit, total)-1)}/{total}"})
+        return FakeResponse(
+            selected[:limit],
+            headers={"content-range": f"0-{max(0, min(limit, total)-1)}/{total}"},
+        )
 
     async def patch(self, path, params=None, json=None, **kwargs):
         params = dict(params or {})
@@ -85,7 +102,11 @@ class FakePostgrest:
                 continue
             if params.get("outcome") == "is.null" and row.get("outcome") is not None:
                 continue
-            if params.get("audit->outcomes_dual") == "is.null" and isinstance(row.get("audit"), dict) and row["audit"].get("outcomes_dual") is not None:
+            if (
+                params.get("audit->outcomes_dual") == "is.null"
+                and isinstance(row.get("audit"), dict)
+                and row["audit"].get("outcomes_dual") is not None
+            ):
                 continue
             if self.patch_no_representation:
                 return FakeResponse([], status=204, content=False)
@@ -161,8 +182,12 @@ class TinyCore:
         self._calibration_window = []
         self._calibration_by_direction = {}
         self._mutation_log = []
-    def record_outcome(self, *_): pass
-    def record_outcome_directional(self, *_): pass
+
+    def record_outcome(self, *_):
+        pass
+
+    def record_outcome_directional(self, *_):
+        pass
 
 
 class Aud063Tests(unittest.IsolatedAsyncioTestCase):
@@ -178,9 +203,11 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
             supabase_client._get_client = old
 
     async def test_t01_prefx_flat_starvation_reproduced_exact_shape(self):
-        rows = [pending_row(i + 1, "FLAT", ts=f"2026-01-01T00:{i//60:02d}:{i%60:02d}+00:00") for i in range(125)]
+        rows = [
+            pending_row(i + 1, "FLAT", ts=f"2026-01-01T00:{i//60:02d}:{i%60:02d}+00:00")
+            for i in range(125)
+        ]
         rows.append(pending_row(1000, "LONG", ts="2026-01-01T00:03:00+00:00"))
-        # Faithful old query intentionally has no direction predicate and no cursor.
         legacy = sorted([r for r in rows if r["outcome"] is None], key=lambda r: r["ts"])[:100]
         self.assertEqual({r["prediction"] for r in legacy}, {"FLAT"})
         self.assertNotIn(1000, {r["id"] for r in legacy})
@@ -202,7 +229,10 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
         old_get = supabase_client._get_client
         supabase_client._get_client = lambda: fake
         try:
-            with patch.object(oracle_runner, "_fetch_price_evidence_at_time", AsyncMock(side_effect=[ev15, ev1])), patch.object(oracle_runner, "_refresh_directional_stats", AsyncMock(return_value=None)):
+            with (
+                patch.object(oracle_runner, "_fetch_price_evidence_at_time", AsyncMock(side_effect=[ev15, ev1])),
+                patch.object(oracle_runner, "_refresh_directional_stats", AsyncMock(return_value=None)),
+            ):
                 settled = await oracle_runner._verify_pending_outcomes()
         finally:
             supabase_client._get_client = old_get
@@ -214,156 +244,278 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
         rows = [pending_row(i + 1, "LONG") for i in range(250)]
         fake = FakePostgrest(rows)
         seen = []
-        old = supabase_client._get_client; supabase_client._get_client = lambda: fake
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
             for _ in range(3):
                 seen += [r["id"] for r in await supabase_client.fetch_pending_outcomes(3600, 100)]
-        finally: supabase_client._get_client = old
-        self.assertEqual(len(seen), 250); self.assertEqual(len(set(seen)), 250)
+        finally:
+            supabase_client._get_client = old
+        self.assertEqual(len(seen), 250)
+        self.assertEqual(len(set(seen)), 250)
 
     async def test_t05_poison_row_does_not_starve_later_page(self):
         rows = [pending_row(1, "LONG", proof=False)] + [pending_row(i, "LONG") for i in range(2, 102)]
         fake = FakePostgrest(rows)
-        old = supabase_client._get_client; supabase_client._get_client = lambda: fake
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
             first = await supabase_client.fetch_pending_outcomes(3600, 100)
             second = await supabase_client.fetch_pending_outcomes(3600, 100)
-        finally: supabase_client._get_client = old
-        self.assertEqual(first[0]["id"], 1); self.assertEqual(second[-1]["id"], 101)
+        finally:
+            supabase_client._get_client = old
+        self.assertEqual(first[0]["id"], 1)
+        self.assertEqual(second[-1]["id"], 101)
 
     async def test_t06_failed_row_is_retryable_after_pass_reset(self):
         fake = FakePostgrest([pending_row(1, "LONG", proof=False), pending_row(2, "LONG")])
-        old = supabase_client._get_client; supabase_client._get_client = lambda: fake
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
             one = await supabase_client.fetch_pending_outcomes(3600, 100)
             two = await supabase_client.fetch_pending_outcomes(3600, 100)
-        finally: supabase_client._get_client = old
-        self.assertEqual([r["id"] for r in one], [1, 2]); self.assertEqual([r["id"] for r in two], [1, 2])
+        finally:
+            supabase_client._get_client = old
+        self.assertEqual([r["id"] for r in one], [1, 2])
+        self.assertEqual([r["id"] for r in two], [1, 2])
 
     async def test_t07_keyset_survives_prior_row_disappearance(self):
         fake = FakePostgrest([pending_row(i + 1) for i in range(150)])
-        old = supabase_client._get_client; supabase_client._get_client = lambda: fake
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
             first = await supabase_client.fetch_pending_outcomes(3600, 100)
             fake.rows = [r for r in fake.rows if r["id"] > 100]
             second = await supabase_client.fetch_pending_outcomes(3600, 100)
-        finally: supabase_client._get_client = old
-        self.assertEqual(first[-1]["id"], 100); self.assertEqual(second[0]["id"], 101)
+        finally:
+            supabase_client._get_client = old
+        self.assertEqual(first[-1]["id"], 100)
+        self.assertEqual(second[0]["id"], 101)
 
     async def test_t08_both_windows_required(self):
-        row = pending_row(1); fake = FakePostgrest([row])
-        ok = await self._with_client(fake, supabase_client.update_outcome_dual(1, "WIN", "WIN", 101, 102, price_evidence_15m=evidence(row, 900, 101), price_evidence_1h=None))
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        ok = await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102,
+                price_evidence_15m=evidence(row, 900, 101), price_evidence_1h=None,
+            ),
+        )
         self.assertFalse(ok)
 
     async def test_t09_missing_window_leaves_outcome_null(self):
-        row = pending_row(1); fake = FakePostgrest([row])
-        await self._with_client(fake, supabase_client.update_outcome_dual(1, "WIN", "WIN", 101, 102, price_evidence_15m=evidence(row, 900, 101)))
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102, price_evidence_15m=evidence(row, 900, 101)
+            ),
+        )
         self.assertIsNone(fake.rows[0]["outcome"])
 
     async def test_t10_historical_candle_boundary_is_containing_not_nearest(self):
         target = target_epoch_ms(FIXED_TS, 900)
-        prev = target - 60_000; exact = target
-        chosen = select_containing_candle([[prev, 0, 0, 0, 99, 1], [exact, 0, 0, 0, 101, 1]], target_ms=target)
+        prev = target - 60_000
+        exact = target
+        chosen = select_containing_candle(
+            [[prev, 0, 0, 0, 99, 1], [exact, 0, 0, 0, 101, 1]], target_ms=target
+        )
         self.assertEqual(chosen[0], exact)
-        self.assertIsNone(select_containing_candle([[prev - 60_000, 0, 0, 0, 99, 1]], target_ms=target))
+        self.assertIsNone(
+            select_containing_candle([[prev - 60_000, 0, 0, 0, 99, 1]], target_ms=target)
+        )
 
-    async def test_t11_long_arithmetic(self): self.assertEqual(directional_outcome("LONG", 100, 101), "WIN"); self.assertEqual(directional_outcome("LONG", 100, 100), "LOSS")
-    async def test_t12_short_arithmetic(self): self.assertEqual(directional_outcome("SHORT", 100, 99), "WIN"); self.assertEqual(directional_outcome("SHORT", 100, 100), "LOSS")
-    async def test_t13_flat_never_directional_outcome(self): self.assertIsNone(directional_outcome("FLAT", 100, 101))
+    async def test_t11_long_arithmetic(self):
+        self.assertEqual(directional_outcome("LONG", 100, 101), "WIN")
+        self.assertEqual(directional_outcome("LONG", 100, 100), "LOSS")
+
+    async def test_t12_short_arithmetic(self):
+        self.assertEqual(directional_outcome("SHORT", 100, 99), "WIN")
+        self.assertEqual(directional_outcome("SHORT", 100, 100), "LOSS")
+
+    async def test_t13_flat_never_directional_outcome(self):
+        self.assertIsNone(directional_outcome("FLAT", 100, 101))
 
     async def test_t14_cas_idempotence(self):
-        row = pending_row(1); fake = FakePostgrest([row]); ev15=evidence(row,900,101); ev1=evidence(row,3600,102)
-        old=supabase_client._get_client; supabase_client._get_client=lambda: fake
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        ev15 = evidence(row, 900, 101)
+        ev1 = evidence(row, 3600, 102)
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
-            first=await supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=ev15,price_evidence_1h=ev1)
-            second=await supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=ev15,price_evidence_1h=ev1)
-        finally: supabase_client._get_client=old
-        self.assertTrue(first); self.assertFalse(second)
+            first = await supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102, price_evidence_15m=ev15, price_evidence_1h=ev1
+            )
+            second = await supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102, price_evidence_15m=ev15, price_evidence_1h=ev1
+            )
+        finally:
+            supabase_client._get_client = old
+        self.assertTrue(first)
+        self.assertFalse(second)
 
     async def test_t15_cas_no_representation_is_not_success(self):
-        row=pending_row(1); fake=FakePostgrest([row]); fake.patch_no_representation=True
-        ok=await self._with_client(fake, supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=evidence(row,900,101),price_evidence_1h=evidence(row,3600,102)))
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        fake.patch_no_representation = True
+        ok = await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102,
+                price_evidence_15m=evidence(row, 900, 101),
+                price_evidence_1h=evidence(row, 3600, 102),
+            ),
+        )
         self.assertFalse(ok)
 
     async def test_t16_audit_json_preserved(self):
-        row=pending_row(1); fake=FakePostgrest([row])
-        await self._with_client(fake, supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=evidence(row,900,101),price_evidence_1h=evidence(row,3600,102)))
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102,
+                price_evidence_15m=evidence(row, 900, 101),
+                price_evidence_1h=evidence(row, 3600, 102),
+            ),
+        )
         self.assertEqual(fake.rows[0]["audit"]["sentinel"], "preserve-me")
 
     async def test_t17_concurrent_cas_only_one_wins(self):
-        row=pending_row(1); fake=FakePostgrest([row]); ev15=evidence(row,900,101); ev1=evidence(row,3600,102)
-        old=supabase_client._get_client; supabase_client._get_client=lambda: fake
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        ev15, ev1 = evidence(row, 900, 101), evidence(row, 3600, 102)
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
-            results=await asyncio.gather(*[supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=ev15,price_evidence_1h=ev1) for _ in range(2)])
-        finally: supabase_client._get_client=old
+            results = await asyncio.gather(*[
+                supabase_client.update_outcome_dual(
+                    1, "WIN", "WIN", 101, 102,
+                    price_evidence_15m=ev15, price_evidence_1h=ev1,
+                )
+                for _ in range(2)
+            ])
+        finally:
+            supabase_client._get_client = old
         self.assertEqual(sum(bool(x) for x in results), 1)
 
     async def test_t18_reconciler_is_not_null_outcome_writer(self):
-        text=(Path(__file__).parents[1]/"backend"/"settlement_reconciler.py").read_text()
+        text = (Path(__file__).parents[1] / "backend" / "settlement_reconciler.py").read_text()
         self.assertIn('"outcome": "in.(WIN,LOSS)"', text)
         self.assertNotIn('"outcome": "is.null"', text)
         self.assertNotIn('"outcome": o1h', text)
 
     async def test_t19_legacy_missing_historical_provenance_not_authority_qualified(self):
-        row=pending_row(1); row["outcome"]="WIN"; row["audit"]["outcomes_dual"]={"outcome_15m":"WIN","outcome_1h":"WIN","price_15m_later":101,"price_1h_later":102,"primary_window":"1h","settlement_observation_v1":{"version":"settlement-observation-v1","observed_at":OBSERVED}}
+        row = pending_row(1)
+        row["outcome"] = "WIN"
+        row["audit"]["outcomes_dual"] = {
+            "outcome_15m": "WIN", "outcome_1h": "WIN",
+            "price_15m_later": 101, "price_1h_later": 102,
+            "primary_window": "1h",
+            "settlement_observation_v1": {"version": "settlement-observation-v1", "observed_at": OBSERVED},
+        }
         self.assertFalse(settlement_proof.is_proof_qualified(row))
 
     async def test_t20_recovery_observation_time_is_actual_persistence_time(self):
-        row=pending_row(1); fake=FakePostgrest([row])
-        await self._with_client(fake, supabase_client.update_outcome_dual(1,"WIN","WIN",101,102,price_evidence_15m=evidence(row,900,101),price_evidence_1h=evidence(row,3600,102)))
-        observed=datetime.fromisoformat(fake.rows[0]["audit"]["outcomes_dual"]["settlement_observation_v1"]["observed_at"])
-        self.assertGreater(observed, datetime.fromisoformat(FIXED_TS)+timedelta(hours=1))
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102,
+                price_evidence_15m=evidence(row, 900, 101),
+                price_evidence_1h=evidence(row, 3600, 102),
+            ),
+        )
+        observed = datetime.fromisoformat(
+            fake.rows[0]["audit"]["outcomes_dual"]["settlement_observation_v1"]["observed_at"]
+        )
+        self.assertGreater(observed, datetime.fromisoformat(FIXED_TS) + timedelta(hours=1))
 
     async def test_t21_late_recovery_cannot_leak_into_earlier_cutoff(self):
         from oracle_runtime.institutional_core import replay_authoritative_learning
-        row=qualified_row(1, observed="2026-01-01T02:00:00+00:00")
-        state=replay_authoritative_learning(TinyCore(), [row], "BTCUSDT", decision_cutoff="2026-01-01T01:30:00+00:00")
+
+        row = qualified_row(1, observed="2026-01-01T02:00:00+00:00")
+        state = replay_authoritative_learning(
+            TinyCore(), [row], "BTCUSDT", decision_cutoff="2026-01-01T01:30:00+00:00"
+        )
         self.assertEqual(state["source_prediction_ids"], [])
 
     async def test_t22_later_cutoff_can_consume_fully_qualified_recovery(self):
         from oracle_runtime.institutional_core import replay_authoritative_learning
-        row=qualified_row(1, observed="2026-01-01T02:00:00+00:00")
-        state=replay_authoritative_learning(TinyCore(), [row], "BTCUSDT", decision_cutoff="2026-01-01T03:00:00+00:00")
+
+        row = qualified_row(1, observed="2026-01-01T02:00:00+00:00")
+        state = replay_authoritative_learning(
+            TinyCore(), [row], "BTCUSDT", decision_cutoff="2026-01-01T03:00:00+00:00"
+        )
         self.assertEqual(state["source_prediction_ids"], [1])
 
     async def test_t23_raw_proof_n_distinct_from_independent_authority_n(self):
-        a=qualified_row(1, ts="2026-01-01T00:00:00+00:00", observed="2026-01-01T03:00:00+00:00")
-        b=qualified_row(2, ts="2026-01-01T00:30:00+00:00", observed="2026-01-01T03:00:00+00:00")
-        raw=settlement_proof.filter_proof_qualified([a,b]); independent=authoritative_score.independent_1h_cohort(raw)
-        self.assertEqual(len(raw),2); self.assertEqual(len(independent),1)
+        a = qualified_row(
+            1, ts="2026-01-01T00:00:00+00:00", observed="2026-01-01T03:00:00+00:00"
+        )
+        b = qualified_row(
+            2, ts="2026-01-01T00:30:00+00:00", observed="2026-01-01T03:00:00+00:00"
+        )
+        raw = settlement_proof.filter_proof_qualified([a, b])
+        independent = authoritative_score.independent_1h_cohort(raw)
+        self.assertEqual(len(raw), 2)
+        self.assertEqual(len(independent), 1)
 
     async def test_t24_symbol_isolation_in_learning(self):
         from oracle_runtime.institutional_core import replay_authoritative_learning
-        btc=qualified_row(1,"LONG","BTCUSDT",observed="2026-01-01T02:00:00+00:00")
-        eth=qualified_row(2,"LONG","ETHUSDT",observed="2026-01-01T02:00:00+00:00")
-        state=replay_authoritative_learning(TinyCore(),[btc,eth],"BTCUSDT",decision_cutoff="2026-01-01T03:00:00+00:00")
-        self.assertEqual(state["source_prediction_ids"],[1])
+
+        btc = qualified_row(1, "LONG", "BTCUSDT", observed="2026-01-01T02:00:00+00:00")
+        eth = qualified_row(2, "LONG", "ETHUSDT", observed="2026-01-01T02:00:00+00:00")
+        state = replay_authoritative_learning(
+            TinyCore(), [btc, eth], "BTCUSDT", decision_cutoff="2026-01-01T03:00:00+00:00"
+        )
+        self.assertEqual(state["source_prediction_ids"], [1])
 
     async def test_t25_observability_surfaces_no_progress(self):
-        row=pending_row(1); fake=FakePostgrest([row]); old=supabase_client._get_client; supabase_client._get_client=lambda: fake
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
         try:
-            with patch.object(oracle_runner,"_fetch_price_evidence_at_time",AsyncMock(return_value=None)), patch.object(oracle_runner,"_refresh_directional_stats",AsyncMock(return_value=None)):
+            with (
+                patch.object(oracle_runner, "_fetch_price_evidence_at_time", AsyncMock(return_value=None)),
+                patch.object(oracle_runner, "_refresh_directional_stats", AsyncMock(return_value=None)),
+            ):
                 await oracle_runner._verify_pending_outcomes()
-        finally: supabase_client._get_client=old
-        self.assertEqual(oracle_runner._state["eligible_directional_pending_count"],1)
-        self.assertEqual(oracle_runner._state["last_verify_no_progress_reason"],"ELIGIBLE_PENDING_HISTORICAL_PRICE_UNAVAILABLE")
+        finally:
+            supabase_client._get_client = old
+        self.assertEqual(oracle_runner._state["eligible_directional_pending_count"], 1)
+        self.assertEqual(
+            oracle_runner._state["last_verify_no_progress_reason"],
+            "ELIGIBLE_PENDING_HISTORICAL_PRICE_UNAVAILABLE",
+        )
 
     async def test_t26_threshold_weight_external_direction_scope_unchanged(self):
-        self.assertEqual(authoritative_score.MIN_GLOBAL_N,100)
-        self.assertEqual(authoritative_score.MIN_DIRECTION_N,30)
+        self.assertEqual(authoritative_score.MIN_GLOBAL_N, 100)
+        self.assertEqual(authoritative_score.MIN_DIRECTION_N, 30)
         try:
-            changed=subprocess.check_output(["git","diff","--name-only",f"{BASE_SHA}...HEAD"],text=True).splitlines()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", f"{BASE_SHA}...HEAD"], text=True
+            ).splitlines()
         except Exception:
-            changed=[]
-        forbidden=("oracle/institutional_core.py","oracle_runtime/institutional_core.py","external")
+            changed = []
+        forbidden = ("oracle/institutional_core.py", "oracle_runtime/institutional_core.py", "external")
         self.assertFalse(any(any(token in path for token in forbidden) for path in changed))
 
     async def test_t27_runtime017_untouched(self):
         try:
-            changed=subprocess.check_output(["git","diff","--name-only",f"{BASE_SHA}...HEAD"],text=True).splitlines()
+            changed = subprocess.check_output(
+                ["git", "diff", "--name-only", f"{BASE_SHA}...HEAD"], text=True
+            ).splitlines()
         except Exception:
-            changed=[]
-        self.assertFalse(any("runtime017" in p.lower() or "runtime-017" in p.lower() for p in changed))
+            changed = []
+        self.assertFalse(
+            any("runtime017" in p.lower() or "runtime-017" in p.lower() for p in changed)
+        )
 
 
 if __name__ == "__main__":
