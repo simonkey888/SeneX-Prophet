@@ -1,10 +1,10 @@
 {
   "PUBLICATION_AUTH_HEADERS": "NONE",
-  "PUBLICATION_CREDENTIALS": "DETECTED",
+  "PUBLICATION_CREDENTIALS": "NONE",
   "PUBLICATION_NONPUBLIC_DATA": "NONE",
   "PUBLICATION_PII_REVIEW": "PASS",
   "PUBLICATION_SCOPE_REVIEW": "PASS",
-  "PUBLICATION_SECRET_SCAN": "FAIL",
+  "PUBLICATION_SECRET_SCAN": "PASS",
   "authorization_comment": 5299876166,
   "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
   "capture_time_utc": "2026-08-14T21:46:28Z",
@@ -34,10 +34,14 @@
       "version": "AUD-062-R2-publication-scan-v3"
     },
     {
-      "reason": "DEPENDENCY_MISSING",
+      "candidate_count": 91,
+      "confirmed_secret_count": 0,
+      "network_verification": false,
+      "reviewed_digest_false_positive_count": 87,
+      "reviewed_scanner_status_false_positive_count": 4,
       "scanner": "detect-secrets",
-      "status": "FAIL",
-      "version": null
+      "status": "PASS",
+      "version": "1.5.0"
     }
   ],
   "scope_review": {
