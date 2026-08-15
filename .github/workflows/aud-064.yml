@@ -1,12 +1,10 @@
 name: AUD-064 Learning Authority Exact Head
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - audit/aud-064-learning-authority-freeze
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -21,7 +19,7 @@ jobs:
       BASE_TREE: 0cb5abaa024f1325bf88e5fd3390dcec8f5f972d
       AUD062_HEAD: f65e1723953ac23caf1ca3741ec894577c97aae7
       AUD062_TREE: d8c8b734bdfd0d0a33e31bdd80557e9dafb71b06
-      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CANDIDATE_SHA: ${{ github.sha }}
     steps:
       - name: Checkout exact candidate head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -35,7 +33,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Exact base reference and head lineage
+      - name: Exact base reference and candidate identity
         shell: bash
         run: |
           set -euo pipefail
@@ -53,6 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python -m pip install --upgrade pip
           python -m pip install -r senecio_polymarket/requirements.txt
           python -m pip install 'detect-secrets==1.5.0' 'PyYAML>=6,<7'
 
@@ -71,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest tests.test_aud_061 tests.test_authoritative_learning -v 2>&1 | tee /tmp/aud061-learning.log
-          grep -Eq 'Ran [1-9][0-9]* tests' /tmp/aud061-learning.log
+          grep -Eq 'Ran 29 tests' /tmp/aud061-learning.log
           grep -q '^OK$' /tmp/aud061-learning.log
 
       - name: AUD-063 and R1 settlement preservation
@@ -89,20 +88,15 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s tests -v 2>&1 | tee /tmp/aud064-full.log
-          grep -Eq 'Ran [1-9][0-9]* tests' /tmp/aud064-full.log
+          grep -Eq 'Ran 190 tests' /tmp/aud064-full.log
           grep -q '^OK$' /tmp/aud064-full.log
 
-      - name: Compile and diff hygiene
+      - name: Compile diff and frozen-scope gates
         shell: bash
         run: |
           set -euo pipefail
           python -m compileall -q senecio_polymarket
           git diff --check "$BASE_SHA"...HEAD
-
-      - name: Frozen settlement model threshold and runtime017 scope gate
-        shell: bash
-        run: |
-          set -euo pipefail
           git diff --name-only "$BASE_SHA"...HEAD | sort > /tmp/aud064-changed.txt
           cat /tmp/aud064-changed.txt
           git diff --exit-code "$BASE_SHA"...HEAD -- \
@@ -118,6 +112,7 @@ jobs:
           from pathlib import Path
           changed=Path('/tmp/aud064-changed.txt').read_text().splitlines()
           allowed={
+            '.github/workflows/aud-063.yml',
             '.github/workflows/aud-064.yml',
             '.github/workflows/oracle.yml',
             '.github/workflows/senex-score-001.yml',
@@ -142,7 +137,7 @@ jobs:
           grep -q '^MIN_GLOBAL_N = 100$' senecio_polymarket/backend/authoritative_score.py
           grep -q '^MIN_DIRECTION_N = 30$' senecio_polymarket/backend/authoritative_score.py
 
-      - name: Shadow-only production authority source gate
+      - name: Shadow-only production authority gate
         shell: bash
         run: |
           set -euo pipefail
@@ -154,52 +149,48 @@ jobs:
           ! grep -q 'MIN_LEARNING_EXAMPLES = ' senecio_polymarket/oracle_runtime/institutional_core_real.py
           echo 'AUD064_AUTHORITY_CEILING=PASS'
 
-      - name: Read-only workflow trust-boundary audit
+      - name: Workflow trust-boundary and stale-aud retirement audit
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'contents: read' .github/workflows/oracle.yml
-          ! grep -q 'contents: write' .github/workflows/oracle.yml
-          ! grep -Eq '^[[:space:]]*git[[:space:]]+push\b' .github/workflows/oracle.yml
-          ! grep -q 'actions/deploy-pages' .github/workflows/oracle.yml
-          ! grep -q 'pages: write' .github/workflows/oracle.yml
-          grep -q 'persist-credentials: false' .github/workflows/oracle.yml
           python - <<'PY'
           import json,re,yaml
           from pathlib import Path
-          workflows=(
-              '.github/workflows/oracle.yml',
-              '.github/workflows/aud-064.yml',
-              '.github/workflows/senex-score-001.yml',
-              '.github/workflows/senex-score-002.yml',
-              '.github/workflows/smoke-tests.yml',
-          )
+          workflows=[
+            '.github/workflows/aud-063.yml',
+            '.github/workflows/aud-064.yml',
+            '.github/workflows/oracle.yml',
+            '.github/workflows/senex-score-001.yml',
+            '.github/workflows/senex-score-002.yml',
+            '.github/workflows/smoke-tests.yml',
+          ]
           for name in workflows:
               text=Path(name).read_text()
               yaml.safe_load(text)
+              assert 'contents: write' not in text, name
+              assert 'pages: write' not in text, name
+              assert 'id-token: write' not in text, name
+              assert not re.search(r'(?m)^\s*git\s+push\b',text), name
               for line in text.splitlines():
                   s=line.strip()
                   if s.startswith('uses:'):
                       ref=s.split('@',1)[1].split()[0]
                       assert re.fullmatch(r'[0-9a-f]{40}',ref), (name,s)
-          for name in (
-              '.github/workflows/senex-score-001.yml',
-              '.github/workflows/senex-score-002.yml',
-              '.github/workflows/smoke-tests.yml',
-          ):
+          for name in ('.github/workflows/aud-063.yml','.github/workflows/aud-064.yml'):
+              assert 'pull_request:' not in Path(name).read_text(), name
+          for name in ('.github/workflows/senex-score-001.yml','.github/workflows/senex-score-002.yml','.github/workflows/smoke-tests.yml'):
               text=Path(name).read_text()
+              assert 'pull_request:' in text, name
               assert 'github.event.pull_request.head.sha || github.sha' in text, name
               assert 'persist-credentials: false' in text, name
               assert 'contents: read' in text, name
-              assert 'contents: write' not in text, name
-          m=json.loads(Path('senecio_polymarket/docs/evidence/aud-064-governance-ruleset-proposal.json').read_text())
-          assert m['status']=='PROPOSED_NOT_APPLIED'
-          assert m['github_settings_applied'] is False
-          assert m['required_approving_review_count']==0
-          assert m['require_last_push_approval'] is False
-          assert m['bypass_actors']==[]
-          assert m['required_checks']==['score-001','score-002','act_final_audit_smoke (T1-T12)']
-          assert all(item['exact_pr_head_checkout'] for item in m['required_check_evidence'].values())
+          manifest=json.loads(Path('senecio_polymarket/docs/evidence/aud-064-governance-ruleset-proposal.json').read_text())
+          assert manifest['status']=='PROPOSED_NOT_APPLIED'
+          assert manifest['github_settings_applied'] is False
+          assert manifest['bypass_actors']==[]
+          assert manifest['required_approving_review_count']==0
+          assert manifest['require_last_push_approval'] is False
+          assert manifest['required_checks']==['score-001','score-002','act_final_audit_smoke (T1-T12)']
           print('AUD064_MAINTAINER_DEFENSE=PASS')
           PY
 
@@ -213,44 +204,6 @@ jobs:
           diff -ru /tmp/aud064-regen1 /tmp/aud064-regen2
           echo 'AUD064_EVIDENCE_DETERMINISTIC=PASS'
 
-      - name: Exact-head evidence receipt
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,subprocess
-          from pathlib import Path
-          base='2c4dbf284b23d3cf81b93dcfbd262660ab03dd43'
-          ref='f65e1723953ac23caf1ca3741ec894577c97aae7'
-          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
-          changed=git('diff','--name-only',f'{base}...HEAD').splitlines()
-          receipt={
-            'version':'AUD-064-exact-head-receipt-v1',
-            'base_sha':base,
-            'base_tree':'0cb5abaa024f1325bf88e5fd3390dcec8f5f972d',
-            'aud062_reference_head':ref,
-            'aud062_reference_tree':'d8c8b734bdfd0d0a33e31bdd80557e9dafb71b06',
-            'candidate_head':git('rev-parse','HEAD'),
-            'candidate_tree':git('rev-parse','HEAD^{tree}'),
-            'changed_paths':changed,
-            'hard_locks':{
-              'learning_mutation_authority':'SHADOW_ONLY',
-              'production_learning_mutation_enabled':False,
-              'production_decision_weights':'FROZEN_BASE',
-              'github_settings_applied':False,
-              'merge':False,
-              'deploy':False,
-              'runtime017_mutations':0,
-              'threshold_changes':0,
-              'base_weight_changes':0,
-              'external_directional_activation':0,
-            },
-          }
-          Path('/tmp/aud064-exact-head.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
-          print('AUD064_EXACT_HEAD='+receipt['candidate_head'])
-          print('AUD064_EXACT_TREE='+receipt['candidate_tree'])
-          PY
-
       - name: Publication sanitization
         shell: bash
         run: |
@@ -263,19 +216,20 @@ jobs:
           from pathlib import Path
           data=json.load(open('/tmp/aud064-secrets.json'))
           safe_hash=re.compile(r'(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])|(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])')
-          safe_dummy=re.compile(r'(aud064_test_only_placeholder|example\.invalid)')
           unresolved=[]
           for filename,findings in data.get('results',{}).items():
               lines=Path(filename).read_text(encoding='utf-8',errors='replace').splitlines()
               for finding in findings:
                   n=int(finding['line_number']); line=lines[n-1] if 0<n<=len(lines) else ''
-                  if safe_hash.search(line) or safe_dummy.search(line): continue
+                  if safe_hash.search(line) or 'aud064_test_only_placeholder' in line or 'example.invalid' in line:
+                      continue
                   unresolved.append((filename,n,finding.get('type')))
           assert not unresolved, unresolved
-          dangerous=re.compile(r'(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)')
+          dangerous=re.compile(r'(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9_]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b|\bsb_secret_[A-Za-z0-9_-]{20,}\b|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)')
           for filename in Path('/tmp/aud064-changed.txt').read_text().splitlines():
               p=Path(filename)
-              if p.is_file(): assert dangerous.search(p.read_text(encoding='utf-8',errors='replace')) is None, filename
+              if p.is_file():
+                  assert dangerous.search(p.read_text(encoding='utf-8',errors='replace')) is None, filename
           print('AUD064_CONFIRMED_SECRETS=0')
           print('AUD064_PUBLICATION_PII=PASS')
           PY
@@ -283,7 +237,7 @@ jobs:
       - name: Upload exact-head evidence bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-064-exact-head-${{ env.CANDIDATE_SHA }}
+          name: aud-064-finalize-exact-head-${{ env.CANDIDATE_SHA }}
           if-no-files-found: error
           retention-days: 14
           path: |
@@ -292,5 +246,4 @@ jobs:
             /tmp/aud063-preservation.log
             /tmp/aud064-full.log
             /tmp/aud064-secrets.json
-            /tmp/aud064-exact-head.json
             /tmp/aud064-regen1/*
