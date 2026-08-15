@@ -36,9 +36,10 @@
     },
     "act_final_audit_smoke (T1-T12)": {
       "workflow": ".github/workflows/smoke-tests.yml",
-      "candidate_blob": "37c2f94b27f55a872fdfccc532c3eebed87d7dbd",
+      "candidate_blob": "2bba4055cdb492db68aa3b3ab759b575d71e6657",
       "generic_pull_request_main": true,
-      "exact_pr_head_checkout": true
+      "exact_pr_head_checkout": true,
+      "concurrency_scope": "EXACT_CANDIDATE_SHA"
     }
   },
   "excluded_one_off_checks": [
