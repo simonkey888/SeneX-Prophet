@@ -161,6 +161,21 @@ def get_pending_scan_diagnostics() -> dict[str, Any]:
     return dict(_pending_scan_diagnostics)
 
 
+_pending_scan_cursor: tuple[str, str] | None = None
+_pending_scan_diagnostics: dict[str, Any] = {}
+
+
+def reset_pending_scan_cursor() -> None:
+    """Reset the bounded keyset scan. Intended for restart semantics/tests."""
+    global _pending_scan_cursor, _pending_scan_diagnostics
+    _pending_scan_cursor = None
+    _pending_scan_diagnostics = {}
+
+
+def get_pending_scan_diagnostics() -> dict[str, Any]:
+    return dict(_pending_scan_diagnostics)
+
+
 async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100) -> list[dict]:
     """Fetch one bounded keyset page of eligible directional NULL outcomes.
 
