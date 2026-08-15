@@ -61,14 +61,20 @@
     "source_evidence_hash": "09dd93f99743aa7295961e8bb21e4aa242416587f12c62e132dcdeeb16f92e6a",
     "version": "decision-provenance-roundtrip-v2"
   },
+  "fixture_scope": "HELPER_CONTRACT_ONLY",
   "invented_timestamps": 0,
   "legacy_rows": "INSUFFICIENT_CAUSAL_PROVENANCE",
   "persisted_json_reload_check": {
+    "external_observation_cutoff_classification": "COMPLETE",
     "feature_observation_cutoff_classification": "COMPLETE",
     "hash_matches": true,
     "learning_hash_present": true,
+    "learning_provenance_classification": "COMPLETE",
+    "legacy_timestamp_invention": false,
     "market_snapshot_identity_present": true,
     "source_evidence_hash": "09dd93f99743aa7295961e8bb21e4aa242416587f12c62e132dcdeeb16f92e6a"
   },
-  "version": "AUD-062-R1-provenance-roundtrip-v1"
+  "runtime_acceptance_scope": "WHOLE_RETURNED_PREDICTION_ROW_SERIALIZE_DISCARD_RELOAD_VERIFY",
+  "runtime_acceptance_test": "tests.test_aud_062_r2.Aud062R2RegressionTests.test_r2_f003_whole_runtime_row_round_trips_from_persisted_json_only",
+  "version": "AUD-062-R2-provenance-roundtrip-v2"
 }

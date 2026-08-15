@@ -1432,7 +1432,7 @@ def r1_remediation_artifacts(
     roundtrip_check = verify_persisted_roundtrip(roundtrip_reloaded)
 
     governance_manifest = {
-        "version": "AUD-062-R1-github-governance-proposal-v1",
+        "version": "AUD-062-R2-github-governance-proposal-v2",
         "status": "PROPOSED_NOT_APPLIED",
         "github_settings_applied": False,
         "repository": "simonkey888/SeneX-Prophet",
@@ -1448,8 +1448,12 @@ def r1_remediation_artifacts(
             "SMOKE": "act_final_audit_smoke (T1-T12)",
             "AUD_EXACT_HEAD_GATE": "AUD_EXACT_HEAD_GATE",
         },
-        "stale_approval_handling": {"dismiss_stale_reviews_on_push": True, "require_last_push_approval": True},
+        "stale_approval_handling": {"dismiss_stale_reviews_on_push": False, "require_last_push_approval": False},
         "bypass_actors": [],
+        "owner_aud_authorization": "ISSUE23_PROCESS_GATE",
+        "self_approval_required": False,
+        "normal_author_can_bypass_required_checks": False,
+        "single_owner_mergeability": "PR_PLUS_EXACT_HEAD_CHECKS_NO_GITHUB_REVIEW_REQUIRED",
         "write_capable_apps_reviewed": {"oracle_workflow": "DOWNGRADED_TO_CONTENTS_READ_NO_GIT_PUSH", "other_apps": "OWNER_CONTROL_PLANE_REVIEW_REQUIRED"},
         "deploy_only_from_reviewed_main_sha": True,
         "rest_ruleset_request_body": {
@@ -1461,7 +1465,7 @@ def r1_remediation_artifacts(
             "rules": [
                 {"type": "deletion"},
                 {"type": "non_fast_forward"},
-                {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": True, "require_code_owner_review": False, "require_last_push_approval": True, "required_approving_review_count": 1, "required_review_thread_resolution": True}},
+                {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": False, "require_code_owner_review": False, "require_last_push_approval": False, "required_approving_review_count": 0, "required_review_thread_resolution": True}},
                 {"type": "required_status_checks", "parameters": {"do_not_enforce_on_create": False, "strict_required_status_checks_policy": True, "required_status_checks": [
                     {"context": "score-001"},
                     {"context": "score-002"},
@@ -1474,10 +1478,10 @@ def r1_remediation_artifacts(
     }
 
     dispositions = {
-        "F001": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "single canonical EV authority; historical anchor disabled; EV NOT_ESTIMABLE"},
+        "F001": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "single canonical EV authority; explicit core survival EV cannot fall back to anchor-adjusted EV; EV NOT_ESTIMABLE"},
         "F002": {"status": "CLOSED", "evidence": "one survivability calculation supplies machine probability and reason"},
-        "F003": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "direct-push workflow removed; settings manifest proposed but not applied"},
-        "F004": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "future persisted-only round trip complete; legacy rows remain insufficient"},
+        "F003": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "direct-push workflow removed; single-owner mergeable exact-check ruleset proposed but not applied"},
+        "F004": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "future whole-runtime-row persisted-only round trip enforced by exact-head R2 test; legacy rows remain insufficient"},
         "F005": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "OKX spot instruments named; account-tier/fill costs unauthoritative so tradeability false"},
         "F006": {"status": "CLOSED", "evidence": "heuristic score names plus deprecated non-calibrated aliases"},
         "F007": {"status": "CLOSED", "evidence": "reporting, learning mutation, and size calibration authorities separated; decision uses frozen weights"},
@@ -1500,9 +1504,12 @@ def r1_remediation_artifacts(
             "double_counting": {"status": "PASS", "authoritative_cost_terms_applied": 0, "reason": "cost authority is fail-closed rather than estimated from convenient constants"},
         },
         "aud-062-r1-provenance-roundtrip.json": {
-            "version": "AUD-062-R1-provenance-roundtrip-v1",
+            "version": "AUD-062-R2-provenance-roundtrip-v2",
             "fixture": roundtrip_fixture,
             "persisted_json_reload_check": roundtrip_check,
+            "fixture_scope": "HELPER_CONTRACT_ONLY",
+            "runtime_acceptance_test": "tests.test_aud_062_r2.Aud062R2RegressionTests.test_r2_f003_whole_runtime_row_round_trips_from_persisted_json_only",
+            "runtime_acceptance_scope": "WHOLE_RETURNED_PREDICTION_ROW_SERIALIZE_DISCARD_RELOAD_VERIFY",
             "legacy_rows": "INSUFFICIENT_CAUSAL_PROVENANCE",
             "invented_timestamps": 0,
         },
@@ -1553,6 +1560,39 @@ def r1_remediation_artifacts(
             "activation_authorized": False,
         },
         "aud-062-r1-governance-settings-manifest.json": governance_manifest,
+        "aud-062-r2-correction-evidence.json": {
+            "version": "AUD-062-R2-correction-evidence-v1",
+            "order_comment": 5299876166,
+            "R2_F001": {
+                "status": "FIXED",
+                "core_ev_source": "EXPLICIT_CORE_RECONSTRUCTION_ONLY",
+                "post_anchor_adjusted_ev_fallback": False,
+                "neutral_probability_input": "NOT_APPLICABLE",
+            },
+            "R2_F002": {
+                "status": "FIXED",
+                "required_approving_review_count": 0,
+                "require_last_push_approval": False,
+                "bypass_actors": [],
+                "owner_aud_authorization": "ISSUE23_PROCESS_GATE",
+                "github_settings_applied": False,
+            },
+            "R2_F003": {
+                "status": "FIXED",
+                "acceptance_test": "tests.test_aud_062_r2.Aud062R2RegressionTests.test_r2_f003_whole_runtime_row_round_trips_from_persisted_json_only",
+                "whole_returned_row_roundtrip": True,
+                "persisted_fields_only_verification": True,
+                "real_network_or_database": False,
+            },
+            "historical_rows_changed": 0,
+            "edge_claimed": False,
+            "threshold_changes": 0,
+            "post_hoc_weight_tuning": 0,
+            "external_directional_activation": 0,
+            "github_settings_applied": False,
+            "production_mutations": 0,
+            "runtime017_mutations": 0,
+        },
         "aud-062-r1-finding-disposition.json": {
             "version": "AUD-062-R1-finding-disposition-v1",
             "findings": dispositions,

@@ -125,11 +125,18 @@ def canonical_ev_contract(
 ) -> dict[str, Any]:
     """Serialize one EV authority and demote both historical EVs to diagnostics."""
     cost = instrument_cost_contract(symbol)
-    heuristic_score = (
-        features.get("heuristic_up_score", features.get("up_prob"))
-        if str(features.get("direction") or "").upper() == "LONG"
-        else features.get("heuristic_down_score", features.get("down_prob"))
-    )
+    direction = str(features.get("direction") or "").upper()
+    if direction == "LONG":
+        heuristic_score = features.get("heuristic_up_score", features.get("up_prob"))
+        probability_semantic_class = "HEURISTIC_DIRECTIONAL_SCORE"
+    elif direction == "SHORT":
+        heuristic_score = features.get("heuristic_down_score", features.get("down_prob"))
+        probability_semantic_class = "HEURISTIC_DIRECTIONAL_SCORE"
+    else:
+        heuristic_score = None
+        probability_semantic_class = "NOT_APPLICABLE"
+    core_survival_ev = historical_ev.get("core_survival_ev")
+    core_reconstructible = isinstance(core_survival_ev, (int, float))
     return {
         "version": CONTRACT_VERSION,
         "symbol": normalize_symbol(symbol),
@@ -137,19 +144,24 @@ def canonical_ev_contract(
         "horizon": CANONICAL_HORIZON,
         "probability_input": {
             "value": heuristic_score,
-            "semantic_class": "HEURISTIC_DIRECTIONAL_SCORE",
+            "semantic_class": probability_semantic_class,
             "calibrated_probability": False,
             "eligible_as_p_win": False,
         },
         "historical_core_ev": {
-            "status": "DIAGNOSTIC_ONLY",
+            "status": "DIAGNOSTIC_ONLY" if core_reconstructible else "NOT_RECONSTRUCTIBLE",
+            "provenance_status": "EXPLICIT_CORE_RECONSTRUCTION" if core_reconstructible else "INSUFFICIENT_PROVENANCE",
             "base_ev": historical_ev.get("base_ev"),
-            "survival_adjusted_ev": historical_ev.get("core_survival_ev", historical_ev.get("adjusted_ev")),
+            "survival_adjusted_ev": core_survival_ev if core_reconstructible else None,
         },
         "historical_parallel_market_anchor": {
             "status": "DISABLED_AS_DECISION_AUTHORITY",
             "selection_operator": "NO_MIN_MAX_OR_FALLBACK_AUTHORITY",
             "serialized_value": historical_ev.get("market_anchor_ev"),
+            "historical_final_adjusted_ev": historical_ev.get(
+                "historical_adjusted_ev", historical_ev.get("adjusted_ev")
+            ),
+            "may_include_hidden_parallel_anchor": True,
         },
         "canonical_ev_before_cost": None,
         "canonical_cost_terms": cost,
@@ -322,17 +334,41 @@ def feature_provenance_contract(market: dict[str, Any], result: dict[str, Any]) 
 def verify_persisted_roundtrip(contract: dict[str, Any]) -> dict[str, Any]:
     payload = {key: deepcopy(value) for key, value in contract.items() if key != "source_evidence_hash"}
     recomputed = canonical_hash(payload)
+    observed_statuses = {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
     feature_cutoff = all(
-        item.get("status") not in {"REAL_OBSERVED_ZERO", "REAL_NONZERO"}
-        or item.get("observed_at") is not None
+        item.get("status") not in observed_statuses
+        or (
+            bool(item.get("source_identity"))
+            and item.get("observed_at") is not None
+        )
         for item in payload.get("feature_observations") or []
+    )
+    external_cutoff = all(
+        item.get("status") == "NOT_APPLICABLE"
+        or (
+            bool(item.get("source_identity"))
+            and item.get("observed_at") is not None
+        )
+        for item in payload.get("external_observations") or []
+    )
+    learning_ids = list(payload.get("learning_source_prediction_ids") or [])
+    learning_epochs = list(payload.get("learning_source_settlement_observation_epochs") or [])
+    epoch_ids = [item.get("prediction_id") for item in learning_epochs if isinstance(item, dict)]
+    learning_complete = (
+        learning_ids == epoch_ids
+        and all(item.get("observed_at_epoch") is not None for item in learning_epochs if isinstance(item, dict))
+        and bool(payload.get("learning_evidence_hash"))
+        and bool(payload.get("decision_weights_hash"))
     )
     return {
         "source_evidence_hash": recomputed,
         "hash_matches": recomputed == contract.get("source_evidence_hash"),
         "feature_observation_cutoff_classification": "COMPLETE" if feature_cutoff else "INSUFFICIENT_CAUSAL_PROVENANCE",
+        "external_observation_cutoff_classification": "COMPLETE" if external_cutoff else "INSUFFICIENT_CAUSAL_PROVENANCE",
+        "learning_provenance_classification": "COMPLETE" if learning_complete else "INSUFFICIENT_CAUSAL_PROVENANCE",
         "learning_hash_present": bool(payload.get("learning_evidence_hash")),
         "market_snapshot_identity_present": bool(payload.get("market_snapshot_identity")),
+        "legacy_timestamp_invention": bool(payload.get("legacy_timestamp_invention")),
     }
 
 

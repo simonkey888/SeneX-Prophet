@@ -1,0 +1,33 @@
+{
+  "R2_F001": {
+    "core_ev_source": "EXPLICIT_CORE_RECONSTRUCTION_ONLY",
+    "neutral_probability_input": "NOT_APPLICABLE",
+    "post_anchor_adjusted_ev_fallback": false,
+    "status": "FIXED"
+  },
+  "R2_F002": {
+    "bypass_actors": [],
+    "github_settings_applied": false,
+    "owner_aud_authorization": "ISSUE23_PROCESS_GATE",
+    "require_last_push_approval": false,
+    "required_approving_review_count": 0,
+    "status": "FIXED"
+  },
+  "R2_F003": {
+    "acceptance_test": "tests.test_aud_062_r2.Aud062R2RegressionTests.test_r2_f003_whole_runtime_row_round_trips_from_persisted_json_only",
+    "persisted_fields_only_verification": true,
+    "real_network_or_database": false,
+    "status": "FIXED",
+    "whole_returned_row_roundtrip": true
+  },
+  "edge_claimed": false,
+  "external_directional_activation": 0,
+  "github_settings_applied": false,
+  "historical_rows_changed": 0,
+  "order_comment": 5299876166,
+  "post_hoc_weight_tuning": 0,
+  "production_mutations": 0,
+  "runtime017_mutations": 0,
+  "threshold_changes": 0,
+  "version": "AUD-062-R2-correction-evidence-v1"
+}

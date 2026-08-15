@@ -38,7 +38,7 @@ jobs:
           test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
           git diff --name-only "$EXPECTED_BASE"...HEAD > /tmp/aud062-changed-paths.txt
           test -s /tmp/aud062-changed-paths.txt
-          if grep -Eiv '^(.github/workflows/(aud-062-forensics|oracle)\.yml|senecio_polymarket/(backend/research/aud062_(forensics|r1_contracts)\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/(test_aud_062(_r1)?|test_aud_061|test_authoritative_learning|test_real_market_adapters)\.py|docs/AUD-062(-R1)?-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|institutional_core_real|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
+          if grep -Eiv '^(.github/workflows/(aud-062-forensics|oracle)\.yml|senecio_polymarket/(backend/research/aud062_(forensics|r1_contracts)\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/(test_aud_062(_r[12])?|test_aud_061|test_authoritative_learning|test_real_market_adapters)\.py|docs/AUD-062(-R[12])?-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|institutional_core_real|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
             echo 'AUD-062 scope violation'
             exit 1
           fi
@@ -94,6 +94,10 @@ jobs:
         working-directory: senecio_polymarket
         run: python -m unittest tests.test_aud_062_r1 -v 2>&1 | tee /tmp/aud062-r1-tests.log
 
+      - name: AUD-062-R2 targeted correction regression tests
+        working-directory: senecio_polymarket
+        run: python -m unittest tests.test_aud_062_r2 -v 2>&1 | tee /tmp/aud062-r2-tests.log
+
       - name: Full repository regression with nonzero discovery proof
         working-directory: senecio_polymarket
         shell: bash
@@ -108,8 +112,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          left="$(mktemp -d)"
-          right="$(mktemp -d)"
+          left="${RUNNER_TEMP}/aud062-left"
+          right="${RUNNER_TEMP}/aud062-right"
+          mkdir -p "$left" "$right"
           python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$left"
           python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$right"
           diff -ru "$left" "$right"
@@ -118,6 +123,23 @@ jobs:
             cmp "$tracked" "$left/$name"
           done
           sha256sum "$left"/aud-062-* > /tmp/aud062-artifact-sha256.txt
+
+      - name: Regenerate evidence diagnostic
+        if: always()
+        working-directory: senecio_polymarket
+        run: |
+          diagnostic="${RUNNER_TEMP}/aud062-diagnostic"
+          mkdir -p "$diagnostic"
+          python -m scripts.run_aud062 analyze --input docs/evidence/aud062-public-inputs.json.gz --output "$diagnostic"
+
+      - name: Upload regenerated evidence diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aud-062-regenerated-${{ github.event.pull_request.head.sha }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: ${{ runner.temp }}/aud062-diagnostic/aud-062-*
 
       - name: YAML parse and immutable action pin gate
         shell: bash
@@ -176,6 +198,11 @@ jobs:
           assert scan['PUBLICATION_AUTH_HEADERS'] == 'NONE'
           assert scan['PUBLICATION_CREDENTIALS'] == 'NONE'
           assert all(item['confirmed_secret_count'] == 0 for item in scan['scanners'])
+          r2 = json.loads((root / 'aud-062-r2-correction-evidence.json').read_text())
+          assert all(r2[key]['status'] == 'FIXED' for key in ('R2_F001', 'R2_F002', 'R2_F003'))
+          assert r2['github_settings_applied'] is False
+          assert r2['production_mutations'] == 0
+          assert r2['runtime017_mutations'] == 0
           PY
 
       - name: Upload exact-head forensic evidence
@@ -186,5 +213,7 @@ jobs:
           retention-days: 30
           path: |
             senecio_polymarket/docs/AUD-062-REPORT.md
+            senecio_polymarket/docs/AUD-062-R1-REPORT.md
+            senecio_polymarket/docs/AUD-062-R2-REPORT.md
             senecio_polymarket/docs/evidence/aud-062-*
             senecio_polymarket/docs/evidence/aud062-public-inputs.json.gz

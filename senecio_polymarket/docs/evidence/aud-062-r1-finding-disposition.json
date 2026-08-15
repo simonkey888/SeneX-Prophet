@@ -4,7 +4,7 @@
   "external_directional_activation": 0,
   "findings": {
     "F001": {
-      "evidence": "single canonical EV authority; historical anchor disabled; EV NOT_ESTIMABLE",
+      "evidence": "single canonical EV authority; explicit core survival EV cannot fall back to anchor-adjusted EV; EV NOT_ESTIMABLE",
       "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
     },
     "F002": {
@@ -12,11 +12,11 @@
       "status": "CLOSED"
     },
     "F003": {
-      "evidence": "direct-push workflow removed; settings manifest proposed but not applied",
+      "evidence": "direct-push workflow removed; single-owner mergeable exact-check ruleset proposed but not applied",
       "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
     },
     "F004": {
-      "evidence": "future persisted-only round trip complete; legacy rows remain insufficient",
+      "evidence": "future whole-runtime-row persisted-only round trip enforced by exact-head R2 test; legacy rows remain insufficient",
       "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
     },
     "F005": {

@@ -579,10 +579,10 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
             and isinstance(survival_discount, (int, float))
             else None
         )
-        result["market_anchor_ev"] = None
+        result["market_anchor_ev"] = historical.get("market_anchor_ev")
         result["parallel_market_anchor_decision_authority"] = False
         result["canonical_ev_v1"] = canonical_ev_contract(
-            market_state.get("symbol"), features, risk_filter, historical
+            market_state.get("symbol"), features, risk_filter, result
         )
         result["tradeable"] = False
         result["canonical_tradeable"] = False

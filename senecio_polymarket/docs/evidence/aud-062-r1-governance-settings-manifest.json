@@ -5,6 +5,8 @@
   "direct_push_to_main": "DENY",
   "force_push": "DENY",
   "github_settings_applied": false,
+  "normal_author_can_bypass_required_checks": false,
+  "owner_aud_authorization": "ISSUE23_PROCESS_GATE",
   "owner_authorization_required_before_apply": true,
   "pr_required": true,
   "repository": "simonkey888/SeneX-Prophet",
@@ -41,10 +43,10 @@
       },
       {
         "parameters": {
-          "dismiss_stale_reviews_on_push": true,
+          "dismiss_stale_reviews_on_push": false,
           "require_code_owner_review": false,
-          "require_last_push_approval": true,
-          "required_approving_review_count": 1,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
           "required_review_thread_resolution": true
         },
         "type": "pull_request"
@@ -73,13 +75,15 @@
     ],
     "target": "branch"
   },
+  "self_approval_required": false,
+  "single_owner_mergeability": "PR_PLUS_EXACT_HEAD_CHECKS_NO_GITHUB_REVIEW_REQUIRED",
   "stale_approval_handling": {
-    "dismiss_stale_reviews_on_push": true,
-    "require_last_push_approval": true
+    "dismiss_stale_reviews_on_push": false,
+    "require_last_push_approval": false
   },
   "status": "PROPOSED_NOT_APPLIED",
   "target": "refs/heads/main",
-  "version": "AUD-062-R1-github-governance-proposal-v1",
+  "version": "AUD-062-R2-github-governance-proposal-v2",
   "write_capable_apps_reviewed": {
     "oracle_workflow": "DOWNGRADED_TO_CONTENTS_READ_NO_GIT_PUSH",
     "other_apps": "OWNER_CONTROL_PLANE_REVIEW_REQUIRED"

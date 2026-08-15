@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 
-SCANNER_VERSION = "AUD-062-R1-publication-scan-v2"
+SCANNER_VERSION = "AUD-062-R2-publication-scan-v3"
 DETECT_SECRETS_VERSION = "1.5.0"
 BASE_SHA = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
 SOURCE_PATHS = (
@@ -27,11 +27,13 @@ SOURCE_PATHS = (
     "senecio_polymarket/scripts/aud062_publication_scan.py",
     "senecio_polymarket/tests/test_aud_062.py",
     "senecio_polymarket/tests/test_aud_062_r1.py",
+    "senecio_polymarket/tests/test_aud_062_r2.py",
     "senecio_polymarket/tests/test_aud_061.py",
     "senecio_polymarket/tests/test_authoritative_learning.py",
     "senecio_polymarket/tests/test_real_market_adapters.py",
     "senecio_polymarket/docs/AUD-062-REPORT.md",
     "senecio_polymarket/docs/AUD-062-R1-REPORT.md",
+    "senecio_polymarket/docs/AUD-062-R2-REPORT.md",
     "senecio_polymarket/oracle/institutional_core.py",
     "senecio_polymarket/oracle/survivability.py",
     "senecio_polymarket/oracle/exchange_connector.py",
@@ -298,7 +300,7 @@ def scan(repo_root: Path, evidence_dir: Path, input_path: Path) -> dict:
     scope_pass = not scope_failures
     return {
         "version": SCANNER_VERSION,
-        "authorization_comment": 5299042852,
+        "authorization_comment": 5299876166,
         "base_sha": BASE_SHA,
         "capture_time_utc": (bundle.get("observation") or {}).get("captured_at"),
         "files_scanned": len(paths),
