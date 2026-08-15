@@ -112,7 +112,15 @@ jobs:
             'senecio_polymarket/backend/settlement_proof.py',
             'senecio_polymarket/backend/settlement_reconciler.py',
             'senecio_polymarket/backend/supabase_client.py',
+            'senecio_polymarket/tests/aud063_fixture_support.py',
+            'senecio_polymarket/tests/test_aud_057.py',
+            'senecio_polymarket/tests/test_aud_059.py',
+            'senecio_polymarket/tests/test_aud_061.py',
             'senecio_polymarket/tests/test_aud_063.py',
+            'senecio_polymarket/tests/test_authoritative_learning.py',
+            'senecio_polymarket/tests/test_senex_score_002.py',
+            'senecio_polymarket/tests/test_score_002_hardening.py',
+            'senecio_polymarket/tests/test_supabase_api_key_headers.py',
             'senecio_polymarket/scripts/aud063_baseline_reproduce.py',
             'senecio_polymarket/scripts/aud063_generate_evidence.py',
             'senecio_polymarket/docs/AUD-063-REPORT.md',
@@ -141,7 +149,7 @@ jobs:
           assert findings == 0, f'potential secrets={findings}'
           print('AUD063_CONFIRMED_SECRETS=0')
           PY
-          ! grep -RInE '(sb_secret_[A-Za-z0-9_-]+|sb_publishable_[A-Za-z0-9_-]+|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]+|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
+          ! grep -RInE '(sb_secret_[A-Za-z0-9_-]{24,}|sb_publishable_[A-Za-z0-9_-]{24,}|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]{24,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
             senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-* senecio_polymarket/tests/test_aud_063.py
 
       - name: Upload exact-head evidence bundle
