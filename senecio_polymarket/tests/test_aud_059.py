@@ -19,9 +19,17 @@ from backend.research import calibration, decision_engine
 from backend.research.coordinator import ResearchCoordinator
 from oracle_runtime import institutional_core as learning
 
+from tests.aud063_fixture_support import upgrade_proof_row
+
+def _aud063_upgrade(fn):
+    def wrapped(*args, **kwargs):
+        return upgrade_proof_row(fn(*args, **kwargs))
+    return wrapped
+
 BASE = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
 
 
+@_aud063_upgrade
 def proof_row(idx: int, minute: int, *, symbol="BTCUSDT", direction="LONG", outcome="WIN", confidence=0.7, valid=True):
     ts = (BASE + timedelta(minutes=minute)).isoformat()
     settled_at = (BASE + timedelta(minutes=minute + 60)).isoformat()
