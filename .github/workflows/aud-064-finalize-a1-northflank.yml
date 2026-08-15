@@ -29,16 +29,21 @@ jobs:
           : > /tmp/selected.env
           found=0
           for token_name in NF_MAINT NF_API; do
-            token="${!token_name:-}"
+            raw="${!token_name:-}"
+            [ -n "$raw" ] || continue
+            echo "::add-mask::$raw"
+            token=$(printf '%s' "$raw" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
             [ -n "$token" ] || continue
             echo "::add-mask::$token"
+            echo "${token_name}_RAW_LEN=${#raw}"
+            echo "${token_name}_NORMALIZED_LEN=${#token}"
             for scope in project team; do
               if [ "$scope" = project ]; then
                 base="https://api.northflank.com/v1/projects/$PROJECT_ID"
               else
                 base="https://api.northflank.com/v1/teams/$TEAM_ID/projects/$PROJECT_ID"
               fi
-              code=$(curl -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
+              code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
               echo "PROBE_${token_name}_${scope}_HTTP=$code"
               if [ "$code" = 200 ]; then
                 printf 'NF_TOKEN=%q\nNF_BASE=%q\nNF_TOKEN_NAME=%q\nNF_SCOPE=%q\n' "$token" "$base" "$token_name" "$scope" > /tmp/selected.env
@@ -73,7 +78,7 @@ jobs:
           . /tmp/selected.env
           before_ci=$(jq -r '.data.disabledCI' /tmp/service.json)
           if [ "$before_ci" != true ]; then
-            code=$(curl -sS -o /tmp/patch-ci.json -w '%{http_code}' \
+            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/patch-ci.json -w '%{http_code}' \
               -X PATCH \
               -H "Authorization: Bearer $NF_TOKEN" \
               -H 'Content-Type: application/json' \
@@ -98,7 +103,7 @@ jobs:
           test "$deployed" = "$EXPECTED_DEPLOYED_SHA"
           jq -n --arg id "$obj" --arg branch "$branch" --arg sha "$deployed" \
             '{internal:{id:$id,branch:$branch,buildSHA:$sha}}' >/tmp/pin.json
-          code=$(curl -sS -o /tmp/pin-response.json -w '%{http_code}' \
+          code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/pin-response.json -w '%{http_code}' \
             -X POST \
             -H "Authorization: Bearer $NF_TOKEN" \
             -H 'Content-Type: application/json' \
@@ -114,7 +119,7 @@ jobs:
           . /tmp/selected.env
           ok=0
           for i in $(seq 1 60); do
-            code=$(curl -sS -o /tmp/after.json -w '%{http_code}' -H "Authorization: Bearer $NF_TOKEN" "$NF_BASE/services/$SERVICE_ID")
+            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/after.json -w '%{http_code}' -H "Authorization: Bearer $NF_TOKEN" "$NF_BASE/services/$SERVICE_ID")
             test "$code" = 200
             ci=$(jq -r '.data.disabledCI' /tmp/after.json)
             cd=$(jq -r '.data.disabledCD' /tmp/after.json)
