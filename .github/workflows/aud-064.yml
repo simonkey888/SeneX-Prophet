@@ -119,8 +119,10 @@ jobs:
           changed=Path('/tmp/aud064-changed.txt').read_text().splitlines()
           allowed={
             '.github/workflows/aud-064.yml',
-            '.github/workflows/aud-064-prefx-reproduce.yml',
             '.github/workflows/oracle.yml',
+            '.github/workflows/senex-score-001.yml',
+            '.github/workflows/senex-score-002.yml',
+            '.github/workflows/smoke-tests.yml',
             'senecio_polymarket/oracle_runtime/institutional_core_real.py',
             'senecio_polymarket/scripts/aud064_generate_evidence.py',
             'senecio_polymarket/tests/test_aud_064.py',
@@ -165,13 +167,31 @@ jobs:
           python - <<'PY'
           import json,re,yaml
           from pathlib import Path
-          for name in ('.github/workflows/oracle.yml','.github/workflows/aud-064.yml'):
-              yaml.safe_load(Path(name).read_text())
-              for line in Path(name).read_text().splitlines():
+          workflows=(
+              '.github/workflows/oracle.yml',
+              '.github/workflows/aud-064.yml',
+              '.github/workflows/senex-score-001.yml',
+              '.github/workflows/senex-score-002.yml',
+              '.github/workflows/smoke-tests.yml',
+          )
+          for name in workflows:
+              text=Path(name).read_text()
+              yaml.safe_load(text)
+              for line in text.splitlines():
                   s=line.strip()
                   if s.startswith('uses:'):
                       ref=s.split('@',1)[1].split()[0]
                       assert re.fullmatch(r'[0-9a-f]{40}',ref), (name,s)
+          for name in (
+              '.github/workflows/senex-score-001.yml',
+              '.github/workflows/senex-score-002.yml',
+              '.github/workflows/smoke-tests.yml',
+          ):
+              text=Path(name).read_text()
+              assert 'github.event.pull_request.head.sha || github.sha' in text, name
+              assert 'persist-credentials: false' in text, name
+              assert 'contents: read' in text, name
+              assert 'contents: write' not in text, name
           m=json.loads(Path('senecio_polymarket/docs/evidence/aud-064-governance-ruleset-proposal.json').read_text())
           assert m['status']=='PROPOSED_NOT_APPLIED'
           assert m['github_settings_applied'] is False
@@ -179,6 +199,7 @@ jobs:
           assert m['require_last_push_approval'] is False
           assert m['bypass_actors']==[]
           assert m['required_checks']==['score-001','score-002','act_final_audit_smoke (T1-T12)']
+          assert all(item['exact_pr_head_checkout'] for item in m['required_check_evidence'].values())
           print('AUD064_MAINTAINER_DEFENSE=PASS')
           PY
 
@@ -197,7 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib,json,subprocess
+          import json,subprocess
           from pathlib import Path
           base='2c4dbf284b23d3cf81b93dcfbd262660ab03dd43'
           ref='f65e1723953ac23caf1ca3741ec894577c97aae7'
