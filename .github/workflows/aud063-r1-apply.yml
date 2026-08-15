@@ -1,4 +1,4 @@
-name: AUD063 R1 Apply
+name: AUD063-R1-Apply
 
 on:
   push:
@@ -9,303 +9,30 @@ permissions:
   contents: write
 
 jobs:
-  apply-r1:
-    if: github.event.head_commit.message == 'aud063-r1: install bounded correction runner'
+  apply:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout audited branch
+      - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
-
       - name: Setup Python
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: '3.11'
-
-      - name: Verify linear parent
+      - name: Verify lineage
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "0320f47657d4433bfc4dc3396fd0d31ffabe2270"
+          git merge-base --is-ancestor 0320f47657d4433bfc4dc3396fd0d31ffabe2270 HEAD
           test "$(git rev-parse origin/main)" = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
-
-      - name: Apply R1 F001-F003
+      - name: Apply R1 patch
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          ROOT = Path('.')
-
-          def replace_once(path, old, new):
-              p = ROOT / path
-              text = p.read_text(encoding='utf-8')
-              if text.count(old) != 1:
-                  raise SystemExit(f'{path}: expected one exact match, got {text.count(old)}')
-              p.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          def regex_once(path, pattern, repl):
-              p = ROOT / path
-              text = p.read_text(encoding='utf-8')
-              new, n = re.subn(pattern, repl, text, count=1, flags=re.S)
-              if n != 1:
-                  raise SystemExit(f'{path}: regex expected one match, got {n}: {pattern[:80]}')
-              p.write_text(new, encoding='utf-8')
-
-          # R1-F001: candle maturity is part of evidence identity and validation.
-          replace_once(
-              'senecio_polymarket/backend/settlement_contract.py',
-              '''    candle_open_ms = int(candle[0])\n    price = float(candle[4])\n    observed = parse_utc(observed_at) if observed_at is not None else datetime.now(timezone.utc)\n    if observed is None:\n        return None\n    return {\n        "version": "historical-price-evidence-v1",\n        "source": source,\n        "symbol": normalized_symbol,\n        "window_seconds": int(window_seconds),\n        "target_epoch_ms": target_ms,\n        "candle_open_epoch_ms": candle_open_ms,\n        "candle_interval_ms": CANDLE_INTERVAL_MS,\n        "target_offset_from_candle_open_ms": target_ms - candle_open_ms,\n        "price": price,\n        "observed_at": observed.isoformat(),\n        "selection_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",\n    }\n''',
-              '''    candle_open_ms = int(candle[0])\n    candle_close_ms = candle_open_ms + CANDLE_INTERVAL_MS\n    price = float(candle[4])\n    observed = parse_utc(observed_at) if observed_at is not None else datetime.now(timezone.utc)\n    if observed is None:\n        return None\n    observed_ms = int(observed.timestamp() * 1000)\n    # The current/last OHLCV candle is provisional until its interval closes.\n    # Never freeze a provisional close into the immutable settlement CAS.\n    if observed_ms < candle_close_ms:\n        return None\n    return {\n        "version": "historical-price-evidence-v1",\n        "source": source,\n        "symbol": normalized_symbol,\n        "window_seconds": int(window_seconds),\n        "target_epoch_ms": target_ms,\n        "candle_open_epoch_ms": candle_open_ms,\n        "candle_close_epoch_ms": candle_close_ms,\n        "candle_interval_ms": CANDLE_INTERVAL_MS,\n        "target_offset_from_candle_open_ms": target_ms - candle_open_ms,\n        "price": price,\n        "observed_at": observed.isoformat(),\n        "selection_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",\n        "maturity_rule": "OBSERVED_AT_GTE_CANDLE_CLOSE_EPOCH_MS",\n    }\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/settlement_contract.py',
-              '''        open_ms = int(evidence.get("candle_open_epoch_ms"))\n        interval_ms = int(evidence.get("candle_interval_ms"))\n        price = float(evidence.get("price"))\n''',
-              '''        open_ms = int(evidence.get("candle_open_epoch_ms"))\n        close_ms = int(evidence.get("candle_close_epoch_ms"))\n        interval_ms = int(evidence.get("candle_interval_ms"))\n        price = float(evidence.get("price"))\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/settlement_contract.py',
-              '''    if interval_ms != CANDLE_INTERVAL_MS:\n        return False\n    if not (open_ms <= target_ms < open_ms + interval_ms):\n        return False\n    if price <= 0 or not math.isfinite(price):\n        return False\n    return parse_utc(evidence.get("observed_at")) is not None\n''',
-              '''    if interval_ms != CANDLE_INTERVAL_MS:\n        return False\n    if close_ms != open_ms + interval_ms:\n        return False\n    if not (open_ms <= target_ms < close_ms):\n        return False\n    if price <= 0 or not math.isfinite(price):\n        return False\n    observed = parse_utc(evidence.get("observed_at"))\n    if observed is None:\n        return False\n    return int(observed.timestamp() * 1000) >= close_ms\n'''
-          )
-
-          # R1-F002: restart-safe fairness is entirely inside one bounded invocation.
-          supabase_section = '''PENDING_SCAN_PAGE_SIZE_MAX = 100\nPENDING_SCAN_MAX_PAGES = 2\n_pending_scan_diagnostics: dict[str, Any] = {}\n\n\ndef reset_pending_scan_cursor() -> None:\n    """Compatibility reset: AUD-063-R1 scanning is stateless across invocations."""\n    global _pending_scan_diagnostics\n    _pending_scan_diagnostics = {}\n\n\ndef get_pending_scan_diagnostics() -> dict[str, Any]:\n    return dict(_pending_scan_diagnostics)\n\n\nasync def fetch_pending_outcomes(\n    older_than_seconds: int = 900,\n    limit: int = 100,\n    *,\n    max_pages: int = PENDING_SCAN_MAX_PAGES,\n) -> list[dict]:\n    """Fetch bounded directional NULL rows with restart-safe intra-call keyset paging.\n\n    Every invocation begins from the oldest eligible `(ts,id)` and advances a\n    local keyset cursor for at most ``PENDING_SCAN_MAX_PAGES`` pages. Therefore\n    process/container restart between cycles cannot erase progress needed to\n    reach rows inside the declared per-invocation fairness bound. Rows beyond\n    that explicit bound are not claimed starvation-free; diagnostics expose the\n    cap. Failed rows remain retryable because no scan-progress mutation occurs.\n    """\n    global _pending_scan_diagnostics\n    try:\n        from datetime import timedelta\n\n        bounded_limit = max(1, min(int(limit), PENDING_SCAN_PAGE_SIZE_MAX))\n        bounded_pages = max(1, min(int(max_pages), PENDING_SCAN_MAX_PAGES))\n        fairness_bound_rows = bounded_limit * bounded_pages\n        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()\n        c = _get_client()\n        base_params = {\n            "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit",\n            "outcome": "is.null",\n            "prediction": "in.(LONG,SHORT)",\n            "ts": f"lte.{cutoff}",\n            "order": "ts.asc,id.asc",\n        }\n\n        metric_params = {\n            "select": "id,ts,symbol,prediction",\n            "outcome": "is.null",\n            "prediction": "in.(LONG,SHORT)",\n            "ts": f"lte.{cutoff}",\n            "order": "ts.asc,id.asc",\n            "limit": "1",\n        }\n        metric = await c.get(\n            f"/{SUPABASE_TABLE}", params=metric_params, headers={"Prefer": "count=exact"}\n        )\n        eligible_count = None\n        oldest = None\n        if metric.status_code == 200:\n            metric_rows = metric.json() or []\n            if isinstance(metric_rows, list) and metric_rows:\n                oldest = metric_rows[0]\n            content_range = str(getattr(metric, "headers", {}).get("content-range", ""))\n            if "/" in content_range:\n                total = content_range.rsplit("/", 1)[-1]\n                if total.isdigit():\n                    eligible_count = int(total)\n\n        collected: list[dict] = []\n        cursor: tuple[str, str] | None = None\n        pages_scanned = 0\n        pass_complete = False\n        error = None\n\n        for _ in range(bounded_pages):\n            params = dict(base_params)\n            params["limit"] = str(bounded_limit)\n            if cursor is not None:\n                cursor_ts, cursor_id = cursor\n                params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"\n            r = await c.get(f"/{SUPABASE_TABLE}", params=params)\n            if r.status_code != 200:\n                log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])\n                error = f"HTTP_{r.status_code}"\n                break\n            page = r.json() or []\n            page = page if isinstance(page, list) else []\n            pages_scanned += 1\n            collected.extend(page)\n            if len(page) < bounded_limit:\n                pass_complete = True\n                break\n            last = page[-1]\n            cursor = (str(last.get("ts") or ""), str(last.get("id") or ""))\n\n        scan_cap_hit = (not pass_complete and error is None and pages_scanned >= bounded_pages)\n        if eligible_count is not None and eligible_count <= fairness_bound_rows:\n            fairness_scope = "RESTART_SAFE_FULL_VISIBLE_BACKLOG"\n        elif eligible_count is None:\n            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_COUNT_UNKNOWN"\n        else:\n            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP"\n\n        _pending_scan_diagnostics = {\n            "eligible_directional_pending_count": eligible_count,\n            "oldest_eligible_directional_pending_id": (oldest or {}).get("id"),\n            "oldest_eligible_directional_pending_ts": (oldest or {}).get("ts"),\n            "rows_scanned_last_pass": len(collected),\n            "pages_scanned_last_pass": pages_scanned,\n            "scan_cap_hit": scan_cap_hit,\n            "cursor_before": None,\n            "cursor_after": cursor,\n            "pass_complete": pass_complete,\n            "restart_safe_stateless": True,\n            "fairness_bound_rows_per_invocation": fairness_bound_rows,\n            "fairness_scope": fairness_scope,\n            "error": error,\n        }\n        return collected\n    except Exception as e:\n        log.error("supabase fetch_pending_outcomes error: %s", e)\n        _pending_scan_diagnostics = {\n            "error": type(e).__name__,\n            "rows_scanned_last_pass": 0,\n            "pages_scanned_last_pass": 0,\n            "restart_safe_stateless": True,\n            "fairness_bound_rows_per_invocation": PENDING_SCAN_PAGE_SIZE_MAX * PENDING_SCAN_MAX_PAGES,\n            "fairness_scope": "FAIL_CLOSED_ERROR",\n        }\n        return []\n\n'''
-          regex_once(
-              'senecio_polymarket/backend/supabase_client.py',
-              r'_pending_scan_cursor: tuple\[str, str\] \| None = None\n_pending_scan_diagnostics: dict\[str, Any\] = \{\}.*?(?=async def update_outcome_dual\()',
-              supabase_section,
-          )
-
-          # R1-F003 and verifier maturity/fairness wiring.
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '  - Backfill routine now computes both 15m and 1h outcomes for already-settled rows\n',
-              '  - Legacy startup resettlement is quarantined; settled-row repair belongs only to the reconciler\n'
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''    # ACT-XXII-prereq: bogus-outcome backfill state\n    "bogus_backfill_done": False,     # set True after _backfill_bogus_outcomes() runs once\n    "bogus_backfill_count": None,     # how many rows re-settled with historical price\n    "bogus_backfill_errors": None,    # how many rows we couldn't re-settle (no historical price)\n''',
-              '''    # AUD-063-R1: obsolete startup resettlement is an explicit zero-I/O quarantine.\n    "legacy_startup_backfill_status": "QUARANTINED_NO_READ_NO_WRITE",\n    "legacy_startup_backfill_reason": "SETTLED_ROW_REPAIR_IS_RECONCILER_ONLY",\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''WINDOW_15M_S = 900\nWINDOW_1H_S = 3600\nPRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1\n''',
-              '''WINDOW_15M_S = 900\nWINDOW_1H_S = 3600\nPRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1\nSETTLEMENT_MATURITY_BUFFER_S = 60  # containing 1m candle must be closed before CAS\nVERIFY_PAGE_SIZE = 100\nVERIFY_MAX_PAGES = 2\nVERIFY_MAX_ROWS_PER_INVOCATION = VERIFY_PAGE_SIZE * VERIFY_MAX_PAGES\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''async def _verify_pending_outcomes() -> int:\n    """Settle one bounded, starvation-safe page of directional predictions."""\n''',
-              '''async def _verify_pending_outcomes() -> int:\n    """Settle one bounded restart-safe keyset pass of directional predictions."""\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''        pending = await supabase_client.fetch_pending_outcomes(\n            older_than_seconds=WINDOW_1H_S, limit=100\n        )\n''',
-              '''        pending = await supabase_client.fetch_pending_outcomes(\n            older_than_seconds=WINDOW_1H_S + SETTLEMENT_MATURITY_BUFFER_S,\n            limit=VERIFY_PAGE_SIZE,\n            max_pages=VERIFY_MAX_PAGES,\n        )\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''    _state["last_verify_rows_scanned"] = scan.get("rows_scanned_last_pass", len(pending))\n    _state["last_verify_scan_cap_hit"] = bool(scan.get("scan_cap_hit"))\n    _state["last_verify_cursor"] = scan.get("cursor_after")\n    _state["last_verify_scan_pass_complete"] = bool(scan.get("pass_complete"))\n''',
-              '''    _state["last_verify_rows_scanned"] = scan.get("rows_scanned_last_pass", len(pending))\n    _state["last_verify_pages_scanned"] = scan.get("pages_scanned_last_pass")\n    _state["last_verify_scan_cap_hit"] = bool(scan.get("scan_cap_hit"))\n    _state["last_verify_cursor"] = scan.get("cursor_after")\n    _state["last_verify_scan_pass_complete"] = bool(scan.get("pass_complete"))\n    _state["last_verify_restart_safe_stateless"] = bool(scan.get("restart_safe_stateless"))\n    _state["last_verify_fairness_bound_rows"] = scan.get("fairness_bound_rows_per_invocation")\n    _state["last_verify_fairness_scope"] = scan.get("fairness_scope")\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''        "verifier aud063: scanned=%d settled=%d proof_unresolved=%d price_unresolved=%d cas=%d cap=%s",\n        len(pending), settled, unresolved_proof, unresolved_price, cas_conflicts,\n        bool(scan.get("scan_cap_hit")),\n''',
-              '''        "verifier aud063-r1: scanned=%d pages=%s settled=%d proof_unresolved=%d price_unresolved=%d cas=%d cap=%s fairness=%s",\n        len(pending), scan.get("pages_scanned_last_pass"), settled, unresolved_proof, unresolved_price, cas_conflicts,\n        bool(scan.get("scan_cap_hit")), scan.get("fairness_scope"),\n'''
-          )
-
-          quarantine = '''def _quarantine_legacy_startup_backfill() -> None:\n    """Truthful zero-I/O quarantine for the obsolete settled-row resettlement path.\n\n    Existing WIN/LOSS evidence repair belongs exclusively to\n    ``settlement_reconciler``. The primary writer remains NULL->settled CAS-only.\n    This function intentionally performs no Supabase read, historical-price\n    request, or database write, so startup reaches the primary verifier without\n    legacy settled-row work in front of it.\n    """\n    _state["legacy_startup_backfill_status"] = "QUARANTINED_NO_READ_NO_WRITE"\n    _state["legacy_startup_backfill_reason"] = "SETTLED_ROW_REPAIR_IS_RECONCILER_ONLY"\n\n\n'''
-          regex_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              r'async def _backfill_bogus_outcomes\(\) -> int:.*?(?=async def _refresh_directional_stats\(\) -> None:)',
-              quarantine,
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''    # ACT-XXII-prereq: ONE-TIME backfill of bogus outcomes that were settled\n    # with current-price instead of historical price. Runs once at startup\n    # before the first prediction cycle, so the dashboard reflects correct\n    # win rates as soon as possible.\n    try:\n        await _backfill_bogus_outcomes()\n    except Exception as e:\n        log.exception("backfill error (non-fatal, continuing): %s", e)\n\n''',
-              '''    # AUD-063-R1: explicit zero-I/O quarantine. No settled-row historical\n    # reads or writes are allowed to delay the first primary verifier cycle.\n    _quarantine_legacy_startup_backfill()\n\n'''
-          )
-          replace_once(
-              'senecio_polymarket/backend/oracle_runner.py',
-              '''        # ACT XXI: Verify pending outcomes BEFORE producing new predictions.\n        # This settles predictions whose 15min window elapsed in the previous cycle.\n        # First cycle after boot will backfill all 200+ accumulated predictions.\n''',
-              '''        # Verify mature pending outcomes BEFORE producing new predictions.\n        # Work is bounded to VERIFY_MAX_ROWS_PER_INVOCATION and uses stateless\n        # intra-invocation keyset paging; no legacy settled-row backfill precedes it.\n'''
-          )
-
-          # Update focused regressions for stateless bounded paging and add R1 adversarial gates.
-          test_path = ROOT / 'senecio_polymarket/tests/test_aud_063.py'
-          t = test_path.read_text(encoding='utf-8')
-          t = t.replace(
-              '''    directional_outcome,\n    price_evidence_from_candles,\n    select_containing_candle,\n    target_epoch_ms,\n)\n''',
-              '''    CANDLE_INTERVAL_MS,\n    directional_outcome,\n    price_evidence_from_candles,\n    select_containing_candle,\n    target_epoch_ms,\n    validate_price_evidence,\n)\n''',
-              1,
-          )
-          old_t4 = '''    async def test_t04_more_than_100_directionals_drain_across_pages(self):\n        rows = [pending_row(i + 1, "LONG") for i in range(250)]\n        fake = FakePostgrest(rows)\n        seen = []\n        old = supabase_client._get_client\n        supabase_client._get_client = lambda: fake\n        try:\n            for _ in range(3):\n                seen += [r["id"] for r in await supabase_client.fetch_pending_outcomes(3600, 100)]\n        finally:\n            supabase_client._get_client = old\n        self.assertEqual(len(seen), 250)\n        self.assertEqual(len(set(seen)), 250)\n\n'''
-          new_t4 = '''    async def test_t04_bounded_invocation_drains_two_keyset_pages(self):\n        rows = [pending_row(i + 1, "LONG") for i in range(180)]\n        fake = FakePostgrest(rows)\n        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))\n        self.assertEqual(len(seen), 180)\n        self.assertEqual(len({r["id"] for r in seen}), 180)\n        scan = supabase_client.get_pending_scan_diagnostics()\n        self.assertTrue(scan["restart_safe_stateless"])\n        self.assertEqual(scan["fairness_bound_rows_per_invocation"], 200)\n        self.assertEqual(scan["fairness_scope"], "RESTART_SAFE_FULL_VISIBLE_BACKLOG")\n\n'''
-          if old_t4 not in t: raise SystemExit('missing old T4')
-          t = t.replace(old_t4, new_t4, 1)
-          old_t5 = '''    async def test_t05_poison_row_does_not_starve_later_page(self):\n        rows = [pending_row(1, "LONG", proof=False)] + [pending_row(i, "LONG") for i in range(2, 102)]\n        fake = FakePostgrest(rows)\n        old = supabase_client._get_client\n        supabase_client._get_client = lambda: fake\n        try:\n            first = await supabase_client.fetch_pending_outcomes(3600, 100)\n            second = await supabase_client.fetch_pending_outcomes(3600, 100)\n        finally:\n            supabase_client._get_client = old\n        self.assertEqual(first[0]["id"], 1)\n        self.assertEqual(second[-1]["id"], 101)\n\n'''
-          new_t5 = '''    async def test_t05_poison_row_does_not_starve_later_page_within_bound(self):\n        rows = [pending_row(1, "LONG", proof=False)] + [pending_row(i, "LONG") for i in range(2, 102)]\n        fake = FakePostgrest(rows)\n        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))\n        self.assertEqual(seen[0]["id"], 1)\n        self.assertEqual(seen[-1]["id"], 101)\n\n'''
-          if old_t5 not in t: raise SystemExit('missing old T5')
-          t = t.replace(old_t5, new_t5, 1)
-          old_t7 = '''    async def test_t07_keyset_survives_prior_row_disappearance(self):\n        fake = FakePostgrest([pending_row(i + 1) for i in range(150)])\n        old = supabase_client._get_client\n        supabase_client._get_client = lambda: fake\n        try:\n            first = await supabase_client.fetch_pending_outcomes(3600, 100)\n            fake.rows = [r for r in fake.rows if r["id"] > 100]\n            second = await supabase_client.fetch_pending_outcomes(3600, 100)\n        finally:\n            supabase_client._get_client = old\n        self.assertEqual(first[-1]["id"], 100)\n        self.assertEqual(second[0]["id"], 101)\n\n'''
-          new_t7 = '''    async def test_t07_intra_invocation_second_page_is_keyset_not_offset(self):\n        fake = FakePostgrest([pending_row(i + 1) for i in range(150)])\n        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))\n        page_calls = [p for kind, p in fake.calls if kind == "GET" and "confidence" in p.get("select", "")]\n        self.assertEqual(len(seen), 150)\n        self.assertEqual(len(page_calls), 2)\n        self.assertNotIn("or", page_calls[0])\n        self.assertIn("or", page_calls[1])\n        self.assertNotIn("offset", page_calls[1])\n\n'''
-          if old_t7 not in t: raise SystemExit('missing old T7')
-          t = t.replace(old_t7, new_t7, 1)
-
-          addition = r'''
-    async def test_t28_open_candle_seconds_01_30_59_rejected_until_close(self):
-        for second in (1, 30, 59):
-            ts = f"2026-01-01T00:00:{second:02d}+00:00"
-            target = target_epoch_ms(ts, WINDOW_1H_S)
-            open_ms = target - (target % CANDLE_INTERVAL_MS)
-            close_ms = open_ms + CANDLE_INTERVAL_MS
-            before = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
-            at_close = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc).isoformat()
-            kwargs = dict(
-                candles=[[open_ms, 102, 102, 102, 102, 1.0]],
-                exchange="okx",
-                symbol="BTCUSDT",
-                ts_iso=ts,
-                window_seconds=WINDOW_1H_S,
-            )
-            self.assertIsNone(price_evidence_from_candles(**kwargs, observed_at=before))
-            mature = price_evidence_from_candles(**kwargs, observed_at=at_close)
-            self.assertIsNotNone(mature)
-            self.assertEqual(mature["candle_close_epoch_ms"], close_ms)
-            self.assertEqual(mature["maturity_rule"], "OBSERVED_AT_GTE_CANDLE_CLOSE_EPOCH_MS")
-
-    async def test_t29_proof_gate_rejects_premature_candle_observation(self):
-        row = qualified_row(1)
-        ev1 = row["audit"]["outcomes_dual"]["price_evidence_v1"]["1h"]
-        close_ms = ev1["candle_close_epoch_ms"]
-        ev1["observed_at"] = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
-        self.assertFalse(validate_price_evidence(
-            ev1,
-            expected_exchange=row["exchange_used"],
-            expected_symbol=row["symbol"],
-            expected_ts=row["ts"],
-            expected_window_seconds=WINDOW_1H_S,
-        ))
-        self.assertFalse(settlement_proof.is_proof_qualified(row))
-        self.assertEqual(settlement_proof.proof_status(row), "RAW_UNVERIFIED")
-
-    async def test_t30_primary_cas_rejects_premature_historical_evidence(self):
-        row = pending_row(1)
-        fake = FakePostgrest([row])
-        ev15 = evidence(row, WINDOW_15M_S, 101)
-        ev1 = evidence(row, WINDOW_1H_S, 102)
-        close_ms = ev1["candle_close_epoch_ms"]
-        ev1["observed_at"] = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
-        ok = await self._with_client(
-            fake,
-            supabase_client.update_outcome_dual(
-                1, "WIN", "WIN", 101, 102,
-                price_evidence_15m=ev15,
-                price_evidence_1h=ev1,
-            ),
-        )
-        self.assertFalse(ok)
-        self.assertIsNone(fake.rows[0]["outcome"])
-        self.assertFalse(any(kind == "PATCH" for kind, _ in fake.calls))
-
-    async def test_t31_restart_between_invocations_cannot_hide_row_within_bound(self):
-        rows = [pending_row(i + 1, "LONG", proof=False) for i in range(125)]
-        rows.append(pending_row(1000, "LONG"))
-        fake = FakePostgrest(rows)
-        old = supabase_client._get_client
-        supabase_client._get_client = lambda: fake
-        try:
-            first = await supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2)
-            supabase_client.reset_pending_scan_cursor()  # simulate process-memory loss
-            second = await supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2)
-        finally:
-            supabase_client._get_client = old
-        self.assertIn(1000, {r["id"] for r in first})
-        self.assertIn(1000, {r["id"] for r in second})
-        self.assertEqual(supabase_client.get_pending_scan_diagnostics()["fairness_scope"], "RESTART_SAFE_FULL_VISIBLE_BACKLOG")
-
-    async def test_t32_backlog_beyond_fairness_bound_is_explicitly_downgraded(self):
-        rows = [pending_row(i + 1, "LONG", proof=False) for i in range(250)]
-        fake = FakePostgrest(rows)
-        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))
-        scan = supabase_client.get_pending_scan_diagnostics()
-        self.assertEqual(len(seen), 200)
-        self.assertTrue(scan["scan_cap_hit"])
-        self.assertEqual(scan["fairness_bound_rows_per_invocation"], 200)
-        self.assertEqual(scan["fairness_scope"], "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP")
-
-    async def test_t33_obsolete_startup_backfill_is_zero_io_quarantine(self):
-        source = (Path(__file__).parents[1] / "backend" / "oracle_runner.py").read_text()
-        self.assertNotIn("_backfill_bogus_outcomes", source)
-        self.assertNotIn("bogus_backfill_", source)
-        fetch = AsyncMock(return_value=[])
-        update = AsyncMock(return_value=False)
-        with (
-            patch.object(supabase_client, "fetch_predictions", fetch),
-            patch.object(supabase_client, "update_outcome_dual", update),
-        ):
-            oracle_runner._quarantine_legacy_startup_backfill()
-        fetch.assert_not_awaited()
-        update.assert_not_awaited()
-        self.assertEqual(oracle_runner._state["legacy_startup_backfill_status"], "QUARANTINED_NO_READ_NO_WRITE")
-'''
-          marker = '''    async def test_t27_runtime017_untouched(self):\n'''
-          if marker not in t: raise SystemExit('missing T27 marker')
-          # Append R1 tests after the existing class body. Existing file ends after T27 method.
-          t = t.rstrip() + '\n' + addition + '\n'
-          test_path.write_text(t, encoding='utf-8')
-
-          # Exact-head workflow now requires the expanded adversarial suite.
-          replace_once(
-              '.github/workflows/aud-063.yml',
-              '      - name: Focused AUD-063 regression T1-T27\n',
-              '      - name: Focused AUD-063/R1 regression T1-T33\n'
-          )
-          replace_once(
-              '.github/workflows/aud-063.yml',
-              "          grep -Eq 'Ran 27 tests' /tmp/aud063-focused.log\n",
-              "          grep -Eq 'Ran 33 tests' /tmp/aud063-focused.log\n"
-          )
-
-          # Deterministic evidence truth for R1.
-          gen = ROOT / 'senecio_polymarket/scripts/aud063_generate_evidence.py'
-          g = gen.read_text(encoding='utf-8')
-          g = g.replace('GENERATED_AT = "2026-08-15T03:15:00+00:00"', 'GENERATED_AT = "2026-08-15T04:05:00+00:00"', 1)
-          g = g.replace(
-              '        "order": "AUD-063",\n        "base_sha": BASE_SHA,',
-              '        "order": "AUD-063-R1",\n        "parent_order": "AUD-063",\n        "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",\n        "base_sha": BASE_SHA,',
-              1,
-          )
-          selection_block = '''    selection = {\n        **common,\n        "source_class": "SOURCE_CONTRACT",\n        "server_side_filters": {"outcome": "is.null", "prediction": "in.(LONG,SHORT)", "horizon": "ts<=now-1h-60s"},\n        "order": "ts.asc,id.asc",\n        "pagination": "STATELESS_INTRA_INVOCATION_KEYSET_TS_ID",\n        "page_size": 100,\n        "max_pages_per_invocation": 2,\n        "fairness_bound_rows_per_invocation": 200,\n        "restart_dependency": "NONE_WITHIN_DECLARED_BOUND",\n        "beyond_bound_claim": "PREFIX_ONLY_EXPLICIT_CAP_NO_UNIVERSAL_STARVATION_CLAIM",\n        "flat_can_enter_verifier_page": False,\n        "failed_row_retryable_next_invocation": True,\n        "maturity_buffer_seconds": 60,\n        "observability": [\n            "eligible_directional_pending_count", "oldest_eligible_directional_pending_id",\n            "oldest_eligible_directional_pending_ts", "oldest_eligible_directional_pending_age_seconds",\n            "last_verify_rows_scanned", "last_verify_pages_scanned", "last_verify_count",\n            "last_verify_unresolved_proof", "last_verify_unresolved_price", "last_verify_scan_cap_hit",\n            "last_verify_cursor", "last_verify_scan_pass_complete", "last_verify_restart_safe_stateless",\n            "last_verify_fairness_bound_rows", "last_verify_fairness_scope", "last_verify_no_progress_reason"\n        ],\n    }\n    write_json(out, "aud-063-selection-contract.json", selection)\n'''
-          g, n = re.subn(r'    selection = \{.*?    write_json\(out, "aud-063-selection-contract.json", selection\)\n', selection_block, g, count=1, flags=re.S)
-          if n != 1: raise SystemExit('generator selection block not found')
-          cursor_block = '''    cursor = {\n        **common,\n        "source_class": "DETERMINISTIC_ADVERSARIAL_SIMULATION",\n        "mechanism": "LOCAL_KEYSET_CURSOR_LIVES_ONLY_INSIDE_ONE_BOUNDED_INVOCATION",\n        "page_size": 100,\n        "max_pages_per_invocation": 2,\n        "fairness_bound_rows_per_invocation": 200,\n        "cases": {\n            "flat_head": {"old_flat": 125, "later_directional": 1, "post_fix_directional_seen": True},\n            "restart_125_poison_then_healthy": {"eligible": 126, "cursor_reset_between_invocations": True, "healthy_seen_each_invocation": True},\n            "healthy_180": {"eligible": 180, "pages": [100, 80], "unique_visited": 180},\n            "over_bound_250": {"eligible": 250, "visited": 200, "scan_cap_hit": True, "fairness_scope": "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP"},\n            "keyset": {"second_page_uses_ts_id_seek": True, "offset_pagination": False},\n        },\n        "invariant_within_bound": "RESTART_SAFE_LATER_ROWS_REACHABLE_WITHOUT_CROSS_CYCLE_MEMORY",\n        "universal_starvation_claim": False,\n    }\n    write_json(out, "aud-063-cursor-fairness.json", cursor)\n'''
-          g, n = re.subn(r'    cursor = \{.*?    write_json\(out, "aud-063-cursor-fairness.json", cursor\)\n', cursor_block, g, count=1, flags=re.S)
-          if n != 1: raise SystemExit('generator cursor block not found')
-          historical_block = '''    historical = {\n        **common,\n        "source_class": "SOURCE_AND_DETERMINISTIC_CANDLE_CONTRACT",\n        "canonical_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",\n        "containment": "candle_open_ms <= target_ms < candle_close_ms",\n        "candle_close_identity": "candle_open_epoch_ms + candle_interval_ms",\n        "maturity_rule": "observed_at >= candle_close_epoch_ms",\n        "open_or_incomplete_candle": "INADMISSIBLE_NO_CAS",\n        "windows_seconds": [900, 3600],\n        "both_windows_required_and_mature_before_primary_cas": True,\n        "same_source_as_origin_required": True,\n        "allowed_public_sources": ["okx", "kraken", "gate", "mexc", "bitget"],\n        "unsupported_source_fallback": None,\n        "live_current_price_fallback": False,\n        "external_directional_market_price_source": False,\n        "equal_price_rule": "LOSS_FOR_LONG_AND_SHORT",\n        "legacy_without_maturity_or_historical_price_evidence": "RAW_UNVERIFIED",\n    }\n    write_json(out, "aud-063-historical-price-contract.json", historical)\n'''
-          g, n = re.subn(r'    historical = \{.*?    write_json\(out, "aud-063-historical-price-contract.json", historical\)\n', historical_block, g, count=1, flags=re.S)
-          if n != 1: raise SystemExit('generator historical block not found')
-          g = g.replace(
-              '        "reconciler_null_writer": False,\n',
-              '        "reconciler_null_writer": False,\n        "maturity_validation_before_cas": True,\n',
-              1,
-          )
-          findings_block = '''    findings = {\n        **common,\n        "source_class": "AUD063_R1_SOURCE_FORENSICS_AND_REGRESSION_EVIDENCE",\n        "findings": [\n            {"id":"AUD063-F001","severity":"HIGH","status":"CLOSED","fix":"server-side LONG/SHORT filter + stable ts,id keyset"},\n            {"id":"AUD063-F002","severity":"HIGH","status":"CLOSED","fix":"same-source historical evidence tied to origin witness; unsupported source fails closed"},\n            {"id":"AUD063-F003","severity":"MEDIUM","status":"CLOSED","fix":"exact 1m containing candle identity"},\n            {"id":"AUD063-F004","severity":"HIGH","status":"CLOSED_FAIL_CLOSED_LEGACY","fix":"both price evidence records required by proof gate"},\n            {"id":"AUD063-F005","severity":"MEDIUM","status":"CLOSED","fix":"reconciler repair-only; never NULL writer"},\n            {"id":"AUD063-F006","severity":"MEDIUM","status":"CLOSED","fix":"backlog/scan/no-progress observability"},\n            {"id":"AUD063-F007","severity":"HIGH","status":"CLOSED","fix":"actual persistence observation time governs causal learning"},\n            {"id":"R1-F001","severity":"HIGH","status":"CLOSED","root_cause":"containing 1m candle could be current/incomplete at evidence observation","fix":"persist candle_close_epoch_ms; writer and validator reject observed_at before candle close; 60s eligibility buffer","regression":"T28-T30"},\n            {"id":"R1-F002","severity":"MEDIUM","status":"CLOSED_BOUNDED","root_cause":"fairness cursor existed only in process memory across verifier cycles","fix":"stateless per-invocation two-page ts,id keyset traversal; restart-safe for first 200 eligible rows each invocation; explicit cap/no universal claim beyond bound","regression":"T4-T7,T31-T32"},\n            {"id":"R1-F003","severity":"MEDIUM","status":"CLOSED","root_cause":"obsolete startup resettlement read historical data then called a NULL-only CAS that could never mutate settled rows","fix":"remove obsolete resettlement loop; explicit synchronous zero-read/zero-write quarantine; reconciler remains sole settled-row repair path","regression":"T33"}\n        ]\n    }\n    write_json(out, "aud-063-findings.json", findings)\n'''
-          g, n = re.subn(r'    findings = \{.*?    write_json\(out, "aud-063-findings.json", findings\)\n', findings_block, g, count=1, flags=re.S)
-          if n != 1: raise SystemExit('generator findings block not found')
-          report_block = '''    report = f"""# AUD-063-R1 — Settlement starvation remediation hardening\n\nGenerated: {GENERATED_AT}\nParent AUD-063 head: `0320f47657d4433bfc4dc3396fd0d31ffabe2270`\n\n## Preserved AUD-063 corrections\n\nServer-side LONG/SHORT filtering, stable `(ts,id)` keyset semantics, same-origin public historical evidence, both windows, NULL-only CAS, repair-only reconciler, actual recovery observation time, independent authority N, temporal learning cutoffs, symbol isolation, PAPER/live-capital locks, and external-directional OFF remain intact.\n\n## R1-F001 — closed candle maturity\n\nHistorical evidence now persists `candle_close_epoch_ms` and is invalid unless `observed_at >= candle_close_epoch_ms`. The primary selector waits an additional 60 seconds beyond the one-hour horizon, and the validator independently rejects open/incomplete candles. No current ticker, nearest-candle, or alternate-venue fallback is authoritative.\n\n## R1-F002 — restart-safe bounded fairness\n\nThe cross-cycle process-memory cursor was removed. Each verifier invocation starts from the oldest eligible directional row and performs at most two 100-row pages using local `(ts,id)` keyset seek. This is restart-safe for the first 200 eligible rows in every invocation. If the visible backlog exceeds 200, diagnostics explicitly report `RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP`; there is no universal no-starvation claim beyond that bound. Failed rows remain retryable because scan progress is not persisted.\n\n## R1-F003 — obsolete startup backfill quarantined\n\nThe legacy startup resettlement loop was removed. Startup performs only a synchronous zero-read/zero-write quarantine marker, then reaches the primary verifier. Existing settled-row evidence repair remains exclusively in `settlement_reconciler`, which cannot create NULL->WIN/LOSS authority.\n\n## Safety\n\nNo production/database/Northflank/GitHub-settings/RUNTIME017 mutation. No merge or deploy. No threshold or weight tuning. External directional activation remains off. Production backlog recovery remains unexecuted and no edge claim is made.\n"""\n'''
-          g, n = re.subn(r'    report = f""".*?"""\n(?=    \(out / "\.\./AUD-063-REPORT\.md"\))', report_block, g, count=1, flags=re.S)
-          if n != 1: raise SystemExit('generator report block not found')
-          gen.write_text(g, encoding='utf-8')
-
-          print('AUD063_R1_PATCH_APPLIED')
-          PY
-
-      - name: Generate tracked evidence and run focused regression
+          python senecio_polymarket/scripts/aud063_r1_apply_patch.py
+      - name: Generate evidence and verify focused suite
         shell: bash
         run: |
           set -euo pipefail
@@ -317,21 +44,13 @@ jobs:
           grep -Eq 'Ran 33 tests' /tmp/aud063-r1-focused.log
           grep -q '^OK$' /tmp/aud063-r1-focused.log
           python -m compileall -q .
-
-      - name: Commit linear R1 head and remove patch runner
+      - name: Commit linear R1 candidate
         shell: bash
         run: |
           set -euo pipefail
-          git rm .github/workflows/aud063-r1-apply.yml
+          git rm .github/workflows/aud063-r1-apply.yml senecio_polymarket/scripts/aud063_r1_apply_patch.py
           git config user.name 'Simon Dalmasso'
           git config user.email 'simondalmasso44@gmail.com'
-          git add .github/workflows/aud-063.yml \
-            senecio_polymarket/backend/settlement_contract.py \
-            senecio_polymarket/backend/supabase_client.py \
-            senecio_polymarket/backend/oracle_runner.py \
-            senecio_polymarket/tests/test_aud_063.py \
-            senecio_polymarket/scripts/aud063_generate_evidence.py \
-            senecio_polymarket/docs/AUD-063-REPORT.md \
-            senecio_polymarket/docs/evidence/aud-063-*.json
-          git commit -m 'aud063-r1: close candle maturity restart fairness and legacy backfill'
+          git add .github/workflows/aud-063.yml senecio_polymarket/backend/settlement_contract.py senecio_polymarket/backend/supabase_client.py senecio_polymarket/backend/oracle_runner.py senecio_polymarket/tests/test_aud_063.py senecio_polymarket/scripts/aud063_generate_evidence.py senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*.json
+          git commit -m 'aud063-r1: close maturity restart fairness and startup quarantine'
           git push origin HEAD:audit/aud-063-settlement-starvation-recovery
