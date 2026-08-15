@@ -1,4 +1,4 @@
-name: AUD-064 Finalize A1 Northflank Control
+name: AUD-064 Finalize A1 Exact Production Acceptance
 
 on:
   push:
@@ -9,69 +9,305 @@ permissions:
   contents: read
 
 jobs:
-  verify-containment:
+  deploy-and-accept:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     env:
       NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
       PROJECT_ID: seneciobot
       SERVICE_ID: senecio-h011
       TEAM_ID: simondalmassos-team
-      EXPECTED_DEPLOYED_SHA: 2c4dbf284b23d3cf81b93dcfbd262660ab03dd43
-      HEALTH_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+      TARGET_SHA: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
+      TARGET_TREE: 27eb923e615614b43fe3c29ecace8b7ef503045e
+      TARGET_BRANCH: main
+      PROD_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
     steps:
-      - name: Verify repository secret, containment, exact deployed SHA, and health
+      - name: Checkout exact landed main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Assert exact landed source identity
         shell: bash
         run: |
           set -euo pipefail
-          raw="${NF_API:-}"
-          test -n "$raw"
-          echo "::add-mask::$raw"
-          token=$(printf '%s' "$raw" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
-          test -n "$token"
-          echo "::add-mask::$token"
-          found=0
-          for scope in project team; do
-            if [ "$scope" = project ]; then
-              base="https://api.northflank.com/v1/projects/$PROJECT_ID"
-            else
-              base="https://api.northflank.com/v1/teams/$TEAM_ID/projects/$PROJECT_ID"
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET_SHA"
+          echo "LANDED_MAIN_SHA=$TARGET_SHA"
+          echo "LANDED_MAIN_TREE=$TARGET_TREE"
+
+      - name: Explicit Northflank build and deploy exact landed SHA
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NF_API:-}"
+          mkdir -p aud064-finalize-a1-evidence
+          echo "::add-mask::$NF_API"
+          python - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          API='https://api.northflank.com/v1'
+          raw=os.environ['NF_API'].strip()
+          if raw.lower().startswith('bearer '): raw=raw[7:].strip()
+          if len(raw)>=2 and raw[0]==raw[-1] and raw[0] in "\"'": raw=raw[1:-1].strip()
+          if not raw: raise RuntimeError('REPOSITORY_NORTHFLANK_SECRET_EMPTY')
+          token=raw
+          project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']; team=os.environ['TEAM_ID']
+          target=os.environ['TARGET_SHA']; tree=os.environ['TARGET_TREE']; branch=os.environ['TARGET_BRANCH']
+          ledger=[]
+          def call(method,path,payload=None,query=None):
+              url=API+path
+              if query: url+='?'+urllib.parse.urlencode(query)
+              data=None if payload is None else json.dumps(payload).encode()
+              headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-aud064-finalize-a1/1'}
+              if data is not None: headers['Content-Type']='application/json'
+              req=urllib.request.Request(url,data=data,headers=headers,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r:
+                      status=r.status; body=r.read().decode(errors='replace')
+              except urllib.error.HTTPError as e:
+                  status=e.code; body=e.read().decode(errors='replace')
+              try: parsed=json.loads(body) if body else {}
+              except Exception: parsed={}
+              ledger.append({'method':method,'path':path,'status':status})
+              print(f'NF_REQUEST method={method} path={path} status={status}',flush=True)
+              return status, parsed if isinstance(parsed,dict) else {}
+          def req(status,body,name,accepted=(200,)):
+              if status not in accepted:
+                  raise RuntimeError(f'{name}_HTTP_{status}')
+              data=body.get('data')
+              return data if isinstance(data,dict) else {}
+          prefixes=[f'/projects/{urllib.parse.quote(project)}',f'/teams/{urllib.parse.quote(team)}/projects/{urllib.parse.quote(project)}']
+          prefix=None; service_data=None
+          for p in prefixes:
+              s,b=call('GET',f'{p}/services/{service}')
+              if s==200:
+                  prefix=p; service_data=req(s,b,'GET_SERVICE'); break
+          if not prefix: raise RuntimeError('NORTHFLANK_REPOSITORY_SECRET_AUTH_FAILED')
+          if service_data.get('serviceType')!='combined': raise RuntimeError('UNEXPECTED_SERVICE_TYPE')
+          if service_data.get('disabledCI') is not True: raise RuntimeError('AUTO_CI_NOT_CONTAINED_PREDEPLOY')
+          service_path=f'{prefix}/services/{service}'
+          s,b=call('GET',f'{service_path}/deployment'); dep=req(s,b,'GET_DEPLOYMENT')
+          internal=dep.get('internal') if isinstance(dep.get('internal'),dict) else {}
+          internal_id=str(internal.get('id') or internal.get('nfObjectId') or service)
+          before={'disabled_ci':service_data.get('disabledCI'),'disabled_cd':service_data.get('disabledCD'),'build_sha':internal.get('buildSHA'),'deployed_sha':internal.get('deployedSHA')}
+          print('PREDEPLOY_CONTAINMENT='+json.dumps(before,sort_keys=True),flush=True)
+          if before['build_sha']=='latest': raise RuntimeError('MOVING_CD_REF_PRESENT_PREDEPLOY')
+
+          s,b=call('POST',f'{service_path}/build',{'sha':target}); build=req(s,b,'START_EXACT_BUILD',(200,201,202))
+          build_id=str(build.get('id') or '')
+          if build.get('sha') not in (None,target): raise RuntimeError('BUILD_START_WRONG_SHA')
+          if not build_id:
+              for _ in range(20):
+                  s,b=call('GET',f'{service_path}/build',query={'per_page':100}); req(s,b,'LIST_BUILDS')
+                  data=b.get('data'); builds=data.get('builds') if isinstance(data,dict) else data
+                  if isinstance(builds,list):
+                      hit=next((x for x in builds if isinstance(x,dict) and x.get('sha')==target and x.get('id')),None)
+                      if hit: build_id=str(hit['id']); break
+                  time.sleep(5)
+          if not build_id: raise RuntimeError('EXACT_BUILD_ID_NOT_FOUND')
+          build_status='UNKNOWN'; build_sha=None
+          failures={'ABORTED','FAILURE','SUBMISSION_FAILURE','CRASHED','FAILED'}
+          for _ in range(100):
+              s,b=call('GET',f'{service_path}/build/{urllib.parse.quote(build_id)}'); detail=req(s,b,'GET_BUILD')
+              build_status=str(detail.get('status') or 'UNKNOWN').upper(); build_sha=detail.get('sha')
+              print(f'BUILD_POLL id={build_id} status={build_status} sha={build_sha}',flush=True)
+              if build_sha not in (None,target): raise RuntimeError('BUILD_DETAIL_WRONG_SHA')
+              if build_status=='SUCCESS': break
+              if build_status in failures: raise RuntimeError(f'EXACT_BUILD_FAILED_{build_status}')
+              time.sleep(10)
+          if build_status!='SUCCESS' or build_sha!=target: raise RuntimeError('EXACT_BUILD_NOT_VERIFIED')
+
+          payload={'internal':{'id':internal_id,'branch':branch,'buildSHA':target,'buildId':build_id}}
+          s,b=call('POST',f'{service_path}/deployment',payload); req(s,b,'DEPLOY_EXACT_BUILD',(200,201,202))
+          deployed=None; deploy_status='UNKNOWN'; final_service={}; final_dep={}
+          for _ in range(80):
+              s,b=call('GET',f'{service_path}/deployment'); final_dep=req(s,b,'POLL_DEPLOYMENT')
+              ii=final_dep.get('internal') if isinstance(final_dep.get('internal'),dict) else {}
+              deployed=ii.get('deployedSHA')
+              s,b=call('GET',f'{service_path}'); final_service=req(s,b,'POLL_SERVICE')
+              st=final_service.get('status') if isinstance(final_service.get('status'),dict) else {}
+              ds=st.get('deployment') if isinstance(st.get('deployment'),dict) else {}
+              deploy_status=str(ds.get('status') or 'UNKNOWN').upper()
+              print(f'DEPLOY_POLL status={deploy_status} deployed_sha={deployed}',flush=True)
+              if deployed==target and deploy_status=='COMPLETED': break
+              if deploy_status=='FAILED': raise RuntimeError('EXACT_DEPLOYMENT_FAILED')
+              time.sleep(10)
+          if deployed!=target or deploy_status!='COMPLETED': raise RuntimeError('EXACT_DEPLOYMENT_NOT_VERIFIED')
+          ii=final_dep.get('internal') if isinstance(final_dep.get('internal'),dict) else {}
+          if final_service.get('disabledCI') is not True: raise RuntimeError('AUTO_CI_REENABLED')
+          if ii.get('buildSHA')!=target: raise RuntimeError('DEPLOYMENT_NOT_EXACT_SHA_PINNED')
+          cd=final_service.get('disabledCD')
+          if cd not in (True,None): raise RuntimeError(f'UNSAFE_DISABLED_CD_{cd}')
+          if ii.get('buildSHA')=='latest': raise RuntimeError('MOVING_CD_REF_PRESENT_POSTDEPLOY')
+          summary={
+              'captured_at':datetime.now(timezone.utc).isoformat(),
+              'target_sha':target,'target_tree':tree,'build_id':build_id,'build_status':build_status,
+              'deployed_sha':deployed,'deployment_status':deploy_status,
+              'disabled_ci':final_service.get('disabledCI'),'disabled_cd':cd,
+              'deployment_build_sha':ii.get('buildSHA'),'deployment_internal_id':ii.get('id') or internal_id,
+              'automatic_main_build_disabled':True,'moving_deploy_ref':False,
+              'unreviewed_main_write_can_auto_deploy':False,'request_ledger':ledger,
+          }
+          encoded=json.dumps(summary,indent=2,sort_keys=True)
+          if token in encoded: raise RuntimeError('SECRET_LEAK_GATE')
+          Path('aud064-finalize-a1-evidence/northflank-deploy.json').write_text(encoded+'\n')
+          print('EXACT_BUILD_ID='+build_id)
+          print('EXACT_DEPLOYED_SHA='+target)
+          print('NORTHFLANK_AUTOMATIC_CD_FROM_MAIN=DISABLED')
+          print('UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false')
+          PY
+
+      - name: Wait for exact production runtime and first oracle cycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -fsS --max-time 15 "$PROD_URL/api/health" > /tmp/health.json; then
+              if jq -e '.status=="ok" and (.oracle.cycles_run|tonumber)>=1 and .oracle.last_error==null' /tmp/health.json >/dev/null 2>&1; then
+                ok=1; break
+              fi
             fi
-            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
-            echo "PROBE_REPOSITORY_SECRET_${scope}_HTTP=$code"
-            if [ "$code" = 200 ]; then
-              found=1
-              echo "SELECTED_SCOPE=$scope"
-              break
-            fi
+            echo "RUNTIME_POLL=$i"
+            sleep 5
           done
-          test "$found" = 1
-          jq -e '.data.serviceType == "combined"' /tmp/service.json >/dev/null
-          ci=$(jq -r '.data.disabledCI' /tmp/service.json)
-          cd=$(jq -r '.data.disabledCD' /tmp/service.json)
-          build=$(jq -r '.data.deployment.internal.buildSHA // "UNKNOWN"' /tmp/service.json)
-          deployed=$(jq -r '.data.deployment.internal.deployedSHA // "UNKNOWN"' /tmp/service.json)
-          status=$(jq -r '.data.status.deployment.status // "UNKNOWN"' /tmp/service.json)
-          echo "DISABLED_CI=$ci"
-          echo "DISABLED_CD=$cd"
-          echo "BUILD_SHA=$build"
-          echo "DEPLOYED_SHA=$deployed"
-          echo "DEPLOYMENT_STATUS=$status"
-          test "$ci" = true
-          test "$build" = "$EXPECTED_DEPLOYED_SHA"
-          test "$deployed" = "$EXPECTED_DEPLOYED_SHA"
-          test "$status" = COMPLETED
-          if [ "$cd" = true ]; then
-            echo 'CD_CONTAINMENT_MODE=DISABLED_CD_TRUE'
-          elif [ "$cd" = null ]; then
-            echo 'CD_CONTAINMENT_MODE=EXACT_SHA_PIN_NO_MOVING_BUILD'
-          else
-            echo "UNSAFE_DISABLED_CD=$cd"
-            exit 1
-          fi
-          curl -fsS "$HEALTH_URL/health" >/tmp/health.json || curl -fsS "$HEALTH_URL/healthz" >/tmp/health.json || curl -fsS "$HEALTH_URL/api/health" >/tmp/health.json
-          jq -e '.' /tmp/health.json >/dev/null
-          echo 'NORTHFLANK_AUTOMATIC_CD_FROM_MAIN=DISABLED'
-          echo 'NORTHFLANK_AUTOMATIC_CI_IF_NEEDED_FOR_CD_CHAIN=DISABLED'
-          echo 'PRODUCTION_DEPLOY_MODE=EXPLICIT_EXACT_SHA_ONLY'
+          test "$ok" = 1
+          cp /tmp/health.json aud064-finalize-a1-evidence/health.json
+          echo "RUNTIME_HEALTH=PASS"
+
+      - name: Capture real runtime API and DB-backed evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$PROD_URL/api/market-context" > aud064-finalize-a1-evidence/market-context.json
+          curl -fsS "$PROD_URL/api/oracle/state" > aud064-finalize-a1-evidence/oracle-state.json
+          curl -fsS "$PROD_URL/api/oracle/score?symbol=BTCUSDT" > aud064-finalize-a1-evidence/score-btc.json
+          curl -fsS "$PROD_URL/api/oracle/score?symbol=ETHUSDT" > aud064-finalize-a1-evidence/score-eth.json
+          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=BTCUSDT" > aud064-finalize-a1-evidence/db-btc.json
+          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=ETHUSDT" > aud064-finalize-a1-evidence/db-eth.json
+          curl -fsS "$PROD_URL/" > aud064-finalize-a1-evidence/dashboard.html
+          curl -fsS "$PROD_URL/static/dashboard_truth.js" > aud064-finalize-a1-evidence/dashboard_truth.js
+          curl -fsS "$PROD_URL/static/app.js" > aud064-finalize-a1-evidence/app.js
+
+      - name: Verify runtime safety, authority, settlement proof, learning isolation, and dashboard truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          sys.path.insert(0,'senecio_polymarket')
+          from backend.settlement_proof import is_proof_qualified
+          E=Path('aud064-finalize-a1-evidence')
+          load=lambda n: json.loads((E/n).read_text())
+          health=load('health.json'); ctx=load('market-context.json'); state=load('oracle-state.json')
+          btc=load('score-btc.json'); eth=load('score-eth.json'); dbb=load('db-btc.json'); dbe=load('db-eth.json')
+          assert health['status']=='ok'
+          oracle=health['oracle']; assert int(oracle.get('cycles_run') or 0)>=1; assert oracle.get('last_error') is None
+          assert ctx.get('mode')=='REAL_ONLY'; assert ctx.get('synthetic_demo_enabled') is False
+          safety=ctx.get('safety') or {}; assert safety.get('trade_mode')=='PAPER'; assert safety.get('live_capital_locked') is True; assert safety.get('orders_enabled') is False; assert safety.get('read_only_market_adapters') is True
+          for venue in ('polymarket','kalshi','boros'):
+              v=ctx.get(venue) or {}
+              if 'directional_use' in v: assert v.get('directional_use') is False, (venue,v.get('directional_use'))
+          for score,sym in ((btc,'BTCUSDT'),(eth,'ETHUSDT')):
+              assert score.get('requested_symbol')==sym, (sym,score.get('requested_symbol'))
+              assert score.get('score_scope')=='PER_SYMBOL'
+              assert score.get('trade_mode')=='PAPER'; assert score.get('orders_enabled') is False; assert score.get('live_capital_locked') is True
+              raw=int(score.get('proof_qualified_rows_raw') or 0); independent=int(score.get('independent_1h_rows') or 0)
+              assert independent<=raw
+              assert (score.get('authority_1h') or {}).get('n_source')=='INDEPENDENT_NONOVERLAP_1H'
+              if score.get('score_status')!='CALIBRATED': assert score.get('authoritative_score_pct') is None
+          rows_b=dbb.get('predictions') or []; rows_e=dbe.get('predictions') or []
+          assert all(str(r.get('symbol') or '').upper().replace('/','').replace('-','')=='BTCUSDT' for r in rows_b)
+          assert all(str(r.get('symbol') or '').upper().replace('/','').replace('-','')=='ETHUSDT' for r in rows_e)
+          proof_b=[r for r in rows_b if is_proof_qualified(r)]; proof_e=[r for r in rows_e if is_proof_qualified(r)]
+          assert len(proof_b)==int(btc.get('proof_qualified_rows_raw') or 0), (len(proof_b),btc.get('proof_qualified_rows_raw'))
+          assert len(proof_e)==int(eth.get('proof_qualified_rows_raw') or 0), (len(proof_e),eth.get('proof_qualified_rows_raw'))
+          for r in proof_b+proof_e:
+              a=r.get('audit') or {}; dual=a.get('outcomes_dual') or {}; origin=a.get('origin_price_v1') or {}
+              assert origin.get('source')==r.get('exchange_used')
+              ev=dual.get('price_evidence_v1') or {}; assert isinstance(ev.get('15m'),dict) and isinstance(ev.get('1h'),dict)
+          started=state.get('started_at') or oracle.get('started_at')
+          assert started
+          start_epoch=datetime.fromisoformat(str(started).replace('Z','+00:00')).timestamp()
+          new={}
+          for sym,rows in (('BTCUSDT',rows_b),('ETHUSDT',rows_e)):
+              candidates=[]
+              for r in rows:
+                  try: ts=datetime.fromisoformat(str(r.get('ts')).replace('Z','+00:00')).timestamp()
+                  except Exception: continue
+                  if ts>=start_epoch-5: candidates.append(r)
+              assert candidates, f'NO_POSTDEPLOY_{sym}_ROW'
+              row=max(candidates,key=lambda r:str(r.get('ts') or ''))
+              assert row.get('exchange_used') not in (None,'','unknown')
+              audit=row.get('audit') or {}; pipe=audit.get('pipeline') or {}; step2=pipe.get('step2_features') or {}; learning=step2.get('learning_state_v1') or {}
+              assert learning.get('learning_mutation_authority')=='SHADOW_ONLY', (sym,learning)
+              assert learning.get('production_learning_mutation_enabled') is False
+              assert int(learning.get('mutations') or 0)==0
+              assert learning.get('size_calibration_authority')=='FROZEN_BASE_ONLY'
+              assert learning.get('base_weights_hash')==learning.get('decision_weights_hash')==learning.get('effective_weights_hash')
+              fields=learning.get('learning_projection_fields') or []; assert 'exchange_used' in fields
+              cutoff=learning.get('decision_cutoff_epoch')
+              if cutoff is not None:
+                  for obs in learning.get('source_settlement_observation_epochs') or []:
+                      val=obs.get('observed_at_epoch') if isinstance(obs,dict) else None
+                      if val is not None: assert float(val)<=float(cutoff)+1e-6
+              new[sym]={'id':row.get('id'),'ts':row.get('ts'),'exchange_used':row.get('exchange_used'),'learning_status':learning.get('status'),'proof_qualified_n':learning.get('proof_qualified_n'),'shadow_mutations':learning.get('shadow_mutations'),'production_mutations':learning.get('mutations')}
+          # Dashboard code must consume exactly the real context, symbol-scoped BTC score, and DB endpoints.
+          app=(E/'app.js').read_text(); truth=(E/'dashboard_truth.js').read_text(); html=(E/'dashboard.html').read_text()
+          assert "getJSON('/api/market-context')" in app
+          assert "getJSON('/api/oracle/score?symbol=BTCUSDT')" in app
+          assert "getJSON('/api/oracle/predictions/db?limit=50')" in app
+          assert 'learning_state_v1' in truth and 'SHADOW_ONLY' not in html  # HTML is a shell; values come from API at runtime.
+          # Production static assets must equal landed source bytes.
+          assert (E/'app.js').read_bytes()==Path('senecio_polymarket/frontend/app.js').read_bytes()
+          assert (E/'dashboard_truth.js').read_bytes()==Path('senecio_polymarket/frontend/dashboard_truth.js').read_bytes()
+          receipt={
+            'runtime_health':'PASS','cycles_run':oracle.get('cycles_run'),'cycles_failed':oracle.get('cycles_failed'),'last_cycle_at':oracle.get('last_cycle_at'),
+            'paper_mode':True,'live_capital_locked':True,'orders_enabled':False,'synthetic_demo_enabled':False,
+            'btc':{'raw_proof_n':btc.get('proof_qualified_rows_raw'),'independent_authority_n':btc.get('independent_1h_rows'),'score_status':btc.get('score_status'),'authoritative_score_pct':btc.get('authoritative_score_pct')},
+            'eth':{'raw_proof_n':eth.get('proof_qualified_rows_raw'),'independent_authority_n':eth.get('independent_1h_rows'),'score_status':eth.get('score_status'),'authoritative_score_pct':eth.get('authoritative_score_pct')},
+            'canonical_proof_rows_observed':{'BTCUSDT':len(proof_b),'ETHUSDT':len(proof_e)},
+            'postdeploy_rows':new,
+            'dashboard_api_db_reconciliation':'PASS','learning_authority':'SHADOW_ONLY','production_weights':'FROZEN_BASE',
+          }
+          (E/'runtime-acceptance.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print('RUNTIME_ACCEPTANCE=PASS')
+          print('SETTLEMENT_PROOF_AUTHORITY=PASS')
+          print('LEARNING_SHADOW_ONLY=PASS')
+          print('DASHBOARD_API_DB_RECONCILIATION=PASS')
+          print(json.dumps(receipt,sort_keys=True))
+          PY
+
+      - name: Re-read Northflank exact pin after runtime acceptance
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          echo "::add-mask::$NF_API"
+          token=$(printf '%s' "$NF_API" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
+          code=$(curl -sS -o /tmp/final-service.json -w '%{http_code}' -H "Authorization: Bearer $token" "https://api.northflank.com/v1/projects/$PROJECT_ID/services/$SERVICE_ID")
+          test "$code" = 200
+          test "$(jq -r '.data.disabledCI' /tmp/final-service.json)" = true
+          test "$(jq -r '.data.deployment.internal.buildSHA' /tmp/final-service.json)" = "$TARGET_SHA"
+          test "$(jq -r '.data.deployment.internal.deployedSHA' /tmp/final-service.json)" = "$TARGET_SHA"
+          test "$(jq -r '.data.status.deployment.status' /tmp/final-service.json)" = COMPLETED
+          echo 'FINAL_PRODUCTION_DEPLOYMENT_EXACT_SHA=PASS'
           echo 'UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false'
+
+      - name: Upload sanitized finalization evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-064-finalize-a1-${{ env.TARGET_SHA }}
+          path: aud064-finalize-a1-evidence/
+          if-no-files-found: error
+          retention-days: 14
