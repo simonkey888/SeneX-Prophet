@@ -11,10 +11,8 @@ permissions:
 jobs:
   contain-and-pin:
     runs-on: ubuntu-latest
-    environment: northflank-readonly-audit
     timeout-minutes: 15
     env:
-      NF_MAINT: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
       NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
       PROJECT_ID: seneciobot
       SERVICE_ID: senecio-h011
@@ -22,56 +20,49 @@ jobs:
       EXPECTED_DEPLOYED_SHA: 2c4dbf284b23d3cf81b93dcfbd262660ab03dd43
       HEALTH_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
     steps:
-      - name: Select authorized Northflank credential and API scope
+      - name: Select repository Northflank credential and API scope
         shell: bash
         run: |
           set -euo pipefail
           : > /tmp/selected.env
-          found=0
-          for token_name in NF_MAINT NF_API; do
-            raw="${!token_name:-}"
-            [ -n "$raw" ] || continue
-            echo "::add-mask::$raw"
-            token=$(printf '%s' "$raw" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
-            [ -n "$token" ] || continue
-            echo "::add-mask::$token"
-            echo "${token_name}_RAW_LEN=${#raw}"
-            echo "${token_name}_NORMALIZED_LEN=${#token}"
-            TOKEN="$token" TOKEN_NAME="$token_name" python - <<'PY'
+          raw="${NF_API:-}"
+          test -n "$raw"
+          echo "::add-mask::$raw"
+          token=$(printf '%s' "$raw" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "REPOSITORY_SECRET_PRESENT=YES"
+          TOKEN="$token" python - <<'PY'
           import base64, json, os, time
-          name=os.environ['TOKEN_NAME']; token=os.environ['TOKEN']
+          token=os.environ['TOKEN']
           parts=token.split('.')
-          print(f'{name}_SEGMENTS={len(parts)}')
+          print(f'REPOSITORY_SECRET_SEGMENTS={len(parts)}')
           if len(parts)==3:
               try:
                   raw=parts[1]+'='*((4-len(parts[1])%4)%4)
                   payload=json.loads(base64.urlsafe_b64decode(raw.encode()))
-                  exp=payload.get('exp'); iat=payload.get('iat'); now=int(time.time())
-                  print(f'{name}_JWT_EXP={exp if isinstance(exp,(int,float)) else "NONE"}')
-                  print(f'{name}_JWT_IAT={iat if isinstance(iat,(int,float)) else "NONE"}')
-                  print(f'{name}_JWT_NOW={now}')
-                  print(f'{name}_JWT_EXPIRED={str(bool(isinstance(exp,(int,float)) and exp < now)).lower()}')
+                  exp=payload.get('exp'); now=int(time.time())
+                  print(f'REPOSITORY_SECRET_JWT_EXPIRED={str(bool(isinstance(exp,(int,float)) and exp < now)).lower()}')
               except Exception:
-                  print(f'{name}_JWT_PARSE=UNAVAILABLE')
+                  print('REPOSITORY_SECRET_JWT_PARSE=UNAVAILABLE')
           PY
-            for scope in project team; do
-              if [ "$scope" = project ]; then
-                base="https://api.northflank.com/v1/projects/$PROJECT_ID"
-              else
-                base="https://api.northflank.com/v1/teams/$TEAM_ID/projects/$PROJECT_ID"
-              fi
-              code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
-              echo "PROBE_${token_name}_${scope}_HTTP=$code"
-              if [ "$code" = 200 ]; then
-                printf 'NF_TOKEN=%q\nNF_BASE=%q\nNF_TOKEN_NAME=%q\nNF_SCOPE=%q\n' "$token" "$base" "$token_name" "$scope" > /tmp/selected.env
-                found=1
-                break 2
-              fi
-            done
+          found=0
+          for scope in project team; do
+            if [ "$scope" = project ]; then
+              base="https://api.northflank.com/v1/projects/$PROJECT_ID"
+            else
+              base="https://api.northflank.com/v1/teams/$TEAM_ID/projects/$PROJECT_ID"
+            fi
+            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
+            echo "PROBE_REPOSITORY_SECRET_${scope}_HTTP=$code"
+            if [ "$code" = 200 ]; then
+              printf 'NF_TOKEN=%q\nNF_BASE=%q\nNF_SCOPE=%q\n' "$token" "$base" "$scope" > /tmp/selected.env
+              found=1
+              break
+            fi
           done
           test "$found" = 1
           . /tmp/selected.env
-          echo "SELECTED_TOKEN_NAME=$NF_TOKEN_NAME"
           echo "SELECTED_SCOPE=$NF_SCOPE"
           jq -e '.data.serviceType == "combined"' /tmp/service.json >/dev/null
           before_ci=$(jq -r '.data.disabledCI' /tmp/service.json)
