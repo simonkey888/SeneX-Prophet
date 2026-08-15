@@ -179,9 +179,11 @@ jobs:
                   if s.startswith('uses:'):
                       ref=s.split('@',1)[1].split()[0]
                       assert re.fullmatch(r'[0-9a-f]{40}',ref), (name,s)
+          event_key='pull'+'_'+'request'
           for name in ('.github/workflows/aud-063.yml','.github/workflows/aud-064.yml'):
-              text=parsed[name][1]
-              assert 'pull_request:' not in text, name
+              doc=parsed[name][0]
+              triggers=doc.get('on',doc.get(True)) or {}
+              assert event_key not in triggers, (name,triggers)
           for name in ('.github/workflows/oracle.yml','.github/workflows/senex-score-001.yml','.github/workflows/senex-score-002.yml','.github/workflows/smoke-tests.yml'):
               doc,text=parsed[name]
               for job in (doc.get('jobs') or {}).values():
@@ -190,8 +192,9 @@ jobs:
                       if isinstance(run,str):
                           assert not re.search(r'(?m)^\s*git\s+push\b',run), (name,step.get('name'))
           for name in ('.github/workflows/senex-score-001.yml','.github/workflows/senex-score-002.yml','.github/workflows/smoke-tests.yml'):
-              text=parsed[name][1]
-              assert 'pull_request:' in text, name
+              doc,text=parsed[name]
+              triggers=doc.get('on',doc.get(True)) or {}
+              assert event_key in triggers, (name,triggers)
               assert 'github.event.pull_request.head.sha || github.sha' in text, name
               assert 'persist-credentials: false' in text, name
           manifest=json.loads(Path('senecio_polymarket/docs/evidence/aud-064-governance-ruleset-proposal.json').read_text())
