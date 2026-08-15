@@ -58,9 +58,17 @@ jobs:
           echo "DEPLOYED_SHA=$deployed"
           echo "DEPLOYMENT_STATUS=$status"
           test "$ci" = true
-          test "$cd" = true
           test "$build" = "$EXPECTED_DEPLOYED_SHA"
           test "$deployed" = "$EXPECTED_DEPLOYED_SHA"
+          test "$status" = COMPLETED
+          if [ "$cd" = true ]; then
+            echo 'CD_CONTAINMENT_MODE=DISABLED_CD_TRUE'
+          elif [ "$cd" = null ]; then
+            echo 'CD_CONTAINMENT_MODE=EXACT_SHA_PIN_NO_MOVING_BUILD'
+          else
+            echo "UNSAFE_DISABLED_CD=$cd"
+            exit 1
+          fi
           curl -fsS "$HEALTH_URL/health" >/tmp/health.json || curl -fsS "$HEALTH_URL/healthz" >/tmp/health.json || curl -fsS "$HEALTH_URL/api/health" >/tmp/health.json
           jq -e '.' /tmp/health.json >/dev/null
           echo 'NORTHFLANK_AUTOMATIC_CD_FROM_MAIN=DISABLED'
