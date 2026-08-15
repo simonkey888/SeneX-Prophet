@@ -1,4 +1,4 @@
-name: AUD-063 Settlement Authority Exact Head
+name: AUD-063-R1 Settlement Authority Exact Head
 
 on:
   push:
@@ -45,13 +45,13 @@ jobs:
           python -m pip install -r senecio_polymarket/requirements.txt
           python -m pip install 'detect-secrets==1.5.0' 'PyYAML>=6,<7'
 
-      - name: Focused AUD-063 regression T1-T27
+      - name: Focused AUD-063/R1 regression T1-T33
         working-directory: senecio_polymarket
         shell: bash
         run: |
           set -euo pipefail
           python -m unittest tests.test_aud_063 -v 2>&1 | tee /tmp/aud063-focused.log
-          grep -Eq 'Ran 27 tests' /tmp/aud063-focused.log
+          grep -Eq 'Ran 33 tests' /tmp/aud063-focused.log
           grep -q '^OK$' /tmp/aud063-focused.log
 
       - name: Full unittest discovery nonzero
@@ -203,7 +203,7 @@ jobs:
       - name: Upload exact-head evidence bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-063-exact-head-${{ github.sha }}
+          name: aud-063-r1-exact-head-${{ github.sha }}
           path: |
             senecio_polymarket/docs/AUD-063-REPORT.md
             senecio_polymarket/docs/evidence/aud-063-*.json
