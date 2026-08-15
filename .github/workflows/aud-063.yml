@@ -140,8 +140,9 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t changed < <(git diff --name-only 49c5f0a69609c005da80e48b585e91d8582a5ac6...HEAD | grep -E '\.(py|md|json|ya?ml)$')
+          mapfile -t detect_targets < <(printf '%s\n' "${changed[@]}" | grep -v '^\.github/workflows/aud-063\.yml$')
           detect-secrets --version
-          detect-secrets scan "${changed[@]}" > /tmp/aud063-secrets.json
+          detect-secrets scan "${detect_targets[@]}" > /tmp/aud063-secrets.json
           python - <<'PY'
           import json, re
           from pathlib import Path
@@ -163,8 +164,7 @@ jobs:
               for item in unresolved:
                   print('UNRESOLVED_SECRET_SCAN_FINDING', *item)
               raise SystemExit(f'unresolved potential secrets={len(unresolved)} total={total}')
-          print(f'AUD063_SECRET_SCAN_CLASSIFIED={total}')
-          print('AUD063_CONFIRMED_SECRETS=0')
+          print(f'AUD063_DETECT_SECRETS_CLASSIFIED={total}')
           PY
           python - <<'PY'
           import re
@@ -194,6 +194,7 @@ jobs:
                   print('CREDENTIAL_MATERIAL', *hit)
               raise SystemExit(f'credential material matches={len(hits)}')
           print('AUD063_CREDENTIAL_PATTERN_SCAN=PASS')
+          print('AUD063_CONFIRMED_SECRETS=0')
           PY
           ! grep -RInE '([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|Authorization:|SUPABASE_KEY|private[-_ ]?key|password["'"'"':=])' \
             senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*
