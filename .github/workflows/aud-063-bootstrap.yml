@@ -1,0 +1,55 @@
+name: AUD-063 Pre-Fix Reproduction
+
+on:
+  push:
+    branches:
+      - audit/aud-063-settlement-starvation-recovery
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce-prefix:
+    if: ${{ !contains(github.event.head_commit.message, '[AUD063_FINAL]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal dependency
+        run: python -m pip install 'httpx==0.28.1'
+
+      - name: Verify exact main ancestry and PR58 isolation inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-list --max-parents=0 HEAD | wc -l)" -ge 1
+          git merge-base --is-ancestor 49c5f0a69609c005da80e48b585e91d8582a5ac6 HEAD
+          test "$(git show 49c5f0a69609c005da80e48b585e91d8582a5ac6^{tree})" = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
+
+      - name: Reproduce old selector and capture public runtime baseline
+        env:
+          AUD063_OUT: aud063_bootstrap
+        run: python senecio_polymarket/scripts/aud063_baseline_reproduce.py
+
+      - name: Confirm no credentials are embedded in evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RInE '(Authorization:|Bearer[[:space:]]+[A-Za-z0-9._-]+|sb_secret_|sb_publishable_|SUPABASE_KEY[[:space:]]*=)' aud063_bootstrap
+
+      - name: Upload reproduction evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-063-prefix-${{ github.sha }}
+          path: aud063_bootstrap/
+          if-no-files-found: error
+          retention-days: 7
