@@ -1,0 +1,71 @@
+name: AUD-063 LAND production external directional lock probe
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+    paths:
+      - .github/workflows/aud-063-land-directional-lock-probe.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify current-runtime decision audit is diagnostic-only externally
+        shell: bash
+        env:
+          BASE: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+          base=os.environ['BASE'].rstrip('/')
+          def get(path,q=None):
+              u=base+path
+              if q:u+='?'+urllib.parse.urlencode(q)
+              with urllib.request.urlopen(urllib.request.Request(u,headers={'Accept':'application/json','User-Agent':'senex-aud063-lock/1'}),timeout=30) as r:return json.loads(r.read().decode())
+          def parse(v):
+              try:
+                  d=datetime.fromisoformat(str(v).replace('Z','+00:00')); return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+              except Exception:return None
+          def audit(r):
+              a=r.get('audit')
+              if isinstance(a,dict):return a
+              if isinstance(a,str):
+                  try:return json.loads(a)
+                  except Exception:return {}
+              return {}
+          state=get('/api/oracle/state'); start=parse(state.get('started_at'))
+          if not start: raise RuntimeError('MISSING_START')
+          evidence=[]
+          for s in ('BTCUSDT','ETHUSDT'):
+              p=get('/api/oracle/predictions/db',{'limit':50,'symbol':s})
+              for r in p.get('predictions',[]):
+                  ts=parse(r.get('ts'))
+                  if not ts or ts < start: continue
+                  a=audit(r); pipe=a.get('pipeline') if isinstance(a,dict) else {}; step2=pipe.get('step2_features') if isinstance(pipe,dict) else {}
+                  poly=step2.get('polymarket_context_v1') if isinstance(step2,dict) else None
+                  ext=a.get('external_markets_v1') if isinstance(a,dict) else None
+                  if isinstance(poly,dict) or isinstance(ext,dict):
+                      item={'symbol':s,'id':r.get('id'),'ts':r.get('ts')}
+                      if isinstance(poly,dict): item['polymarket']={k:poly.get(k) for k in ('directional_use','effective_weight','experiment_enabled','pressure_component')}
+                      if isinstance(ext,dict):
+                          item['kalshi_directional_use']=((ext.get('kalshi') or {}).get('directional_use') if isinstance(ext.get('kalshi'),dict) else None)
+                          item['boros_directional_use']=((ext.get('boros') or {}).get('directional_use') if isinstance(ext.get('boros'),dict) else None)
+                      evidence.append(item)
+              
+          if not evidence: raise RuntimeError('NO_CURRENT_RUNTIME_DECISION_AUDIT')
+          for e in evidence:
+              p=e.get('polymarket')
+              if isinstance(p,dict):
+                  assert p.get('directional_use') is False
+                  assert float(p.get('effective_weight') or 0.0)==0.0
+                  assert p.get('experiment_enabled') is False
+                  assert float(p.get('pressure_component') or 0.0)==0.0
+              if e.get('kalshi_directional_use') is not None: assert e['kalshi_directional_use'] is False
+              if e.get('boros_directional_use') is not None: assert e['boros_directional_use'] is False
+          print('AUD063_EXTERNAL_DIRECTIONAL_LOCK='+json.dumps({'status':'PASS','runtime_started_at':start.isoformat(),'current_runtime_rows_checked':len(evidence),'sample':evidence[:4]},sort_keys=True,separators=(',',':')))
+          PY
