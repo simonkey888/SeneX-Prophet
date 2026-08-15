@@ -24,18 +24,21 @@
   "required_check_evidence": {
     "score-001": {
       "workflow": ".github/workflows/senex-score-001.yml",
-      "base_blob": "e8a7c291eed9dc1e7bc3266dafecbf31d564a1ea",
-      "generic_pull_request_main": true
+      "candidate_blob": "a03ec3a4f9f4afbc40b8b369307d1e94e4ac31d4",
+      "generic_pull_request_main": true,
+      "exact_pr_head_checkout": true
     },
     "score-002": {
       "workflow": ".github/workflows/senex-score-002.yml",
-      "base_blob": "697ef19099dd814eb2e0722de0a1ccf95dcd2f21",
-      "generic_pull_request_main": true
+      "candidate_blob": "2e97d3c394c3b606b61090d2767f37f6ce8ef392",
+      "generic_pull_request_main": true,
+      "exact_pr_head_checkout": true
     },
     "act_final_audit_smoke (T1-T12)": {
       "workflow": ".github/workflows/smoke-tests.yml",
-      "base_blob": "e48ce1f211d3bbac21cb44e6c8f98dedc9c4cd1d",
-      "generic_pull_request_main": true
+      "candidate_blob": "37c2f94b27f55a872fdfccc532c3eebed87d7dbd",
+      "generic_pull_request_main": true,
+      "exact_pr_head_checkout": true
     }
   },
   "excluded_one_off_checks": [
