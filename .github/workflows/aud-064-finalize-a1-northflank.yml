@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  contain-and-pin:
+  verify-containment:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
       PROJECT_ID: seneciobot
@@ -20,32 +20,16 @@ jobs:
       EXPECTED_DEPLOYED_SHA: 2c4dbf284b23d3cf81b93dcfbd262660ab03dd43
       HEALTH_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
     steps:
-      - name: Select repository Northflank credential and API scope
+      - name: Verify repository secret, containment, exact deployed SHA, and health
         shell: bash
         run: |
           set -euo pipefail
-          : > /tmp/selected.env
           raw="${NF_API:-}"
           test -n "$raw"
           echo "::add-mask::$raw"
           token=$(printf '%s' "$raw" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
           test -n "$token"
           echo "::add-mask::$token"
-          echo "REPOSITORY_SECRET_PRESENT=YES"
-          TOKEN="$token" python - <<'PY'
-          import base64, json, os, time
-          token=os.environ['TOKEN']
-          parts=token.split('.')
-          print(f'REPOSITORY_SECRET_SEGMENTS={len(parts)}')
-          if len(parts)==3:
-              try:
-                  raw=parts[1]+'='*((4-len(parts[1])%4)%4)
-                  payload=json.loads(base64.urlsafe_b64decode(raw.encode()))
-                  exp=payload.get('exp'); now=int(time.time())
-                  print(f'REPOSITORY_SECRET_JWT_EXPIRED={str(bool(isinstance(exp,(int,float)) and exp < now)).lower()}')
-              except Exception:
-                  print('REPOSITORY_SECRET_JWT_PARSE=UNAVAILABLE')
-          PY
           found=0
           for scope in project team; do
             if [ "$scope" = project ]; then
@@ -56,95 +40,30 @@ jobs:
             code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/service.json -w '%{http_code}' -H "Authorization: Bearer $token" "$base/services/$SERVICE_ID")
             echo "PROBE_REPOSITORY_SECRET_${scope}_HTTP=$code"
             if [ "$code" = 200 ]; then
-              printf 'NF_TOKEN=%q\nNF_BASE=%q\nNF_SCOPE=%q\n' "$token" "$base" "$scope" > /tmp/selected.env
               found=1
+              echo "SELECTED_SCOPE=$scope"
               break
             fi
           done
           test "$found" = 1
-          . /tmp/selected.env
-          echo "SELECTED_SCOPE=$NF_SCOPE"
           jq -e '.data.serviceType == "combined"' /tmp/service.json >/dev/null
-          before_ci=$(jq -r '.data.disabledCI' /tmp/service.json)
-          before_cd=$(jq -r '.data.disabledCD' /tmp/service.json)
-          before_build_sha=$(jq -r '.data.deployment.internal.buildSHA // "UNKNOWN"' /tmp/service.json)
-          before_deployed_sha=$(jq -r '.data.deployment.internal.deployedSHA // "UNKNOWN"' /tmp/service.json)
-          before_branch=$(jq -r '.data.deployment.internal.branch // "UNKNOWN"' /tmp/service.json)
-          before_obj=$(jq -r '.data.deployment.internal.nfObjectId // "UNKNOWN"' /tmp/service.json)
-          echo "BEFORE_DISABLED_CI=$before_ci"
-          echo "BEFORE_DISABLED_CD=$before_cd"
-          echo "BEFORE_BUILD_SHA=$before_build_sha"
-          echo "BEFORE_DEPLOYED_SHA=$before_deployed_sha"
-          echo "BEFORE_BRANCH=$before_branch"
-          echo "BEFORE_INTERNAL_ID=$before_obj"
-          test "$before_deployed_sha" = "$EXPECTED_DEPLOYED_SHA"
-
-      - name: Disable automatic CI source trigger
-        shell: bash
-        run: |
-          set -euo pipefail
-          . /tmp/selected.env
-          before_ci=$(jq -r '.data.disabledCI' /tmp/service.json)
-          if [ "$before_ci" != true ]; then
-            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/patch-ci.json -w '%{http_code}' \
-              -X PATCH \
-              -H "Authorization: Bearer $NF_TOKEN" \
-              -H 'Content-Type: application/json' \
-              --data '{"disabledCI":true}' \
-              "$NF_BASE/services/combined/$SERVICE_ID")
-            echo "PATCH_DISABLED_CI_HTTP=$code"
-            test "$code" = 200
-          else
-            echo "PATCH_DISABLED_CI=ALREADY_TRUE"
-          fi
-
-      - name: Pin currently deployed exact SHA to force manual deployment mode and disable CD
-        shell: bash
-        run: |
-          set -euo pipefail
-          . /tmp/selected.env
-          obj=$(jq -r '.data.deployment.internal.nfObjectId // empty' /tmp/service.json)
-          branch=$(jq -r '.data.deployment.internal.branch // empty' /tmp/service.json)
-          deployed=$(jq -r '.data.deployment.internal.deployedSHA // empty' /tmp/service.json)
-          test -n "$obj"
-          test -n "$branch"
+          ci=$(jq -r '.data.disabledCI' /tmp/service.json)
+          cd=$(jq -r '.data.disabledCD' /tmp/service.json)
+          build=$(jq -r '.data.deployment.internal.buildSHA // "UNKNOWN"' /tmp/service.json)
+          deployed=$(jq -r '.data.deployment.internal.deployedSHA // "UNKNOWN"' /tmp/service.json)
+          status=$(jq -r '.data.status.deployment.status // "UNKNOWN"' /tmp/service.json)
+          echo "DISABLED_CI=$ci"
+          echo "DISABLED_CD=$cd"
+          echo "BUILD_SHA=$build"
+          echo "DEPLOYED_SHA=$deployed"
+          echo "DEPLOYMENT_STATUS=$status"
+          test "$ci" = true
+          test "$cd" = true
+          test "$build" = "$EXPECTED_DEPLOYED_SHA"
           test "$deployed" = "$EXPECTED_DEPLOYED_SHA"
-          jq -n --arg id "$obj" --arg branch "$branch" --arg sha "$deployed" \
-            '{internal:{id:$id,branch:$branch,buildSHA:$sha}}' >/tmp/pin.json
-          code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/pin-response.json -w '%{http_code}' \
-            -X POST \
-            -H "Authorization: Bearer $NF_TOKEN" \
-            -H 'Content-Type: application/json' \
-            --data-binary @/tmp/pin.json \
-            "$NF_BASE/services/$SERVICE_ID/deployment")
-          echo "PIN_EXACT_SHA_HTTP=$code"
-          test "$code" = 200
-
-      - name: Verify automatic deployment boundary is disabled and exact SHA remains deployed
-        shell: bash
-        run: |
-          set -euo pipefail
-          . /tmp/selected.env
-          ok=0
-          for i in $(seq 1 60); do
-            code=$(curl --retry 2 --retry-delay 1 -sS -o /tmp/after.json -w '%{http_code}' -H "Authorization: Bearer $NF_TOKEN" "$NF_BASE/services/$SERVICE_ID")
-            test "$code" = 200
-            ci=$(jq -r '.data.disabledCI' /tmp/after.json)
-            cd=$(jq -r '.data.disabledCD' /tmp/after.json)
-            build=$(jq -r '.data.deployment.internal.buildSHA // "UNKNOWN"' /tmp/after.json)
-            deployed=$(jq -r '.data.deployment.internal.deployedSHA // "UNKNOWN"' /tmp/after.json)
-            status=$(jq -r '.data.status.deployment.status // "UNKNOWN"' /tmp/after.json)
-            echo "POLL=$i DISABLED_CI=$ci DISABLED_CD=$cd BUILD_SHA=$build DEPLOYED_SHA=$deployed DEPLOYMENT_STATUS=$status"
-            if [ "$ci" = true ] && [ "$cd" = true ] && [ "$build" = "$EXPECTED_DEPLOYED_SHA" ] && [ "$deployed" = "$EXPECTED_DEPLOYED_SHA" ] && [ "$status" = COMPLETED ]; then
-              ok=1
-              break
-            fi
-            sleep 5
-          done
-          test "$ok" = 1
+          curl -fsS "$HEALTH_URL/health" >/tmp/health.json || curl -fsS "$HEALTH_URL/healthz" >/tmp/health.json || curl -fsS "$HEALTH_URL/api/health" >/tmp/health.json
+          jq -e '.' /tmp/health.json >/dev/null
           echo 'NORTHFLANK_AUTOMATIC_CD_FROM_MAIN=DISABLED'
           echo 'NORTHFLANK_AUTOMATIC_CI_IF_NEEDED_FOR_CD_CHAIN=DISABLED'
           echo 'PRODUCTION_DEPLOY_MODE=EXPLICIT_EXACT_SHA_ONLY'
-          curl -fsS "$HEALTH_URL/health" >/tmp/health.json || curl -fsS "$HEALTH_URL/healthz" >/tmp/health.json || curl -fsS "$HEALTH_URL/api/health" >/tmp/health.json
-          jq -c '.' /tmp/health.json | head -c 2000
-          echo
+          echo 'UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false'
