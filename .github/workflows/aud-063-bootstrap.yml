@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Setup Python 3.11
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
@@ -31,7 +32,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-list --max-parents=0 HEAD | wc -l)" -ge 1
           git merge-base --is-ancestor 49c5f0a69609c005da80e48b585e91d8582a5ac6 HEAD
           test "$(git show 49c5f0a69609c005da80e48b585e91d8582a5ac6^{tree})" = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
 
