@@ -135,7 +135,7 @@ jobs:
           PY
           test "$(git rev-parse origin/main)" = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
 
-      - name: Publication secret credential PII and scope scan
+      - name: Publication sanitization credential PII and scope scan
         shell: bash
         run: |
           set -euo pipefail
@@ -188,8 +188,6 @@ jobs:
               text=p.read_text(encoding='utf-8', errors='replace')
               for label, pattern in dangerous.items():
                   for m in pattern.finditer(text):
-                      # Explicit test-only dummy strings are short/noncredential by construction;
-                      # the long-token patterns above must still reject anything realistic.
                       hits.append((name,label,text.count('\n',0,m.start())+1))
           if hits:
               for hit in hits:
@@ -197,8 +195,6 @@ jobs:
               raise SystemExit(f'credential material matches={len(hits)}')
           print('AUD063_CREDENTIAL_PATTERN_SCAN=PASS')
           PY
-          # Published evidence is an explicit allowlist: no email, auth header, private host,
-          # raw DB row dump, or secret-shaped value may be present.
           ! grep -RInE '([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|Authorization:|SUPABASE_KEY|private[-_ ]?key|password["'"'"':=])' \
             senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*
           echo 'AUD063_PUBLICATION_PII_SCOPE_REVIEW=PASS'
