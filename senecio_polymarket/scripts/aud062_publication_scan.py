@@ -29,6 +29,7 @@ SOURCE_PATHS = (
     "senecio_polymarket/tests/test_aud_062_r1.py",
     "senecio_polymarket/tests/test_aud_061.py",
     "senecio_polymarket/tests/test_authoritative_learning.py",
+    "senecio_polymarket/tests/test_real_market_adapters.py",
     "senecio_polymarket/docs/AUD-062-REPORT.md",
     "senecio_polymarket/docs/AUD-062-R1-REPORT.md",
     "senecio_polymarket/oracle/institutional_core.py",

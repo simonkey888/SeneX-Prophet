@@ -10,7 +10,7 @@
   "capture_time_utc": "2026-08-14T21:46:28Z",
   "decompressed_archive_count": 1,
   "detected_values_serialized": false,
-  "files_scanned": 51,
+  "files_scanned": 52,
   "pii_review": {
     "counts": {
       "email_values": 0,

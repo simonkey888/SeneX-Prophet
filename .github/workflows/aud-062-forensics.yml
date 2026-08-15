@@ -38,7 +38,7 @@ jobs:
           test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
           git diff --name-only "$EXPECTED_BASE"...HEAD > /tmp/aud062-changed-paths.txt
           test -s /tmp/aud062-changed-paths.txt
-          if grep -Eiv '^(.github/workflows/(aud-062-forensics|oracle)\.yml|senecio_polymarket/(backend/research/aud062_(forensics|r1_contracts)\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/(test_aud_062(_r1)?|test_aud_061|test_authoritative_learning)\.py|docs/AUD-062(-R1)?-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|institutional_core_real|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
+          if grep -Eiv '^(.github/workflows/(aud-062-forensics|oracle)\.yml|senecio_polymarket/(backend/research/aud062_(forensics|r1_contracts)\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/(test_aud_062(_r1)?|test_aud_061|test_authoritative_learning|test_real_market_adapters)\.py|docs/AUD-062(-R1)?-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|institutional_core_real|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
             echo 'AUD-062 scope violation'
             exit 1
           fi

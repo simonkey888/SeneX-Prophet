@@ -218,14 +218,14 @@ class RealMarketCoreTests(unittest.TestCase):
             self.assertEqual(ctx["effective_weight"], 0.0)
             self.assertEqual(ctx["pressure_component"], 0.0)
 
-    def test_polymarket_nonzero_weight_requires_explicit_paper_experiment_flag(self):
+    def test_polymarket_environment_flag_cannot_activate_directional_use(self):
         with mock.patch.dict(os.environ, {real_core.POLYMARKET_EXPERIMENT_FLAG: "1"}, clear=False):
             features = self._features(0.8)
         ctx = features["polymarket_context_v1"]
-        self.assertTrue(ctx["directional_use"])
-        self.assertTrue(ctx["experiment_enabled"])
-        self.assertEqual(ctx["effective_weight"], 0.25)
-        self.assertAlmostEqual(ctx["pressure_component"], 0.20, places=6)
+        self.assertFalse(ctx["directional_use"])
+        self.assertFalse(ctx["experiment_enabled"])
+        self.assertEqual(ctx["effective_weight"], 0.0)
+        self.assertEqual(ctx["pressure_component"], 0.0)
 
     def test_kalshi_and_boros_extremes_do_not_change_direction_or_conviction(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -294,7 +294,9 @@ class RuntimeWiringTests(unittest.TestCase):
         self.assertIn("polymarket", ext)
         self.assertIn("kalshi", ext)
         self.assertIn("boros", ext)
-        self.assertTrue(ext["kalshi_cross_venue_v1"]["horizon_mismatch"])
+        self.assertTrue(ext["kalshi_cross_venue_descriptive_v1"]["horizon_mismatch"])
+        self.assertFalse(ext["kalshi_cross_venue_descriptive_v1"]["predictive_accuracy"])
+        self.assertEqual(ext["kalshi_cross_venue_descriptive_v1"]["incremental_value"], "NOT_ESTIMABLE")
 
     def test_production_launcher_targets_real_runtime_and_synthetic_default_is_off(self):
         root = Path(__file__).resolve().parents[1]
