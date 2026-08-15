@@ -1,0 +1,77 @@
+{
+  "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "findings": [
+    {
+      "fix": "server-side LONG/SHORT filter + stable ts,id keyset",
+      "id": "AUD063-F001",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "same-source historical evidence tied to origin witness; unsupported source fails closed",
+      "id": "AUD063-F002",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "exact 1m containing candle identity",
+      "id": "AUD063-F003",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "both price evidence records required by proof gate",
+      "id": "AUD063-F004",
+      "severity": "HIGH",
+      "status": "CLOSED_FAIL_CLOSED_LEGACY"
+    },
+    {
+      "fix": "reconciler repair-only; never NULL writer",
+      "id": "AUD063-F005",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "backlog/scan/no-progress observability",
+      "id": "AUD063-F006",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "actual persistence observation time governs causal learning",
+      "id": "AUD063-F007",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "persist candle_close_epoch_ms; writer and validator reject observed_at before candle close; 60s eligibility buffer",
+      "id": "R1-F001",
+      "regression": "T28-T30",
+      "root_cause": "containing 1m candle could be current/incomplete at evidence observation",
+      "severity": "HIGH",
+      "status": "CLOSED"
+    },
+    {
+      "fix": "stateless per-invocation two-page ts,id keyset traversal; restart-safe for first 200 eligible rows each invocation; explicit cap/no universal claim beyond bound",
+      "id": "R1-F002",
+      "regression": "T4-T7,T31-T32",
+      "root_cause": "fairness cursor existed only in process memory across verifier cycles",
+      "severity": "MEDIUM",
+      "status": "CLOSED_BOUNDED"
+    },
+    {
+      "fix": "remove obsolete resettlement loop; explicit synchronous zero-read/zero-write quarantine; reconciler remains sole settled-row repair path",
+      "id": "R1-F003",
+      "regression": "T33",
+      "root_cause": "obsolete startup resettlement read historical data then called a NULL-only CAS that could never mutate settled rows",
+      "severity": "MEDIUM",
+      "status": "CLOSED"
+    }
+  ],
+  "generated_at_utc": "2026-08-15T04:05:00+00:00",
+  "order": "AUD-063-R1",
+  "parent_order": "AUD-063",
+  "source_class": "AUD063_R1_SOURCE_FORENSICS_AND_REGRESSION_EVIDENCE"
+}

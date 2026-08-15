@@ -10,9 +10,17 @@ from oracle_runtime import institutional_core_real as real_learning
 from oracle_runtime import predict_only as runtime_predictor
 
 
+from tests.aud063_fixture_support import upgrade_proof_row
+
+def _aud063_upgrade(fn):
+    def wrapped(*args, **kwargs):
+        return upgrade_proof_row(fn(*args, **kwargs))
+    return wrapped
+
 BASE_TS = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
 
 
+@_aud063_upgrade
 def _row(idx: int, *, outcome: str = "LOSS", symbol: str = "BTCUSDT", valid: bool = True):
     ts = (BASE_TS + timedelta(minutes=idx * 61)).isoformat()
     settled_at = (BASE_TS + timedelta(minutes=idx * 61 + 60)).isoformat()

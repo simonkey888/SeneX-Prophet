@@ -20,10 +20,11 @@ class Score002HardeningTests(unittest.TestCase):
 
     def test_reconciler_patch_uses_absolute_supabase_url(self):
         source = (ROOT / "senecio_polymarket/backend/settlement_reconciler.py").read_text()
-        self.assertIn(
-            'client.patch(\n                        f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}"',
-            source,
-        )
+        self.assertIn('client.patch(', source)
+        self.assertIn('f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}"', source)
+        self.assertIn('"outcome": f"eq.{stored_outcome}"', source)
+        self.assertIn('"audit->outcomes_dual": "is.null"', source)
+        self.assertNotIn('"outcome": o1h', source)
 
     def test_reconciler_emits_heartbeat_only_after_cycle(self):
         source = (ROOT / "senecio_polymarket/backend/settlement_reconciler.py").read_text()

@@ -1,11 +1,9 @@
-"""SENEX settlement reconciliation guard.
+"""SENEX repair-only settlement reconciliation guard.
 
-This module is NOT a second prediction/settlement authority.
-It only repairs rows that already contain WIN/LOSS but lack the
-single-authority `audit.outcomes_dual` evidence. The production oracle
-runner remains the authority for NULL -> settled transitions.
-
-Safety: public market reads only; paper-only; no wallet, signing or orders.
+This module never performs NULL -> WIN/LOSS. It may add missing dual-window
+metadata only to an already-settled row, and AUD-063 requires the same bounded,
+same-source historical-price evidence as the primary verifier. Legacy rows
+without a valid origin witness remain unchanged and non-authoritative.
 """
 from __future__ import annotations
 
@@ -17,9 +15,17 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-import ccxt
 import httpx
 
+from .settlement_contract import (
+    WINDOW_15M_S,
+    WINDOW_1H_S,
+    directional_outcome,
+    fetch_historical_price_evidence,
+    normalize_exchange,
+    normalize_symbol,
+    parse_utc,
+)
 from .supabase_client import build_supabase_headers
 
 log = logging.getLogger("senex.settlement_reconciler")
@@ -30,8 +36,6 @@ SUPABASE_TABLE = os.environ.get("SUPABASE_TABLE", "oracle_predictions")
 INTERVAL_S = int(os.environ.get("SETTLEMENT_RECONCILE_INTERVAL_SEC", "900"))
 BATCH_LIMIT = int(os.environ.get("SETTLEMENT_RECONCILE_BATCH", "200"))
 HEARTBEAT_FILE = Path(os.environ.get("SENEX_RECONCILER_HEARTBEAT_FILE", "/tmp/senex-reconciler-heartbeat"))
-WINDOW_15M_S = 900
-WINDOW_1H_S = 3600
 
 
 def _headers() -> dict[str, str]:
@@ -40,228 +44,155 @@ def _headers() -> dict[str, str]:
     return build_supabase_headers(SUPABASE_KEY)
 
 
-def _normalize_symbol(symbol: str) -> str:
-    symbol = (symbol or "").upper().strip()
-    if "/" in symbol:
-        return symbol
-    if symbol.endswith("USDT"):
-        return f"{symbol[:-4]}/USDT"
-    return symbol
+def _audit_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
-def _outcome(direction: str, origin: float, later: float) -> Optional[str]:
-    direction = (direction or "").upper()
-    if direction == "LONG":
-        return "WIN" if later > origin else "LOSS"
-    if direction == "SHORT":
-        return "WIN" if later < origin else "LOSS"
-    return None
+async def _repair_row(client: httpx.AsyncClient, row: dict[str, Any]) -> str:
+    """Return repaired/conflict/skipped/error without changing primary outcome."""
+    stored_outcome = row.get("outcome")
+    if stored_outcome not in {"WIN", "LOSS"}:
+        return "skipped"
+    direction = str(row.get("prediction") or "").upper()
+    if direction not in {"LONG", "SHORT"}:
+        return "skipped"
+    try:
+        origin_price = float(row.get("price_now") or 0)
+    except (TypeError, ValueError):
+        return "skipped"
+    if origin_price <= 0:
+        return "skipped"
 
+    audit = _audit_dict(row.get("audit"))
+    if audit.get("outcomes_dual") is not None:
+        return "skipped"
+    origin = audit.get("origin_price_v1")
+    source = normalize_exchange(row.get("exchange_used"))
+    row_ts = row.get("ts")
+    if (
+        not isinstance(origin, dict)
+        or origin.get("version") != "origin-price-v1"
+        or source is None
+        or normalize_exchange(origin.get("source")) != source
+        or parse_utc(origin.get("timestamp")) != parse_utc(row_ts)
+    ):
+        return "skipped"
 
-def _price_at(exchange, symbol: str, ts_iso: str, window_s: int) -> Optional[float]:
-    ts = datetime.fromisoformat(str(ts_iso).replace("Z", "+00:00"))
-    target_ms = int((ts + timedelta(seconds=window_s)).timestamp() * 1000)
-    candles = exchange.fetch_ohlcv(symbol, timeframe="1m", since=target_ms - 60_000, limit=2)
-    if not candles:
-        return None
-    candidates = [c for c in candles if c[0] <= target_ms]
-    if not candidates:
-        log.warning("no historical candle at/before target for %s target_ms=%s", symbol, target_ms)
-        return None
-    candle = max(candidates, key=lambda c: c[0])
-    price = float(candle[4])
-    return price if price > 0 else None
+    symbol = normalize_symbol(row.get("symbol"))
+    ev15 = await asyncio.to_thread(
+        fetch_historical_price_evidence, source, symbol, row_ts, WINDOW_15M_S
+    )
+    ev1h = await asyncio.to_thread(
+        fetch_historical_price_evidence, source, symbol, row_ts, WINDOW_1H_S
+    )
+    if not ev15 or not ev1h:
+        return "error"
+    p15 = float(ev15["price"])
+    p1h = float(ev1h["price"])
+    o15 = directional_outcome(direction, origin_price, p15)
+    o1h = directional_outcome(direction, origin_price, p1h)
+    if not o15 or not o1h:
+        return "skipped"
+
+    # Repair-only means a disagreement is evidence of a historical conflict, not
+    # permission to rewrite the settled outcome or fabricate authority.
+    if stored_outcome != o1h:
+        return "conflict"
+
+    observed_at = datetime.now(timezone.utc).isoformat()
+    merged = dict(audit)
+    merged["outcomes_dual"] = {
+        "outcome_15m": o15,
+        "outcome_1h": o1h,
+        "price_15m_later": p15,
+        "price_1h_later": p1h,
+        "primary_window": "1h",
+        "settlement_contract_version": "aud063-v1",
+        "price_evidence_v1": {"15m": ev15, "1h": ev1h},
+        "reconciled_by": "SENEX-SCORE-002-REPAIR-ONLY",
+        "reconciled_at": observed_at,
+        "settlement_observation_v1": {
+            "version": "settlement-observation-v1",
+            "observed_at": observed_at,
+            "writer": "SENEX_SCORE_002_RECONCILER_REPAIR_ONLY",
+            "availability_semantics": "PERSISTED_BY_COMPARE_AND_SET_AT_OR_AFTER_THIS_TIME",
+        },
+    }
+    response = await client.patch(
+        f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
+        params={
+            "id": f"eq.{row['id']}",
+            "outcome": f"eq.{stored_outcome}",
+            "audit->outcomes_dual": "is.null",
+        },
+        json={"price_15m_later": p15, "audit": merged},
+    )
+    try:
+        body = response.json() if response.content else []
+    except Exception:
+        body = []
+    return "repaired" if response.status_code in (200, 204) and isinstance(body, list) and body else "error"
 
 
 async def reconcile_once() -> dict[str, int]:
-    """Repair only already-settled rows that lack dual-window evidence."""
+    """Repair only already-settled rows; stable keyset traversal prevents drift."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be provided by the runtime environment")
-
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=WINDOW_1H_S)).isoformat()
-    async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
-        cursor_ts: Optional[str] = None
-        cursor_id: Optional[int] = None
-        total_scanned = repaired = skipped = errors = conflicts = 0
+    counters = {"scanned": 0, "repaired": 0, "skipped": 0, "errors": 0, "conflicts": 0}
+    cursor_ts: Optional[str] = None
+    cursor_id: Optional[str] = None
 
+    async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
         while True:
             params: dict[str, str] = {
                 "select": "id,ts,symbol,prediction,price_now,outcome,audit,exchange_used",
                 "outcome": "in.(WIN,LOSS)",
                 "audit->outcomes_dual": "is.null",
-                "ts": f"lt.{cutoff}",
+                "ts": f"lte.{cutoff}",
                 "order": "ts.asc,id.asc",
                 "limit": str(BATCH_LIMIT),
             }
             if cursor_ts is not None and cursor_id is not None:
                 params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
-
-            r = await client.get(f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}", params=params)
-            if r.status_code != 200:
-                log.error("reconcile fetch failed: %s %s", r.status_code, r.text[:300])
-                errors += 1
+            response = await client.get(f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}", params=params)
+            if response.status_code != 200:
+                counters["errors"] += 1
                 break
-
-            rows = r.json() or []
-            if not rows:
+            rows = response.json() or []
+            if not isinstance(rows, list) or not rows:
                 break
-            total_scanned += len(rows)
-
-            exchanges: dict[str, Any] = {}
-            try:
-                for row in rows:
-                    if row.get("outcome") not in ("WIN", "LOSS"):
-                        skipped += 1
-                        continue
-
-                    audit = row.get("audit") or {}
-                    if isinstance(audit, str):
-                        try:
-                            audit = json.loads(audit)
-                        except Exception:
-                            audit = {}
-                    if not isinstance(audit, dict):
-                        audit = {}
-
-                    if "outcomes_dual" in audit and audit.get("outcomes_dual") is not None:
-                        skipped += 1
-                        continue
-
-                    direction = (row.get("prediction") or "").upper()
-                    try:
-                        origin = float(row.get("price_now") or 0)
-                    except (TypeError, ValueError):
-                        origin = 0.0
-                    ts_iso = row.get("ts")
-                    if direction not in ("LONG", "SHORT") or origin <= 0 or not ts_iso:
-                        skipped += 1
-                        continue
-
-                    symbol = _normalize_symbol(row.get("symbol", ""))
-                    exchange_name = str(row.get("exchange_used") or "okx").lower()
-                    if exchange_name not in {"okx", "kraken", "gate", "mexc", "bitget"}:
-                        exchange_name = "okx"
-                    if exchange_name not in exchanges:
-                        exchanges[exchange_name] = getattr(ccxt, exchange_name)({"enableRateLimit": True})
-                    ex = exchanges[exchange_name]
-
-                    try:
-                        p15 = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_15M_S)
-                        p1h = await asyncio.to_thread(_price_at, ex, symbol, str(ts_iso), WINDOW_1H_S)
-                    except Exception as exc:
-                        errors += 1
-                        log.warning("reconcile price lookup failed id=%s symbol=%s: %s", row.get("id"), symbol, exc)
-                        continue
-
-                    if not p15 or not p1h:
-                        errors += 1
-                        log.warning("reconcile missing historical evidence id=%s", row.get("id"))
-                        continue
-
-                    o15 = _outcome(direction, origin, p15)
-                    o1h = _outcome(direction, origin, p1h)
-                    if not o15 or not o1h:
-                        skipped += 1
-                        continue
-
-                    stored_outcome = row.get("outcome")
-                    conflict = stored_outcome != o1h
-                    if conflict:
-                        audit["reconciliation_conflict"] = {
-                            "stored_outcome": stored_outcome,
-                            "computed_outcome_1h": o1h,
-                            "detected_at": datetime.now(timezone.utc).isoformat(),
-                            "action": "NO_OUTCOME_OVERWRITE",
-                        }
-                    else:
-                        audit.pop("reconciliation_conflict", None)
-                    observed_at = datetime.now(timezone.utc).isoformat()
-                    audit["outcomes_dual"] = {
-                        "outcome_15m": o15,
-                        "outcome_1h": o1h,
-                        "price_15m_later": p15,
-                        "price_1h_later": p1h,
-                        "primary_window": "1h",
-                        "reconciled_by": "SENEX-SCORE-002",
-                        "reconciled_at": observed_at,
-                        "settlement_observation_v1": {
-                            "version": "settlement-observation-v1",
-                            "observed_at": observed_at,
-                            "writer": "SENEX_SCORE_002_RECONCILER",
-                            "availability_semantics": "PERSISTED_BY_COMPARE_AND_SET_AT_OR_AFTER_THIS_TIME",
-                        },
-                    }
-                    patch = {"price_15m_later": p15, "audit": audit}
-                    # Absolute URL is intentional: this client has no base_url.
-                    pr = await client.patch(
-                        f"{SUPABASE_URL}/rest/v1/{SUPABASE_TABLE}",
-                        params={
-                            "id": f"eq.{row['id']}",
-                            "outcome": f"eq.{stored_outcome}",
-                            "audit->outcomes_dual": "is.null",
-                        },
-                        json=patch,
-                    )
-                    try:
-                        body = pr.json() if pr.content else []
-                    except Exception:
-                        body = []
-                    if pr.status_code in (200, 204) and isinstance(body, list) and body:
-                        if conflict:
-                            conflicts += 1
-                            log.warning(
-                                "reconciliation conflict id=%s stored=%s computed_1h=%s; outcome unchanged",
-                                row["id"], stored_outcome, o1h,
-                            )
-                        else:
-                            repaired += 1
-                            log.info(
-                                "reconciled evidence id=%s stored=%s dual15=%s dual1h=%s",
-                                row["id"], stored_outcome, o15, o1h,
-                            )
-                    else:
-                        errors += 1
-                        log.error(
-                            "reconcile update failed/no-op id=%s status=%s body=%r",
-                            row["id"], pr.status_code, body,
-                        )
-
-                last = rows[-1]
-                cursor_ts = str(last.get("ts"))
-                try:
-                    cursor_id = int(last.get("id"))
-                except (TypeError, ValueError):
-                    log.error("reconcile pagination cursor invalid id=%r", last.get("id"))
-                    errors += 1
-                    break
-            finally:
-                for ex in exchanges.values():
-                    try:
-                        ex.close()
-                    except Exception:
-                        pass
-
+            counters["scanned"] += len(rows)
+            for row in rows:
+                result = await _repair_row(client, row)
+                key = {
+                    "repaired": "repaired",
+                    "conflict": "conflicts",
+                    "skipped": "skipped",
+                    "error": "errors",
+                }[result]
+                counters[key] += 1
+            last = rows[-1]
+            cursor_ts = str(last.get("ts") or "")
+            cursor_id = str(last.get("id") or "")
             if len(rows) < BATCH_LIMIT:
                 break
 
-    result = {
-        "scanned": total_scanned,
-        "repaired": repaired,
-        "skipped": skipped,
-        "errors": errors,
-        "conflicts": conflicts,
-    }
-    log.info("settlement reconciliation complete: %s", result)
-    return result
+    log.info("settlement reconciliation complete: %s", counters)
+    return counters
 
 
 async def daemon() -> None:
-    """Run the repair-only reconciler and fail fast on invalid configuration."""
     if not SUPABASE_URL or not SUPABASE_KEY:
-        raise RuntimeError(
-            "SENEX-SCORE-002 reconciler requires SUPABASE_URL and SUPABASE_KEY"
-        )
-    log.info("SENEX-SCORE-002 reconciliation guard started interval=%ss", INTERVAL_S)
+        raise RuntimeError("SENEX-SCORE-002 reconciler requires SUPABASE_URL and SUPABASE_KEY")
     HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     while True:
         result = await reconcile_once()

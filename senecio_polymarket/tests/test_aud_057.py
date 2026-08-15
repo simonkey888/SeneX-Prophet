@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend import oracle_runner, supabase_client
 from backend.authoritative_score import build_authoritative_score
+from tests.aud063_fixture_support import upgrade_proof_row
 
 BASE_TS = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
 
@@ -22,7 +23,7 @@ def _proof_row(idx: int, symbol: str, direction: str, outcome: str, *, confidenc
         later = 99.0 if outcome == "WIN" else 101.0
     else:
         raise ValueError(direction)
-    return {
+    row = {
         "id": idx,
         "ts": ts,
         "symbol": symbol,
@@ -46,6 +47,7 @@ def _proof_row(idx: int, symbol: str, direction: str, outcome: str, *, confidenc
             },
         },
     }
+    return upgrade_proof_row(row)
 
 
 def _cohort(symbol: str, long_outcomes: list[str], short_outcomes: list[str], start: int) -> list[dict]:

@@ -1,0 +1,45 @@
+{
+  "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "cases": {
+    "flat_head": {
+      "later_directional": 1,
+      "old_flat": 125,
+      "post_fix_directional_seen": true
+    },
+    "healthy_180": {
+      "eligible": 180,
+      "pages": [
+        100,
+        80
+      ],
+      "unique_visited": 180
+    },
+    "keyset": {
+      "offset_pagination": false,
+      "second_page_uses_ts_id_seek": true
+    },
+    "over_bound_250": {
+      "eligible": 250,
+      "fairness_scope": "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP",
+      "scan_cap_hit": true,
+      "visited": 200
+    },
+    "restart_125_poison_then_healthy": {
+      "cursor_reset_between_invocations": true,
+      "eligible": 126,
+      "healthy_seen_each_invocation": true
+    }
+  },
+  "fairness_bound_rows_per_invocation": 200,
+  "generated_at_utc": "2026-08-15T04:05:00+00:00",
+  "invariant_within_bound": "RESTART_SAFE_LATER_ROWS_REACHABLE_WITHOUT_CROSS_CYCLE_MEMORY",
+  "max_pages_per_invocation": 2,
+  "mechanism": "LOCAL_KEYSET_CURSOR_LIVES_ONLY_INSIDE_ONE_BOUNDED_INVOCATION",
+  "order": "AUD-063-R1",
+  "page_size": 100,
+  "parent_order": "AUD-063",
+  "source_class": "DETERMINISTIC_ADVERSARIAL_SIMULATION",
+  "universal_starvation_claim": false
+}

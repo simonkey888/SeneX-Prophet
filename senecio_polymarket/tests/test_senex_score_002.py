@@ -5,7 +5,19 @@ import unittest
 from unittest.mock import patch
 
 from backend import settlement_reconciler as reconciler
-from backend.settlement_proof import filter_proof_qualified, is_proof_qualified, proof_status, score_qualified_rows
+from backend.settlement_contract import (
+    WINDOW_15M_S,
+    WINDOW_1H_S,
+    price_evidence_from_candles,
+    target_epoch_ms,
+)
+from backend.settlement_proof import (
+    filter_proof_qualified,
+    is_proof_qualified,
+    proof_status,
+    score_qualified_rows,
+)
+from tests.aud063_fixture_support import upgrade_proof_row
 
 TS = "2026-08-10T00:00:00+00:00"
 
@@ -23,7 +35,7 @@ class FakeResponse:
 
 class FakeClient:
     def __init__(self, rows, patch_status=200, patch_body=None):
-        self.rows = rows
+        self.rows = list(rows)
         self.patch_status = patch_status
         self.patch_body = patch_body if patch_body is not None else [{"id": 1}]
         self.get_calls = []
@@ -44,20 +56,56 @@ class FakeClient:
         return FakeResponse(self.patch_status, self.patch_body)
 
 
-class FakeExchange:
-    def close(self):
-        return None
+def _origin(ts=TS, source="okx", price=100.0):
+    return {
+        "version": "origin-price-v1",
+        "price": price,
+        "timestamp": ts,
+        "source": source,
+    }
 
 
-def run_reconcile(rows, patch_status=200, patch_body=None):
+def repair_row(idx=1, *, outcome="WIN", direction="LONG", ts=TS, source="okx", audit=None):
+    if audit is None:
+        audit = {"origin_price_v1": _origin(ts, source)}
+    return {
+        "id": idx,
+        "ts": ts,
+        "symbol": "BTCUSDT",
+        "prediction": direction,
+        "price_now": 100.0,
+        "outcome": outcome,
+        "audit": audit,
+        "exchange_used": source,
+    }
+
+
+def _historical(row, window, price):
+    target = target_epoch_ms(row["ts"], window)
+    opened = target - (target % 60_000)
+    return price_evidence_from_candles(
+        candles=[[opened, price, price, price, price, 1.0]],
+        exchange=row["exchange_used"],
+        symbol=row["symbol"],
+        ts_iso=row["ts"],
+        window_seconds=window,
+        observed_at="2026-08-10T02:00:00+00:00",
+    )
+
+
+def run_reconcile(rows, patch_status=200, patch_body=None, *, p15=101.0, p1h=102.0):
     client = FakeClient(rows, patch_status=patch_status, patch_body=patch_body)
     old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
-    reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
+    reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = (
+        "https://example.invalid", "test-key", 50
+    )
+    def evidence_fetch(source, symbol, ts, window):
+        row = next(r for r in rows if r["ts"] == ts)
+        return _historical(row, window, p15 if window == WINDOW_15M_S else p1h)
     try:
         with (
             patch.object(reconciler.httpx, "AsyncClient", return_value=client),
-            patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()),
-            patch.object(reconciler, "_price_at", side_effect=lambda *args: 101.0 if args[-1] == 900 else 102.0),
+            patch.object(reconciler, "fetch_historical_price_evidence", side_effect=evidence_fetch),
         ):
             result = asyncio.run(reconciler.reconcile_once())
     finally:
@@ -67,93 +115,84 @@ def run_reconcile(rows, patch_status=200, patch_body=None):
 
 class SettlementReconcilerTests(unittest.TestCase):
     def test_null_row_is_never_touched(self):
-        rows = [{"id": 1, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": None, "audit": None, "exchange_used": "okx"}]
+        rows = [repair_row(outcome=None)]
         result, client = run_reconcile(rows)
         self.assertEqual((result["repaired"], result["skipped"], len(client.patch_calls)), (0, 1, 0))
         self.assertEqual(client.get_calls[0][1]["outcome"], "in.(WIN,LOSS)")
 
     def test_win_without_dual_repairs_evidence_only(self):
-        rows = [{"id": 2, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        rows = [repair_row(2, outcome="WIN", direction="LONG")]
         result, client = run_reconcile(rows)
         payload = client.patch_calls[0][2]
         self.assertEqual(result["repaired"], 1)
         self.assertNotIn("outcome", payload)
         self.assertEqual(client.patch_calls[0][1]["outcome"], "eq.WIN")
         self.assertEqual(client.patch_calls[0][1]["audit->outcomes_dual"], "is.null")
-        self.assertEqual(payload["audit"]["outcomes_dual"]["primary_window"], "1h")
-        observation = payload["audit"]["outcomes_dual"]["settlement_observation_v1"]
-        self.assertEqual(observation["version"], "settlement-observation-v1")
-        self.assertEqual(observation["writer"], "SENEX_SCORE_002_RECONCILER")
-        self.assertTrue(observation["observed_at"])
+        dual = payload["audit"]["outcomes_dual"]
+        self.assertEqual(dual["primary_window"], "1h")
+        self.assertEqual(dual["settlement_contract_version"], "aud063-v1")
+        self.assertEqual(dual["price_evidence_v1"]["15m"]["source"], "okx")
+        self.assertEqual(dual["settlement_observation_v1"]["writer"], "SENEX_SCORE_002_RECONCILER_REPAIR_ONLY")
 
     def test_loss_without_dual_repairs_evidence_only(self):
-        rows = [{"id": 21, "ts": TS, "symbol": "BTCUSDT", "prediction": "SHORT", "price_now": 100, "outcome": "LOSS", "audit": None, "exchange_used": "okx"}]
-        result, client = run_reconcile(rows)
+        rows = [repair_row(21, outcome="LOSS", direction="SHORT")]
+        result, client = run_reconcile(rows, p15=101.0, p1h=102.0)
         self.assertEqual(result["repaired"], 1)
         self.assertNotIn("outcome", client.patch_calls[0][2])
         self.assertEqual(client.patch_calls[0][1]["outcome"], "eq.LOSS")
 
     def test_existing_dual_is_not_touched_even_if_inconsistent(self):
-        rows = [{"id": 3, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": {"outcomes_dual": {"outcome_15m": "LOSS", "outcome_1h": "LOSS", "primary_window": "1h"}}, "exchange_used": "okx"}]
+        audit = {
+            "origin_price_v1": _origin(),
+            "outcomes_dual": {"outcome_15m": "LOSS", "outcome_1h": "LOSS", "primary_window": "1h"},
+        }
+        rows = [repair_row(3, audit=audit)]
         result, client = run_reconcile(rows)
         self.assertEqual((result["repaired"], result["skipped"], len(client.patch_calls)), (0, 1, 0))
 
     def test_conflict_does_not_overwrite_primary_outcome(self):
-        rows = [{"id": 4, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
-        client = FakeClient(rows)
-        old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
-        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
-        try:
-            with (
-                patch.object(reconciler.httpx, "AsyncClient", return_value=client),
-                patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()),
-                patch.object(reconciler, "_price_at", side_effect=lambda *args: 101.0 if args[-1] == reconciler.WINDOW_15M_S else 99.0),
-            ):
-                result = asyncio.run(reconciler.reconcile_once())
-        finally:
-            reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = old
+        rows = [repair_row(4, outcome="WIN", direction="LONG")]
+        result, client = run_reconcile(rows, p15=101.0, p1h=99.0)
         self.assertEqual((result["repaired"], result["conflicts"]), (0, 1))
-        self.assertNotIn("outcome", client.patch_calls[0][2])
-        self.assertEqual(client.patch_calls[0][2]["audit"]["reconciliation_conflict"]["action"], "NO_OUTCOME_OVERWRITE")
+        self.assertEqual(len(client.patch_calls), 0)
 
     def test_patch_failure_is_not_repaired(self):
-        rows = [{"id": 5, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        rows = [repair_row(5)]
         result, client = run_reconcile(rows, patch_status=500)
         self.assertEqual((result["repaired"], result["errors"], len(client.patch_calls)), (0, 1, 1))
 
     def test_patch_failure_is_retryable(self):
-        rows = [{"id": 6, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        rows = [repair_row(6)]
         a, ca = run_reconcile(rows, patch_status=500)
         b, cb = run_reconcile(rows, patch_status=500)
         self.assertEqual((a["repaired"], b["repaired"], a["errors"], b["errors"]), (0, 0, 1, 1))
         self.assertEqual((len(ca.patch_calls), len(cb.patch_calls)), (1, 1))
 
     def test_conditional_patch_noop_is_not_repaired(self):
-        rows = [{"id": 7, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"}]
+        rows = [repair_row(7)]
         result, client = run_reconcile(rows, patch_status=200, patch_body=[])
         self.assertEqual((result["repaired"], result["errors"]), (0, 1))
         self.assertEqual(client.patch_calls[0][1]["audit->outcomes_dual"], "is.null")
 
     def test_price_lookup_exception_does_not_abort_batch(self):
-        rows = [
-            {"id": 8, "ts": TS, "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"},
-            {"id": 9, "ts": "2026-08-10T00:01:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"},
-        ]
+        rows = [repair_row(8), repair_row(9, ts="2026-08-10T00:01:00+00:00")]
         client = FakeClient(rows)
         old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
-        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
+        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = (
+            "https://example.invalid", "test-key", 50
+        )
         calls = 0
-        def prices(*args):
+        def evidence_fetch(source, symbol, ts, window):
             nonlocal calls
             calls += 1
-            if calls == 1:
-                raise RuntimeError("temporary price failure")
-            return 101.0
+            if calls <= 2:
+                return None
+            row = next(r for r in rows if r["ts"] == ts)
+            return _historical(row, window, 101.0 if window == 900 else 102.0)
         try:
             with (
                 patch.object(reconciler.httpx, "AsyncClient", return_value=client),
-                patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()),
-                patch.object(reconciler, "_price_at", side_effect=prices),
+                patch.object(reconciler, "fetch_historical_price_evidence", side_effect=evidence_fetch),
             ):
                 result = asyncio.run(reconciler.reconcile_once())
         finally:
@@ -162,14 +201,18 @@ class SettlementReconcilerTests(unittest.TestCase):
         self.assertEqual(result["repaired"], 1)
 
     def test_future_only_candles_fail_closed(self):
-        class FutureExchange:
-            def fetch_ohlcv(self, *args, **kwargs):
-                target = 1000000
-                return [[target + 2000000, 1, 1, 1, 101, 1], [target + 3000000, 1, 1, 1, 102, 1]]
-        self.assertIsNone(reconciler._price_at(FutureExchange(), "BTC/USDT", "1970-01-01T00:16:40+00:00", 900))
+        row = repair_row(10)
+        target = target_epoch_ms(TS, 900)
+        evidence = price_evidence_from_candles(
+            candles=[[target + 120_000, 1, 1, 1, 101, 1]],
+            exchange="okx", symbol="BTCUSDT", ts_iso=TS, window_seconds=900,
+        )
+        self.assertIsNone(evidence)
 
     def test_multi_batch_repairs_all_eligible_rows(self):
-        rows = [{"id": i, "ts": f"2026-08-10T00:{i:02d}:00+00:00", "symbol": "BTCUSDT", "prediction": "LONG", "price_now": 100, "outcome": "WIN", "audit": None, "exchange_used": "okx"} for i in range(51)]
+        rows = [
+            repair_row(i, ts=f"2026-08-10T00:{i:02d}:00+00:00") for i in range(51)
+        ]
         pages = [rows[:50], rows[50:]]
         class PagedClient(FakeClient):
             def __init__(self, pages):
@@ -182,12 +225,16 @@ class SettlementReconcilerTests(unittest.TestCase):
                 return FakeResponse(200, list(page))
         client = PagedClient(pages)
         old = reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT
-        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = "https://example.invalid", "test-key", 50
+        reconciler.SUPABASE_URL, reconciler.SUPABASE_KEY, reconciler.BATCH_LIMIT = (
+            "https://example.invalid", "test-key", 50
+        )
+        def evidence_fetch(source, symbol, ts, window):
+            row = next(r for r in rows if r["ts"] == ts)
+            return _historical(row, window, 101.0 if window == 900 else 102.0)
         try:
             with (
                 patch.object(reconciler.httpx, "AsyncClient", return_value=client),
-                patch.object(reconciler.ccxt, "okx", return_value=FakeExchange()),
-                patch.object(reconciler, "_price_at", return_value=101.0),
+                patch.object(reconciler, "fetch_historical_price_evidence", side_effect=evidence_fetch),
             ):
                 result = asyncio.run(reconciler.reconcile_once())
         finally:
@@ -198,16 +245,26 @@ class SettlementReconcilerTests(unittest.TestCase):
 
 class ProofQualificationTests(unittest.TestCase):
     def qualified(self):
-        return {
+        row = {
             "ts": TS,
+            "symbol": "BTCUSDT",
             "prediction": "LONG",
             "price_now": 100,
+            "exchange_used": "okx",
             "outcome": "WIN",
             "audit": {
-                "origin_price_v1": {"version": "origin-price-v1", "price": 100, "timestamp": TS, "source": "okx"},
-                "outcomes_dual": {"outcome_15m": "WIN", "outcome_1h": "WIN", "price_15m_later": 101, "price_1h_later": 102, "primary_window": "1h"},
+                "origin_price_v1": {
+                    "version": "origin-price-v1", "price": 100,
+                    "timestamp": TS, "source": "okx",
+                },
+                "outcomes_dual": {
+                    "outcome_15m": "WIN", "outcome_1h": "WIN",
+                    "price_15m_later": 101, "price_1h_later": 102,
+                    "primary_window": "1h",
+                },
             },
         }
+        return upgrade_proof_row(row)
 
     def test_raw_win_loss_is_raw_unverified(self):
         row = {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": None}
@@ -219,33 +276,27 @@ class ProofQualificationTests(unittest.TestCase):
         self.assertFalse(is_proof_qualified(row))
 
     def test_missing_origin_is_raw_unverified(self):
-        row = self.qualified()
-        row["audit"].pop("origin_price_v1")
+        row = self.qualified(); row["audit"].pop("origin_price_v1")
         self.assertFalse(is_proof_qualified(row))
 
     def test_invalid_origin_version_is_raw_unverified(self):
-        row = self.qualified()
-        row["audit"]["origin_price_v1"]["version"] = "origin-price-v0"
+        row = self.qualified(); row["audit"]["origin_price_v1"]["version"] = "origin-price-v0"
         self.assertFalse(is_proof_qualified(row))
 
     def test_origin_timestamp_mismatch_is_raw_unverified(self):
-        row = self.qualified()
-        row["audit"]["origin_price_v1"]["timestamp"] = "2026-08-10T00:00:01+00:00"
+        row = self.qualified(); row["audit"]["origin_price_v1"]["timestamp"] = "2026-08-10T00:00:01+00:00"
         self.assertFalse(is_proof_qualified(row))
 
     def test_origin_price_mismatch_is_raw_unverified(self):
-        row = self.qualified()
-        row["audit"]["origin_price_v1"]["price"] = 99.0
+        row = self.qualified(); row["audit"]["origin_price_v1"]["price"] = 99.0
         self.assertFalse(is_proof_qualified(row))
 
     def test_invalid_primary_window_is_raw_unverified(self):
-        row = self.qualified()
-        row["audit"]["outcomes_dual"]["primary_window"] = "15m"
+        row = self.qualified(); row["audit"]["outcomes_dual"]["primary_window"] = "15m"
         self.assertFalse(is_proof_qualified(row))
 
     def test_directional_mismatch_is_raw_unverified(self):
-        row = self.qualified()
-        row["prediction"] = "SHORT"
+        row = self.qualified(); row["prediction"] = "SHORT"
         self.assertFalse(is_proof_qualified(row))
 
     def test_complete_chain_is_proof_qualified(self):
@@ -254,17 +305,25 @@ class ProofQualificationTests(unittest.TestCase):
         self.assertEqual(proof_status(row), "PROOF_QUALIFIED")
 
     def test_inconsistent_1h_evidence_is_fail_closed(self):
-        row = self.qualified()
-        row["audit"]["outcomes_dual"]["outcome_1h"] = "LOSS"
+        row = self.qualified(); row["audit"]["outcomes_dual"]["outcome_1h"] = "LOSS"
         self.assertFalse(is_proof_qualified(row))
         self.assertEqual(proof_status(row), "RAW_UNVERIFIED")
 
     def test_scorer_counts_only_proof_qualified_rows(self):
         q = self.qualified()
         raw = {"ts": TS, "prediction": "LONG", "outcome": "WIN", "audit": None}
-        dual = {"ts": TS, "prediction": "LONG", "outcome": "LOSS", "audit": {"outcomes_dual": {"outcome_15m": "LOSS", "outcome_1h": "LOSS", "price_15m_later": 99, "price_1h_later": 98, "primary_window": "1h"}}}
+        dual = {
+            "ts": TS, "prediction": "LONG", "outcome": "LOSS",
+            "audit": {"outcomes_dual": {
+                "outcome_15m": "LOSS", "outcome_1h": "LOSS",
+                "price_15m_later": 99, "price_1h_later": 98, "primary_window": "1h",
+            }},
+        }
         score = score_qualified_rows([q, raw, dual])
-        self.assertEqual((score["verified"], score["wins"], score["losses"], score["win_rate_pct"]), (1, 1, 0, 100.0))
+        self.assertEqual(
+            (score["verified"], score["wins"], score["losses"], score["win_rate_pct"]),
+            (1, 1, 0, 100.0),
+        )
         self.assertEqual(len(filter_proof_qualified([q, raw, dual])), 1)
 
 

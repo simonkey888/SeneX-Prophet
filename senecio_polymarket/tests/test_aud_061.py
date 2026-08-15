@@ -26,10 +26,18 @@ from oracle.exchange_connector import (
 )
 from oracle_runtime import institutional_core as learning
 
+from tests.aud063_fixture_support import upgrade_proof_row
+
+def _aud063_upgrade(fn):
+    def wrapped(*args, **kwargs):
+        return upgrade_proof_row(fn(*args, **kwargs))
+    return wrapped
+
 ROOT = Path(__file__).resolve().parents[2]
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
 
+@_aud063_upgrade
 def proof_row(idx: int, *, minute: int | None = None, symbol: str = "BTCUSDT", prediction: str = "LONG", outcome: str = "WIN"):
     minute = idx * 61 if minute is None else minute
     ts = (BASE + timedelta(minutes=minute)).isoformat()
@@ -82,6 +90,7 @@ class LearningCausalityTests(unittest.TestCase):
     def test_late_observation_cannot_enter_even_after_horizon_elapsed(self):
         row = proof_row(1, minute=0)
         row["audit"]["outcomes_dual"]["settled_at"] = (BASE + timedelta(hours=4)).isoformat()
+        row["audit"]["outcomes_dual"]["settlement_observation_v1"]["observed_at"] = (BASE + timedelta(hours=4)).isoformat()
         cutoff = BASE + timedelta(hours=3)
         state = learning.replay_authoritative_learning(core(), [row], "BTCUSDT", decision_cutoff=cutoff)
         self.assertEqual(state["proof_qualified_n"], 0)

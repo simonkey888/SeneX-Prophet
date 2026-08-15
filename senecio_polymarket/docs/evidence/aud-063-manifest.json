@@ -1,0 +1,37 @@
+{
+  "artifact_count_excluding_manifest": 12,
+  "artifacts": {
+    "../AUD-063-REPORT.md": "f1065bc5df65a1c3236264569ea8b271f33fd67fe6cdc99271e5176816470ec2",
+    "aud-063-authority-impact.json": "e40b9e81f0b3cf042b42070937b3581b63045f2e9fd45fc93fd51a361c0cf212",
+    "aud-063-backlog-inventory.json": "2bfa168dd8609e32576db1d0336d72dae6aeff93ce7b42226f726e245bb0b4ff",
+    "aud-063-backlog-recovery-simulation.json": "b19a1148f93f3651ebedc30f34c913d29b518818c4a7945a304a3408799c75b1",
+    "aud-063-cursor-fairness.json": "4f185fb6ee9117ec18234f4ef1cbbb5e19a701a62bc230a3c2451797ae3f5f0b",
+    "aud-063-findings.json": "91674d1c3df2cbde7fb1c36dea5718a4b248a60df02c25c0b9c7775510317ea9",
+    "aud-063-historical-price-contract.json": "76ea7a55d8ea55d7b0bdd3121bd2c19a8dfc3eeb39929ae4f940212feb4f7ba3",
+    "aud-063-learning-temporal-safety.json": "bb0ae8ecf66c6f4801e017642211d2b65fd7ab83c96884eecb75fc600f2a6b9c",
+    "aud-063-race-idempotence.json": "daa12b3d2f35bc4198ff301de5f096e56eb69347a270dccf09b0f450715eaa46",
+    "aud-063-runtime-baseline.json": "e10aed3542ddf3b6bc999944af39ccc8e649abb785e9e6cddd2760a007448393",
+    "aud-063-selection-contract.json": "dc8164249454b0644caab127d1c4210edd001fb67677708f8567ef09557cef8a",
+    "aud-063-starvation-reproduction.json": "6523ad5b470281e11d4cdb4db6a1d634baf94f83b133728cbb8cbeef78d380a8"
+  },
+  "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "database_mutations": 0,
+  "deploy": false,
+  "external_directional_activation": 0,
+  "generated_at_utc": "2026-08-15T04:05:00+00:00",
+  "merge": false,
+  "order": "AUD-063-R1",
+  "parent_order": "AUD-063",
+  "prefix_capture": {
+    "artifact_id": 9240533706,
+    "run_id": 31860917485
+  },
+  "production_mutations": 0,
+  "publication_secret_scan_required": true,
+  "runtime017_mutations": 0,
+  "source_class": "DETERMINISTIC_SHA256_INVENTORY",
+  "threshold_changes": 0,
+  "weight_changes": 0
+}

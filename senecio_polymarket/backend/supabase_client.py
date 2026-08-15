@@ -146,28 +146,138 @@ async def count_predictions() -> int:
         return 0
 
 
-async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100) -> list[dict]:
-    """Fetch predictions that have outcome=NULL and are older than the settlement window."""
+PENDING_SCAN_PAGE_SIZE_MAX = 100
+PENDING_SCAN_MAX_PAGES = 2
+_pending_scan_diagnostics: dict[str, Any] = {}
+
+
+def reset_pending_scan_cursor() -> None:
+    """Compatibility reset: AUD-063-R1 scanning is stateless across invocations."""
+    global _pending_scan_diagnostics
+    _pending_scan_diagnostics = {}
+
+
+def get_pending_scan_diagnostics() -> dict[str, Any]:
+    return dict(_pending_scan_diagnostics)
+
+
+async def fetch_pending_outcomes(
+    older_than_seconds: int = 900,
+    limit: int = 100,
+    *,
+    max_pages: int = PENDING_SCAN_MAX_PAGES,
+) -> list[dict]:
+    """Fetch bounded directional NULL rows with restart-safe intra-call keyset paging.
+
+    Every invocation begins from the oldest eligible `(ts,id)` and advances a
+    local keyset cursor for at most ``PENDING_SCAN_MAX_PAGES`` pages. Therefore
+    process/container restart between cycles cannot erase progress needed to
+    reach rows inside the declared per-invocation fairness bound. Rows beyond
+    that explicit bound are not claimed starvation-free; diagnostics expose the
+    cap. Failed rows remain retryable because no scan-progress mutation occurs.
+    """
+    global _pending_scan_diagnostics
     try:
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
+
+        bounded_limit = max(1, min(int(limit), PENDING_SCAN_PAGE_SIZE_MAX))
+        bounded_pages = max(1, min(int(max_pages), PENDING_SCAN_MAX_PAGES))
+        fairness_bound_rows = bounded_limit * bounded_pages
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
         c = _get_client()
-        params = {
+        base_params = {
             "select": "id,ts,symbol,prediction,confidence,price_now,exchange_used,audit",
             "outcome": "is.null",
-            "ts": f"lt.{cutoff}",
-            "order": "ts.asc",
-            "limit": str(limit),
+            "prediction": "in.(LONG,SHORT)",
+            "ts": f"lte.{cutoff}",
+            "order": "ts.asc,id.asc",
         }
-        r = await c.get(f"/{SUPABASE_TABLE}", params=params)
-        if r.status_code == 200:
-            return r.json() or []
-        log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])
-        return []
+
+        metric_params = {
+            "select": "id,ts,symbol,prediction",
+            "outcome": "is.null",
+            "prediction": "in.(LONG,SHORT)",
+            "ts": f"lte.{cutoff}",
+            "order": "ts.asc,id.asc",
+            "limit": "1",
+        }
+        metric = await c.get(
+            f"/{SUPABASE_TABLE}", params=metric_params, headers={"Prefer": "count=exact"}
+        )
+        eligible_count = None
+        oldest = None
+        if metric.status_code == 200:
+            metric_rows = metric.json() or []
+            if isinstance(metric_rows, list) and metric_rows:
+                oldest = metric_rows[0]
+            content_range = str(getattr(metric, "headers", {}).get("content-range", ""))
+            if "/" in content_range:
+                total = content_range.rsplit("/", 1)[-1]
+                if total.isdigit():
+                    eligible_count = int(total)
+
+        collected: list[dict] = []
+        cursor: tuple[str, str] | None = None
+        pages_scanned = 0
+        pass_complete = False
+        error = None
+
+        for _ in range(bounded_pages):
+            params = dict(base_params)
+            params["limit"] = str(bounded_limit)
+            if cursor is not None:
+                cursor_ts, cursor_id = cursor
+                params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
+            r = await c.get(f"/{SUPABASE_TABLE}", params=params)
+            if r.status_code != 200:
+                log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])
+                error = f"HTTP_{r.status_code}"
+                break
+            page = r.json() or []
+            page = page if isinstance(page, list) else []
+            pages_scanned += 1
+            collected.extend(page)
+            if len(page) < bounded_limit:
+                pass_complete = True
+                break
+            last = page[-1]
+            cursor = (str(last.get("ts") or ""), str(last.get("id") or ""))
+
+        scan_cap_hit = (not pass_complete and error is None and pages_scanned >= bounded_pages)
+        if eligible_count is not None and eligible_count <= fairness_bound_rows:
+            fairness_scope = "RESTART_SAFE_FULL_VISIBLE_BACKLOG"
+        elif eligible_count is None:
+            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_COUNT_UNKNOWN"
+        else:
+            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP"
+
+        _pending_scan_diagnostics = {
+            "eligible_directional_pending_count": eligible_count,
+            "oldest_eligible_directional_pending_id": (oldest or {}).get("id"),
+            "oldest_eligible_directional_pending_ts": (oldest or {}).get("ts"),
+            "rows_scanned_last_pass": len(collected),
+            "pages_scanned_last_pass": pages_scanned,
+            "scan_cap_hit": scan_cap_hit,
+            "cursor_before": None,
+            "cursor_after": cursor,
+            "pass_complete": pass_complete,
+            "restart_safe_stateless": True,
+            "fairness_bound_rows_per_invocation": fairness_bound_rows,
+            "fairness_scope": fairness_scope,
+            "error": error,
+        }
+        return collected
     except Exception as e:
         log.error("supabase fetch_pending_outcomes error: %s", e)
+        _pending_scan_diagnostics = {
+            "error": type(e).__name__,
+            "rows_scanned_last_pass": 0,
+            "pages_scanned_last_pass": 0,
+            "restart_safe_stateless": True,
+            "fairness_bound_rows_per_invocation": PENDING_SCAN_PAGE_SIZE_MAX * PENDING_SCAN_MAX_PAGES,
+            "fairness_scope": "FAIL_CLOSED_ERROR",
+        }
         return []
-
 
 async def update_outcome_dual(
     prediction_id: int,
@@ -176,53 +286,119 @@ async def update_outcome_dual(
     price_15m_later: float,
     price_1h_later: float,
     primary_window: str = "1h",
+    *,
+    price_evidence_15m: dict[str, Any] | None = None,
+    price_evidence_1h: dict[str, Any] | None = None,
 ) -> bool:
-    """Settle a prediction with BOTH 15m and 1h outcomes.
-
-    The final PATCH is compare-and-set style: only a still-unsettled row with
-    no dual evidence may be changed. This makes the writer safe against
-    restart/backfill races and prevents WIN/LOSS or proof evidence rewrites.
-    """
+    """CAS-settle one directional row only with complete causal evidence."""
     try:
+        import math
+        from datetime import timedelta
+        from .settlement_contract import (
+            WINDOW_15M_S,
+            WINDOW_1H_S,
+            normalize_exchange,
+            normalize_symbol,
+            parse_utc,
+            validate_price_evidence,
+        )
+
         c = _get_client()
         r_get = await c.get(
             f"/{SUPABASE_TABLE}",
-            params={"select": "id,audit", "id": f"eq.{prediction_id}", "limit": "1"},
+            params={
+                "select": "id,ts,symbol,prediction,price_now,exchange_used,audit,outcome",
+                "id": f"eq.{prediction_id}",
+                "limit": "1",
+            },
         )
         if r_get.status_code != 200:
-            log.error("update_outcome_dual: GET audit failed id=%s status=%s body=%s", prediction_id, r_get.status_code, r_get.text[:200])
             return False
         existing_rows = r_get.json() or []
-        if not existing_rows:
-            log.error("update_outcome_dual: row not found id=%s (RLS or bad id)", prediction_id)
+        if not isinstance(existing_rows, list) or not existing_rows:
             return False
-        existing_audit = existing_rows[0].get("audit") or {}
+        existing = existing_rows[0]
+        if existing.get("outcome") is not None:
+            return False
+        direction = str(existing.get("prediction") or "").upper()
+        if direction not in {"LONG", "SHORT"}:
+            return False
+
+        existing_audit = existing.get("audit") or {}
         if not isinstance(existing_audit, dict):
             try:
                 existing_audit = json.loads(existing_audit) if isinstance(existing_audit, str) else {}
             except Exception:
-                existing_audit = {}
+                return False
+        origin = existing_audit.get("origin_price_v1")
+        if not isinstance(origin, dict) or origin.get("version") != "origin-price-v1":
+            return False
+        expected_source = normalize_exchange(existing.get("exchange_used"))
+        if expected_source is None or normalize_exchange(origin.get("source")) != expected_source:
+            return False
+        row_ts = existing.get("ts")
+        row_dt = parse_utc(row_ts)
+        if row_dt is None or parse_utc(origin.get("timestamp")) != row_dt:
+            return False
+        try:
+            if not math.isclose(float(origin.get("price")), float(existing.get("price_now")), rel_tol=1e-9, abs_tol=1e-9):
+                return False
+        except (TypeError, ValueError):
+            return False
 
-        observed_at = datetime.now(timezone.utc).isoformat()
+        if not validate_price_evidence(
+            price_evidence_15m,
+            expected_exchange=expected_source,
+            expected_symbol=normalize_symbol(existing.get("symbol")),
+            expected_ts=row_ts,
+            expected_window_seconds=WINDOW_15M_S,
+        ):
+            return False
+        if not validate_price_evidence(
+            price_evidence_1h,
+            expected_exchange=expected_source,
+            expected_symbol=normalize_symbol(existing.get("symbol")),
+            expected_ts=row_ts,
+            expected_window_seconds=WINDOW_1H_S,
+        ):
+            return False
+        try:
+            if not math.isclose(float(price_15m_later), float(price_evidence_15m["price"]), rel_tol=1e-9, abs_tol=1e-9):
+                return False
+            if not math.isclose(float(price_1h_later), float(price_evidence_1h["price"]), rel_tol=1e-9, abs_tol=1e-9):
+                return False
+        except (TypeError, ValueError, KeyError):
+            return False
+        observed_at = datetime.now(timezone.utc)
+        if observed_at < row_dt + timedelta(seconds=WINDOW_1H_S):
+            return False
+
+        observed_iso = observed_at.isoformat()
         outcomes_dual = {
             "outcome_15m": outcome_15m,
             "outcome_1h": outcome_1h,
-            "price_15m_later": float(price_15m_later) if price_15m_later is not None else None,
-            "price_1h_later": float(price_1h_later) if price_1h_later is not None else None,
+            "price_15m_later": float(price_15m_later),
+            "price_1h_later": float(price_1h_later),
             "primary_window": primary_window,
-            "settled_at": observed_at,
+            "settled_at": observed_iso,
+            "settlement_contract_version": "aud063-v1",
+            "price_evidence_v1": {
+                "15m": dict(price_evidence_15m),
+                "1h": dict(price_evidence_1h),
+            },
             "settlement_observation_v1": {
                 "version": "settlement-observation-v1",
-                "observed_at": observed_at,
-                "writer": "SENEX_PRIMARY_DUAL_WINDOW_VERIFIER",
+                "observed_at": observed_iso,
+                "writer": "SENEX_PRIMARY_DUAL_WINDOW_VERIFIER_V2",
                 "availability_semantics": "PERSISTED_BY_COMPARE_AND_SET_AT_OR_AFTER_THIS_TIME",
             },
         }
-        existing_audit["outcomes_dual"] = outcomes_dual
+        merged_audit = dict(existing_audit)
+        merged_audit["outcomes_dual"] = outcomes_dual
         patch_body = {
             "outcome": outcome_1h,
-            "price_15m_later": float(price_15m_later) if price_15m_later is not None else None,
-            "audit": existing_audit,
+            "price_15m_later": float(price_15m_later),
+            "audit": merged_audit,
         }
         r = await c.patch(
             f"/{SUPABASE_TABLE}",
@@ -233,22 +409,17 @@ async def update_outcome_dual(
             },
             json=patch_body,
         )
-        if r.status_code in (200, 204):
-            try:
-                body = r.json() if r.content else []
-            except Exception:
-                body = []
-            if isinstance(body, list) and len(body) > 0:
-                log.info("supabase update_outcome_dual OK id=%s 15m=%s 1h=%s primary=%s", prediction_id, outcome_15m, outcome_1h, primary_window)
-                return True
-            log.error("supabase update_outcome_dual NO-OP id=%s status=%s body=%r", prediction_id, r.status_code, body)
+        if r.status_code not in (200, 204):
             return False
-        log.error("supabase update_outcome_dual failed: %s %s", r.status_code, r.text[:300])
-        return False
+        try:
+            body = r.json() if getattr(r, "content", b"") else []
+        except Exception:
+            body = []
+        # HTTP success with no returned changed row is a CAS no-op, not success.
+        return isinstance(body, list) and len(body) > 0
     except Exception as e:
         log.error("supabase update_outcome_dual error: %s", e)
         return False
-
 
 async def close() -> None:
     global _client

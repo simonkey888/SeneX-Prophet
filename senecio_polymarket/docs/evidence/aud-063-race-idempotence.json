@@ -1,0 +1,22 @@
+{
+  "audit_metadata_preserved": true,
+  "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
+  "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
+  "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
+  "cas_predicates": [
+    "id=prediction_id",
+    "outcome IS NULL",
+    "audit.outcomes_dual IS NULL"
+  ],
+  "first_writer": "SUCCESS_ONLY_WITH_RETURNED_CHANGED_ROW",
+  "generated_at_utc": "2026-08-15T04:05:00+00:00",
+  "http_200_or_204_without_changed_row": "NOT_SUCCESS",
+  "maturity_validation_before_cas": true,
+  "order": "AUD-063-R1",
+  "parent_order": "AUD-063",
+  "reconciler_null_writer": false,
+  "restart_after_patch": "IDEMPOTENT_NO_OVERWRITE",
+  "restart_before_patch": "SAFE_RETRY",
+  "second_writer": "NO_OP_FALSE",
+  "source_class": "DETERMINISTIC_IN_MEMORY_POSTGREST_CAS_SIMULATION"
+}
