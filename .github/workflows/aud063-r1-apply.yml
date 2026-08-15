@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.event.head_commit.message == 'aud063-r1: materialize code without workflow delta'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -44,7 +45,7 @@ jobs:
               raise SystemExit('R1 adversarial methods not found after footer')
           p.write_text(before.rstrip() + '\n' + after.rstrip() + marker, encoding='utf-8')
           PY
-      - name: Generate evidence and verify focused suite
+      - name: Generate evidence and verify R1 plus full regression
         shell: bash
         run: |
           set -euo pipefail
@@ -55,14 +56,18 @@ jobs:
           python -m unittest tests.test_aud_063 -v 2>&1 | tee /tmp/aud063-r1-focused.log
           grep -Eq 'Ran 33 tests' /tmp/aud063-r1-focused.log
           grep -q '^OK$' /tmp/aud063-r1-focused.log
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/aud063-r1-full.log
+          grep -Eq 'Ran [1-9][0-9]* tests' /tmp/aud063-r1-full.log
+          grep -q '^OK$' /tmp/aud063-r1-full.log
           python -m compileall -q .
-      - name: Commit linear R1 candidate
+      - name: Commit code tests and evidence only
         shell: bash
         run: |
           set -euo pipefail
-          git rm .github/workflows/aud063-r1-apply.yml senecio_polymarket/scripts/aud063_r1_apply_patch.py
+          git checkout HEAD -- .github/workflows/aud-063.yml .github/workflows/aud063-r1-apply.yml
+          git rm senecio_polymarket/scripts/aud063_r1_apply_patch.py
           git config user.name 'Simon Dalmasso'
           git config user.email 'simondalmasso44@gmail.com'
-          git add .github/workflows/aud-063.yml senecio_polymarket/backend/settlement_contract.py senecio_polymarket/backend/supabase_client.py senecio_polymarket/backend/oracle_runner.py senecio_polymarket/tests/test_aud_063.py senecio_polymarket/scripts/aud063_generate_evidence.py senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*.json
+          git add senecio_polymarket/backend/settlement_contract.py senecio_polymarket/backend/supabase_client.py senecio_polymarket/backend/oracle_runner.py senecio_polymarket/tests/test_aud_063.py senecio_polymarket/scripts/aud063_generate_evidence.py senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*.json
           git commit -m 'aud063-r1: close maturity restart fairness and startup quarantine'
           git push origin HEAD:audit/aud-063-settlement-starvation-recovery
