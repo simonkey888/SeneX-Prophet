@@ -1,0 +1,43 @@
+name: AUD-063 LAND immediate production snapshot
+
+on:
+  push:
+    branches:
+      - ops/aud-061-land-resume-5297988917
+    paths:
+      - .github/workflows/aud-063-land-prod-snapshot.yml
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: GET current public runtime
+        shell: bash
+        env:
+          BASE: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request, urllib.parse
+          base=os.environ['BASE'].rstrip('/')
+          def get(path,q=None):
+              u=base+path
+              if q:u+='?'+urllib.parse.urlencode(q)
+              with urllib.request.urlopen(urllib.request.Request(u,headers={'Accept':'application/json','User-Agent':'senex-aud063-snapshot/1'}),timeout=30) as r:return r.status,json.loads(r.read().decode())
+          out={}
+          for key,path,q in [
+            ('health','/api/health',None),('state','/api/oracle/state',None),('context','/api/market-context',None),
+            ('btc_score','/api/oracle/score',{'symbol':'BTCUSDT'}),('eth_score','/api/oracle/score',{'symbol':'ETHUSDT'}),
+            ('btc_rows','/api/oracle/predictions/db',{'limit':500,'symbol':'BTCUSDT'}),('eth_rows','/api/oracle/predictions/db',{'limit':500,'symbol':'ETHUSDT'})]:
+              try:
+                  s,v=get(path,q); out[key]={'http':s,'data':v}
+              except Exception as e: out[key]={'error':type(e).__name__+':'+str(e)}
+          # Keep logs bounded: retain row counts plus rows needed for settlement classification.
+          for k in ('btc_rows','eth_rows'):
+              d=(out.get(k) or {}).get('data') or {}; rows=d.get('predictions') or []
+              out[k]['data']={'count':d.get('count'),'total_in_db':d.get('total_in_db'),'predictions':[
+                 {x:r.get(x) for x in ('id','ts','symbol','prediction','price_now','outcome','audit','exchange_used')} for r in rows]}
+          print('AUD063_IMMEDIATE_SNAPSHOT='+json.dumps(out,sort_keys=True,separators=(',',':')),flush=True)
+          PY
