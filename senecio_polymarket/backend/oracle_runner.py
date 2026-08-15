@@ -322,23 +322,6 @@ async def _fetch_price_evidence_at_time(
     )
 
 
-async def _fetch_price_evidence_at_time(
-    symbol: str,
-    ts_iso: str,
-    window_seconds: int,
-    exchange_name: str,
-) -> Optional[dict[str, Any]]:
-    """Fetch bounded same-source historical evidence for an exact target."""
-    from .settlement_contract import fetch_historical_price_evidence
-    return await asyncio.to_thread(
-        fetch_historical_price_evidence,
-        exchange_name,
-        symbol,
-        ts_iso,
-        window_seconds,
-    )
-
-
 async def _fetch_price_at_time(symbol: str, ts_iso: str, window_seconds: int = WINDOW_15M_S) -> Optional[float]:
     """Backward-compatible OKX helper; authoritative verifier uses evidence API."""
     evidence = await _fetch_price_evidence_at_time(symbol, ts_iso, window_seconds, "okx")
