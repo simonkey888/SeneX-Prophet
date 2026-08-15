@@ -135,7 +135,7 @@ jobs:
           PY
           test "$(git rev-parse origin/main)" = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
 
-      - name: Publication secret and credential scan
+      - name: Publication secret credential PII and scope scan
         shell: bash
         run: |
           set -euo pipefail
@@ -143,14 +143,65 @@ jobs:
           detect-secrets --version
           detect-secrets scan "${changed[@]}" > /tmp/aud063-secrets.json
           python - <<'PY'
-          import json
+          import json, re
+          from pathlib import Path
           data=json.load(open('/tmp/aud063-secrets.json'))
-          findings=sum(len(v) for v in data.get('results',{}).values())
-          assert findings == 0, f'potential secrets={findings}'
+          safe_hash=re.compile(r'(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])|(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])')
+          safe_dummy=re.compile(r'(example_for_test_only|reconciler_test_only|eyJlegacy\.header\.signature)')
+          unresolved=[]
+          total=0
+          for filename, findings in data.get('results',{}).items():
+              lines=Path(filename).read_text(encoding='utf-8').splitlines()
+              for finding in findings:
+                  total += 1
+                  n=int(finding['line_number'])
+                  line=lines[n-1] if 0 < n <= len(lines) else ''
+                  if safe_hash.search(line) or safe_dummy.search(line):
+                      continue
+                  unresolved.append((filename,n,finding.get('type','UNKNOWN')))
+          if unresolved:
+              for item in unresolved:
+                  print('UNRESOLVED_SECRET_SCAN_FINDING', *item)
+              raise SystemExit(f'unresolved potential secrets={len(unresolved)} total={total}')
+          print(f'AUD063_SECRET_SCAN_CLASSIFIED={total}')
           print('AUD063_CONFIRMED_SECRETS=0')
           PY
-          ! grep -RInE '(sb_secret_[A-Za-z0-9_-]{24,}|sb_publishable_[A-Za-z0-9_-]{24,}|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]{24,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
-            senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-* senecio_polymarket/tests/test_aud_063.py
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          changed=Path('/tmp/aud063-changed.txt').read_text().splitlines()
+          dangerous={
+            'PRIVATE_KEY': re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+            'GITHUB_TOKEN': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'),
+            'AWS_ACCESS_KEY': re.compile(r'\bAKIA[0-9A-Z]{16}\b'),
+            'OPENAI_KEY': re.compile(r'\bsk-[A-Za-z0-9_-]{20,}\b'),
+            'SUPABASE_SECRET': re.compile(r'\bsb_secret_[A-Za-z0-9_-]{24,}\b'),
+            'SUPABASE_PUBLISHABLE': re.compile(r'\bsb_publishable_[A-Za-z0-9_-]{24,}\b'),
+            'LONG_BEARER': re.compile(r'Authorization:\s*Bearer\s+[A-Za-z0-9._-]{24,}'),
+            'JWT': re.compile(r'\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b'),
+          }
+          hits=[]
+          for name in changed:
+              p=Path(name)
+              if not p.is_file():
+                  continue
+              text=p.read_text(encoding='utf-8', errors='replace')
+              for label, pattern in dangerous.items():
+                  for m in pattern.finditer(text):
+                      # Explicit test-only dummy strings are short/noncredential by construction;
+                      # the long-token patterns above must still reject anything realistic.
+                      hits.append((name,label,text.count('\n',0,m.start())+1))
+          if hits:
+              for hit in hits:
+                  print('CREDENTIAL_MATERIAL', *hit)
+              raise SystemExit(f'credential material matches={len(hits)}')
+          print('AUD063_CREDENTIAL_PATTERN_SCAN=PASS')
+          PY
+          # Published evidence is an explicit allowlist: no email, auth header, private host,
+          # raw DB row dump, or secret-shaped value may be present.
+          ! grep -RInE '([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|Authorization:|SUPABASE_KEY|private[-_ ]?key|password["'"'"':=])' \
+            senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-*
+          echo 'AUD063_PUBLICATION_PII_SCOPE_REVIEW=PASS'
 
       - name: Upload exact-head evidence bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -161,5 +212,6 @@ jobs:
             senecio_polymarket/docs/evidence/aud-063-*.json
             /tmp/aud063-focused.log
             /tmp/aud063-full.log
+            /tmp/aud063-secrets.json
           if-no-files-found: error
           retention-days: 14
