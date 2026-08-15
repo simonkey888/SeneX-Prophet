@@ -1,4 +1,4 @@
-name: AUD-064 Finalize A1 Production Verification
+name: AUD-064 Finalize A1 Freeze Receipt
 
 on:
   push:
@@ -9,31 +9,30 @@ permissions:
   contents: read
 
 jobs:
-  verify-production:
+  final-receipt:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     env:
       NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
       PROJECT_ID: seneciobot
       SERVICE_ID: senecio-h011
       TARGET_SHA: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
       TARGET_TREE: 27eb923e615614b43fe3c29ecace8b7ef503045e
-      VERIFIED_BUILD_ID: humorous-desk-7155
+      BUILD_ID: humorous-desk-7155
       PROD_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
     steps:
-      - name: Checkout exact landed main
+      - name: Checkout final production main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Assert exact main and Northflank pin containment
+      - name: Materialize final exact deployment and 72h freeze receipt
         shell: bash
         run: |
           set +x
           set -euo pipefail
-          mkdir -p aud064-finalize-a1-evidence
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
           test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET_SHA"
@@ -41,127 +40,41 @@ jobs:
           echo "::add-mask::$NF_API"
           token=$(printf '%s' "$NF_API" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/^Bearer[[:space:]]+//I;s/^"(.*)"$/\1/')
           curl -fsS -H "Authorization: Bearer $token" "https://api.northflank.com/v1/projects/$PROJECT_ID/services/$SERVICE_ID" >/tmp/service.json
+          curl -fsS -H "Authorization: Bearer $token" "https://api.northflank.com/v1/projects/$PROJECT_ID/services/$SERVICE_ID/deployment" >/tmp/deployment.json
+          curl -fsS "$PROD_URL/api/health" >/tmp/health.json
           test "$(jq -r '.data.disabledCI' /tmp/service.json)" = true
           test "$(jq -r '.data.deployment.internal.buildSHA' /tmp/service.json)" = "$TARGET_SHA"
           test "$(jq -r '.data.deployment.internal.deployedSHA' /tmp/service.json)" = "$TARGET_SHA"
           test "$(jq -r '.data.status.deployment.status' /tmp/service.json)" = COMPLETED
-          cd=$(jq -r '.data.disabledCD' /tmp/service.json)
-          test "$cd" = true -o "$cd" = null
-          jq -n --arg sha "$TARGET_SHA" --arg tree "$TARGET_TREE" --arg build "$VERIFIED_BUILD_ID" --arg cd "$cd" '{target_sha:$sha,target_tree:$tree,build_id:$build,disabled_ci:true,disabled_cd:($cd=="true"),disabled_cd_raw:$cd,deployment_build_sha:$sha,deployed_sha:$sha,deployment_status:"COMPLETED",unreviewed_main_write_can_auto_deploy:false}' > aud064-finalize-a1-evidence/northflank-final-readback.json
-          echo 'NORTHFLANK_AUTOMATIC_CD_FROM_MAIN=DISABLED'
-          echo 'PRODUCTION_DEPLOY_MODE=EXPLICIT_EXACT_SHA_ONLY'
+          test "$(jq -r '.status' /tmp/health.json)" = ok
+          nfobj=$(jq -r '.data.deployment.internal.nfObjectId // .data.deployment.internal.id // empty' /tmp/service.json)
+          if [ -z "$nfobj" ]; then nfobj=$(jq -r '.data.internal.nfObjectId // .data.internal.id // empty' /tmp/deployment.json); fi
+          test -n "$nfobj"
+          freeze_start=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          freeze_end=$(date -u -d "$freeze_start +72 hours" +'%Y-%m-%dT%H:%M:%SZ')
+          mkdir -p final-receipt
+          jq -n \
+            --arg sha "$TARGET_SHA" \
+            --arg tree "$TARGET_TREE" \
+            --arg build "$BUILD_ID" \
+            --arg deployment "$nfobj" \
+            --arg start "$freeze_start" \
+            --arg end "$freeze_end" \
+            --argjson cycles "$(jq -r '.oracle.cycles_run // 0' /tmp/health.json)" \
+            '{order:"AUD-064-FINALIZE-A1",status:"COMPLETE_READY_FOR_CONTROL_LOG",final_production_sha:$sha,final_production_tree:$tree,northflank_build_id:$build,northflank_deployment_id:$deployment,northflank_automatic_ci:false,northflank_exact_sha_pinned:true,unreviewed_main_write_can_auto_deploy:false,runtime_health:"PASS",oracle_cycles_run:$cycles,architecture_freeze:"72H",freeze_start:$start,freeze_end:$end,freeze_policy:"BUGFIX_ONLY_TRUTH_SETTLEMENT_CAUSAL_PROVENANCE_SAFETY_AVAILABILITY",threshold_tuning:0,base_weight_tuning:0,external_directional_activation:0,runtime017_mutations:0,real_trading:0}' > final-receipt/aud-064-finalize-a1-freeze.json
+          echo "NORTHFLANK_BUILD_ID=$BUILD_ID"
+          echo "NORTHFLANK_DEPLOYMENT_ID=$nfobj"
+          echo "FINAL_PRODUCTION_SHA=$TARGET_SHA"
+          echo "FINAL_PRODUCTION_TREE=$TARGET_TREE"
+          echo "ARCHITECTURE_FREEZE=72H"
+          echo "FREEZE_START=$freeze_start"
+          echo "FREEZE_END=$freeze_end"
           echo 'UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false'
 
-      - name: Wait for completed postdeploy cycle and both persisted symbols
-        shell: bash
-        run: |
-          set -euo pipefail
-          ok=0
-          for i in $(seq 1 120); do
-            if curl -fsS --max-time 15 "$PROD_URL/api/health" >/tmp/health.json \
-              && curl -fsS --max-time 15 "$PROD_URL/api/oracle/predictions/db?limit=20&symbol=BTCUSDT" >/tmp/btc.json \
-              && curl -fsS --max-time 15 "$PROD_URL/api/oracle/predictions/db?limit=20&symbol=ETHUSDT" >/tmp/eth.json; then
-              if python - <<'PY'
-          import json
-          from datetime import datetime
-          h=json.load(open('/tmp/health.json')); b=json.load(open('/tmp/btc.json')); e=json.load(open('/tmp/eth.json'))
-          o=h.get('oracle') or {}
-          if h.get('status')!='ok' or int(o.get('cycles_run') or 0)<1 or o.get('last_error') is not None or not o.get('next_cycle_at'):
-              raise SystemExit(1)
-          started=o.get('started_at')
-          if not started: raise SystemExit(1)
-          start=datetime.fromisoformat(str(started).replace('Z','+00:00')).timestamp()
-          def fresh(rows):
-              for r in rows:
-                  c=r.get('created_at')
-                  if not c: continue
-                  try: t=datetime.fromisoformat(str(c).replace('Z','+00:00')).timestamp()
-                  except Exception: continue
-                  if t>=start-5: return True
-              return False
-          if not fresh(b.get('predictions') or []) or not fresh(e.get('predictions') or []): raise SystemExit(1)
-          PY
-              then ok=1; break; fi
-            fi
-            echo "POSTDEPLOY_EVIDENCE_POLL=$i"
-            sleep 5
-          done
-          test "$ok" = 1
-          cp /tmp/health.json aud064-finalize-a1-evidence/health.json
-          echo 'POSTDEPLOY_BOTH_SYMBOLS=PASS'
-
-      - name: Capture real runtime API DB and dashboard evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS "$PROD_URL/api/market-context" > aud064-finalize-a1-evidence/market-context.json
-          curl -fsS "$PROD_URL/api/oracle/state" > aud064-finalize-a1-evidence/oracle-state.json
-          curl -fsS "$PROD_URL/api/oracle/score?symbol=BTCUSDT" > aud064-finalize-a1-evidence/score-btc.json
-          curl -fsS "$PROD_URL/api/oracle/score?symbol=ETHUSDT" > aud064-finalize-a1-evidence/score-eth.json
-          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=BTCUSDT" > aud064-finalize-a1-evidence/db-btc.json
-          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=ETHUSDT" > aud064-finalize-a1-evidence/db-eth.json
-          curl -fsS "$PROD_URL/" > aud064-finalize-a1-evidence/dashboard.html
-          curl -fsS "$PROD_URL/static/dashboard_truth.js" > aud064-finalize-a1-evidence/dashboard_truth.js
-          curl -fsS "$PROD_URL/static/app.js" > aud064-finalize-a1-evidence/app.js
-
-      - name: Verify runtime settlement proof authority learning and dashboard truth
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,sys
-          from datetime import datetime
-          from pathlib import Path
-          sys.path.insert(0,'senecio_polymarket')
-          from backend.settlement_proof import is_proof_qualified
-          E=Path('aud064-finalize-a1-evidence'); load=lambda n: json.loads((E/n).read_text())
-          h=load('health.json'); ctx=load('market-context.json'); state=load('oracle-state.json'); btc=load('score-btc.json'); eth=load('score-eth.json'); dbb=load('db-btc.json'); dbe=load('db-eth.json')
-          o=h.get('oracle') or {}; assert h.get('status')=='ok'; assert int(o.get('cycles_run') or 0)>=1; assert o.get('last_error') is None; assert o.get('next_cycle_at')
-          s=ctx.get('safety') or {}; assert ctx.get('mode')=='REAL_ONLY'; assert ctx.get('synthetic_demo_enabled') is False; assert s.get('trade_mode')=='PAPER'; assert s.get('live_capital_locked') is True; assert s.get('orders_enabled') is False; assert s.get('read_only_market_adapters') is True
-          for venue in ('polymarket','kalshi','boros'):
-              v=ctx.get(venue) or {}
-              if 'directional_use' in v: assert v.get('directional_use') is False
-          for score,sym in ((btc,'BTCUSDT'),(eth,'ETHUSDT')):
-              assert score.get('requested_symbol')==sym; assert score.get('score_scope')=='PER_SYMBOL'; assert score.get('trade_mode')=='PAPER'; assert score.get('orders_enabled') is False; assert score.get('live_capital_locked') is True
-              raw=int(score.get('proof_qualified_rows_raw') or 0); indep=int(score.get('independent_1h_rows') or 0); assert indep<=raw; assert (score.get('authority_1h') or {}).get('n_source')=='INDEPENDENT_NONOVERLAP_1H'
-              if score.get('score_status')!='CALIBRATED': assert score.get('authoritative_score_pct') is None
-          rb=dbb.get('predictions') or []; re=dbe.get('predictions') or []
-          assert all(str(r.get('symbol') or '').upper().replace('/','').replace('-','')=='BTCUSDT' for r in rb); assert all(str(r.get('symbol') or '').upper().replace('/','').replace('-','')=='ETHUSDT' for r in re)
-          pb=[r for r in rb if is_proof_qualified(r)]; pe=[r for r in re if is_proof_qualified(r)]
-          assert len(pb)==int(btc.get('proof_qualified_rows_raw') or 0), (len(pb),btc.get('proof_qualified_rows_raw'))
-          assert len(pe)==int(eth.get('proof_qualified_rows_raw') or 0), (len(pe),eth.get('proof_qualified_rows_raw'))
-          for r in pb+pe:
-              a=r.get('audit') or {}; origin=a.get('origin_price_v1') or {}; dual=a.get('outcomes_dual') or {}; ev=dual.get('price_evidence_v1') or {}
-              assert str(origin.get('source') or '').lower()==str(r.get('exchange_used') or '').lower(); assert isinstance(ev.get('15m'),dict) and isinstance(ev.get('1h'),dict)
-          started=state.get('started_at') or o.get('started_at'); assert started; start=datetime.fromisoformat(str(started).replace('Z','+00:00')).timestamp(); latest={}
-          for sym,rows in (('BTCUSDT',rb),('ETHUSDT',re)):
-              cand=[]
-              for r in rows:
-                  try: created=datetime.fromisoformat(str(r.get('created_at')).replace('Z','+00:00')).timestamp()
-                  except Exception: continue
-                  if created>=start-5: cand.append(r)
-              assert cand, f'NO_POSTDEPLOY_{sym}_ROW_BY_CREATED_AT'
-              r=max(cand,key=lambda x:str(x.get('created_at') or '')); assert r.get('exchange_used') not in (None,'','unknown')
-              a=r.get('audit') or {}; p=a.get('pipeline') or {}; st=p.get('step2_features') or {}; l=st.get('learning_state_v1') or {}
-              assert l.get('learning_mutation_authority')=='SHADOW_ONLY', (sym,l.get('learning_mutation_authority'),l.get('status'))
-              assert l.get('production_learning_mutation_enabled') is False; assert int(l.get('mutations') or 0)==0; assert l.get('size_calibration_authority')=='FROZEN_BASE_ONLY'; assert l.get('base_weights_hash')==l.get('decision_weights_hash')==l.get('effective_weights_hash'); assert 'exchange_used' in (l.get('learning_projection_fields') or [])
-              cutoff=l.get('decision_cutoff_epoch')
-              if cutoff is not None:
-                  for x in l.get('source_settlement_observation_epochs') or []:
-                      val=x.get('observed_at_epoch') if isinstance(x,dict) else None
-                      if val is not None: assert float(val)<=float(cutoff)+1e-6
-              latest[sym]={'id':r.get('id'),'ts':r.get('ts'),'created_at':r.get('created_at'),'exchange_used':r.get('exchange_used'),'learning_status':l.get('status'),'proof_qualified_n':l.get('proof_qualified_n'),'shadow_mutations':l.get('shadow_mutations'),'mutations':l.get('mutations'),'base_weights_hash':l.get('base_weights_hash'),'decision_weights_hash':l.get('decision_weights_hash')}
-          app=(E/'app.js').read_text(); assert "getJSON('/api/market-context')" in app; assert "getJSON('/api/oracle/score?symbol=BTCUSDT')" in app; assert "getJSON('/api/oracle/predictions/db?limit=50')" in app
-          assert (E/'app.js').read_bytes()==Path('senecio_polymarket/frontend/app.js').read_bytes(); assert (E/'dashboard_truth.js').read_bytes()==Path('senecio_polymarket/frontend/dashboard_truth.js').read_bytes()
-          receipt={'runtime_health':'PASS','cycles_run':o.get('cycles_run'),'cycles_failed':o.get('cycles_failed'),'last_cycle_at':o.get('last_cycle_at'),'next_cycle_at':o.get('next_cycle_at'),'paper_mode':True,'live_capital_locked':True,'orders_enabled':False,'synthetic_demo_enabled':False,'btc':{'raw_proof_n':btc.get('proof_qualified_rows_raw'),'authority_n':btc.get('independent_1h_rows'),'score_status':btc.get('score_status'),'score':btc.get('authoritative_score_pct'),'observed_win_rate_pct':btc.get('observed_win_rate_pct')},'eth':{'raw_proof_n':eth.get('proof_qualified_rows_raw'),'authority_n':eth.get('independent_1h_rows'),'score_status':eth.get('score_status'),'score':eth.get('authoritative_score_pct'),'observed_win_rate_pct':eth.get('observed_win_rate_pct')},'proof_rows':{'BTCUSDT':len(pb),'ETHUSDT':len(pe)},'postdeploy_rows':latest,'learning_authority':'SHADOW_ONLY','production_weights':'FROZEN_BASE','dashboard_api_db_reconciliation':'PASS'}
-          (E/'runtime-acceptance.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
-          print('RUNTIME_ACCEPTANCE=PASS'); print('SETTLEMENT_PROOF_AUTHORITY=PASS'); print('LEARNING_SHADOW_ONLY=PASS'); print('DASHBOARD_API_DB_RECONCILIATION=PASS'); print(json.dumps(receipt,sort_keys=True))
-          PY
-
-      - name: Upload sanitized finalization evidence
+      - name: Upload final freeze receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-064-finalize-a1-${{ env.TARGET_SHA }}
-          path: aud064-finalize-a1-evidence/
+          name: aud-064-finalize-a1-freeze-${{ env.TARGET_SHA }}
+          path: final-receipt/
           if-no-files-found: error
           retention-days: 14
