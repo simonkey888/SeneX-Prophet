@@ -1,0 +1,157 @@
+name: AUD-063 Settlement Authority Exact Head
+
+on:
+  push:
+    branches:
+      - audit/aud-063-settlement-starvation-recovery
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  AUD_EXACT_HEAD_GATE:
+    name: AUD_EXACT_HEAD_GATE
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.11'
+
+      - name: Exact-head and immutable-base gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
+          test "$(git rev-parse '49c5f0a69609c005da80e48b585e91d8582a5ac6^{tree}')" = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
+          git merge-base --is-ancestor 49c5f0a69609c005da80e48b585e91d8582a5ac6 HEAD
+
+      - name: Install repository and audit dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r senecio_polymarket/requirements.txt
+          python -m pip install 'detect-secrets==1.5.0' 'PyYAML>=6,<7'
+
+      - name: Focused AUD-063 regression T1-T27
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_aud_063 -v 2>&1 | tee /tmp/aud063-focused.log
+          grep -Eq 'Ran 27 tests' /tmp/aud063-focused.log
+          grep -q '^OK$' /tmp/aud063-focused.log
+
+      - name: Full unittest discovery nonzero
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/aud063-full.log
+          grep -Eq 'Ran [1-9][0-9]* tests' /tmp/aud063-full.log
+          grep -q '^OK$' /tmp/aud063-full.log
+
+      - name: Python tree compile
+        run: python -m compileall -q senecio_polymarket
+
+      - name: Deterministic double evidence regeneration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/regen1/evidence /tmp/regen2/evidence
+          python senecio_polymarket/scripts/aud063_generate_evidence.py --out /tmp/regen1/evidence
+          python senecio_polymarket/scripts/aud063_generate_evidence.py --out /tmp/regen2/evidence
+          diff -ru /tmp/regen1 /tmp/regen2
+          for f in /tmp/regen1/evidence/aud-063-*.json; do
+            diff -u "$f" "senecio_polymarket/docs/evidence/$(basename "$f")"
+          done
+          diff -u /tmp/regen1/AUD-063-REPORT.md senecio_polymarket/docs/AUD-063-REPORT.md
+
+      - name: YAML and immutable action pin gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re, yaml
+          from pathlib import Path
+          p=Path('.github/workflows/aud-063.yml')
+          yaml.safe_load(p.read_text())
+          for line in p.read_text().splitlines():
+              s=line.strip()
+              if s.startswith('uses:'):
+                  ref=s.split('@',1)[1]
+                  assert re.fullmatch(r'[0-9a-f]{40}', ref), s
+          print('AUD063_YAML_PINS_OK')
+          PY
+
+      - name: Scope and immutable safety gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only 49c5f0a69609c005da80e48b585e91d8582a5ac6...HEAD > /tmp/aud063-changed.txt
+          cat /tmp/aud063-changed.txt
+          python - <<'PY'
+          from pathlib import Path
+          changed=Path('/tmp/aud063-changed.txt').read_text().splitlines()
+          exact={
+            '.github/workflows/aud-063.yml',
+            'senecio_polymarket/backend/oracle_runner.py',
+            'senecio_polymarket/backend/settlement_contract.py',
+            'senecio_polymarket/backend/settlement_proof.py',
+            'senecio_polymarket/backend/settlement_reconciler.py',
+            'senecio_polymarket/backend/supabase_client.py',
+            'senecio_polymarket/tests/test_aud_063.py',
+            'senecio_polymarket/scripts/aud063_baseline_reproduce.py',
+            'senecio_polymarket/scripts/aud063_generate_evidence.py',
+            'senecio_polymarket/docs/AUD-063-REPORT.md',
+          }
+          for p in changed:
+              ok=p in exact or p.startswith('senecio_polymarket/docs/evidence/aud-063-')
+              assert ok, f'OUT_OF_SCOPE:{p}'
+              low=p.lower()
+              assert 'runtime017' not in low and 'runtime-017' not in low
+              assert p not in {'senecio_polymarket/oracle/institutional_core.py','senecio_polymarket/oracle_runtime/institutional_core.py'}
+          print('AUD063_SCOPE_OK', len(changed))
+          PY
+          test "$(git rev-parse origin/main)" = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
+
+      - name: Publication secret and credential scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only 49c5f0a69609c005da80e48b585e91d8582a5ac6...HEAD | grep -E '\.(py|md|json|ya?ml)$')
+          detect-secrets --version
+          detect-secrets scan "${changed[@]}" > /tmp/aud063-secrets.json
+          python - <<'PY'
+          import json
+          data=json.load(open('/tmp/aud063-secrets.json'))
+          findings=sum(len(v) for v in data.get('results',{}).values())
+          assert findings == 0, f'potential secrets={findings}'
+          print('AUD063_CONFIRMED_SECRETS=0')
+          PY
+          ! grep -RInE '(sb_secret_[A-Za-z0-9_-]+|sb_publishable_[A-Za-z0-9_-]+|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]+|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
+            senecio_polymarket/docs/AUD-063-REPORT.md senecio_polymarket/docs/evidence/aud-063-* senecio_polymarket/tests/test_aud_063.py
+
+      - name: Upload exact-head evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-063-exact-head-${{ github.sha }}
+          path: |
+            senecio_polymarket/docs/AUD-063-REPORT.md
+            senecio_polymarket/docs/evidence/aud-063-*.json
+            /tmp/aud063-focused.log
+            /tmp/aud063-full.log
+          if-no-files-found: error
+          retention-days: 14
