@@ -95,9 +95,15 @@ def price_evidence_from_candles(
     if candle is None:
         return None
     candle_open_ms = int(candle[0])
+    candle_close_ms = candle_open_ms + CANDLE_INTERVAL_MS
     price = float(candle[4])
     observed = parse_utc(observed_at) if observed_at is not None else datetime.now(timezone.utc)
     if observed is None:
+        return None
+    observed_ms = int(observed.timestamp() * 1000)
+    # The current/last OHLCV candle is provisional until its interval closes.
+    # Never freeze a provisional close into the immutable settlement CAS.
+    if observed_ms < candle_close_ms:
         return None
     return {
         "version": "historical-price-evidence-v1",
@@ -106,11 +112,13 @@ def price_evidence_from_candles(
         "window_seconds": int(window_seconds),
         "target_epoch_ms": target_ms,
         "candle_open_epoch_ms": candle_open_ms,
+        "candle_close_epoch_ms": candle_close_ms,
         "candle_interval_ms": CANDLE_INTERVAL_MS,
         "target_offset_from_candle_open_ms": target_ms - candle_open_ms,
         "price": price,
         "observed_at": observed.isoformat(),
         "selection_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",
+        "maturity_rule": "OBSERVED_AT_GTE_CANDLE_CLOSE_EPOCH_MS",
     }
 
 
@@ -135,6 +143,7 @@ def validate_price_evidence(
         window = int(evidence.get("window_seconds"))
         actual_target = int(evidence.get("target_epoch_ms"))
         open_ms = int(evidence.get("candle_open_epoch_ms"))
+        close_ms = int(evidence.get("candle_close_epoch_ms"))
         interval_ms = int(evidence.get("candle_interval_ms"))
         price = float(evidence.get("price"))
     except (TypeError, ValueError):
@@ -143,11 +152,16 @@ def validate_price_evidence(
         return False
     if interval_ms != CANDLE_INTERVAL_MS:
         return False
-    if not (open_ms <= target_ms < open_ms + interval_ms):
+    if close_ms != open_ms + interval_ms:
+        return False
+    if not (open_ms <= target_ms < close_ms):
         return False
     if price <= 0 or not math.isfinite(price):
         return False
-    return parse_utc(evidence.get("observed_at")) is not None
+    observed = parse_utc(evidence.get("observed_at"))
+    if observed is None:
+        return False
+    return int(observed.timestamp() * 1000) >= close_ms
 
 
 def directional_outcome(direction: Any, origin: Any, later: Any) -> str | None:

@@ -13,10 +13,12 @@ from backend import authoritative_score, oracle_runner, settlement_proof, supaba
 from backend.settlement_contract import (
     WINDOW_15M_S,
     WINDOW_1H_S,
+    CANDLE_INTERVAL_MS,
     directional_outcome,
     price_evidence_from_candles,
     select_containing_candle,
     target_epoch_ms,
+    validate_price_evidence,
 )
 
 BASE_SHA = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
@@ -240,32 +242,23 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
         row = next(r for r in fake.rows if r["id"] == 1000)
         self.assertEqual(row["outcome"], "WIN")
 
-    async def test_t04_more_than_100_directionals_drain_across_pages(self):
-        rows = [pending_row(i + 1, "LONG") for i in range(250)]
+    async def test_t04_bounded_invocation_drains_two_keyset_pages(self):
+        rows = [pending_row(i + 1, "LONG") for i in range(180)]
         fake = FakePostgrest(rows)
-        seen = []
-        old = supabase_client._get_client
-        supabase_client._get_client = lambda: fake
-        try:
-            for _ in range(3):
-                seen += [r["id"] for r in await supabase_client.fetch_pending_outcomes(3600, 100)]
-        finally:
-            supabase_client._get_client = old
-        self.assertEqual(len(seen), 250)
-        self.assertEqual(len(set(seen)), 250)
+        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))
+        self.assertEqual(len(seen), 180)
+        self.assertEqual(len({r["id"] for r in seen}), 180)
+        scan = supabase_client.get_pending_scan_diagnostics()
+        self.assertTrue(scan["restart_safe_stateless"])
+        self.assertEqual(scan["fairness_bound_rows_per_invocation"], 200)
+        self.assertEqual(scan["fairness_scope"], "RESTART_SAFE_FULL_VISIBLE_BACKLOG")
 
-    async def test_t05_poison_row_does_not_starve_later_page(self):
+    async def test_t05_poison_row_does_not_starve_later_page_within_bound(self):
         rows = [pending_row(1, "LONG", proof=False)] + [pending_row(i, "LONG") for i in range(2, 102)]
         fake = FakePostgrest(rows)
-        old = supabase_client._get_client
-        supabase_client._get_client = lambda: fake
-        try:
-            first = await supabase_client.fetch_pending_outcomes(3600, 100)
-            second = await supabase_client.fetch_pending_outcomes(3600, 100)
-        finally:
-            supabase_client._get_client = old
-        self.assertEqual(first[0]["id"], 1)
-        self.assertEqual(second[-1]["id"], 101)
+        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))
+        self.assertEqual(seen[0]["id"], 1)
+        self.assertEqual(seen[-1]["id"], 101)
 
     async def test_t06_failed_row_is_retryable_after_pass_reset(self):
         fake = FakePostgrest([pending_row(1, "LONG", proof=False), pending_row(2, "LONG")])
@@ -279,18 +272,15 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["id"] for r in one], [1, 2])
         self.assertEqual([r["id"] for r in two], [1, 2])
 
-    async def test_t07_keyset_survives_prior_row_disappearance(self):
+    async def test_t07_intra_invocation_second_page_is_keyset_not_offset(self):
         fake = FakePostgrest([pending_row(i + 1) for i in range(150)])
-        old = supabase_client._get_client
-        supabase_client._get_client = lambda: fake
-        try:
-            first = await supabase_client.fetch_pending_outcomes(3600, 100)
-            fake.rows = [r for r in fake.rows if r["id"] > 100]
-            second = await supabase_client.fetch_pending_outcomes(3600, 100)
-        finally:
-            supabase_client._get_client = old
-        self.assertEqual(first[-1]["id"], 100)
-        self.assertEqual(second[0]["id"], 101)
+        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))
+        page_calls = [p for kind, p in fake.calls if kind == "GET" and "confidence" in p.get("select", "")]
+        self.assertEqual(len(seen), 150)
+        self.assertEqual(len(page_calls), 2)
+        self.assertNotIn("or", page_calls[0])
+        self.assertIn("or", page_calls[1])
+        self.assertNotIn("offset", page_calls[1])
 
     async def test_t08_both_windows_required(self):
         row = pending_row(1)
@@ -517,6 +507,101 @@ class Aud063Tests(unittest.IsolatedAsyncioTestCase):
             any("runtime017" in p.lower() or "runtime-017" in p.lower() for p in changed)
         )
 
+    async def test_t28_open_candle_seconds_01_30_59_rejected_until_close(self):
+        for second in (1, 30, 59):
+            ts = f"2026-01-01T00:00:{second:02d}+00:00"
+            target = target_epoch_ms(ts, WINDOW_1H_S)
+            open_ms = target - (target % CANDLE_INTERVAL_MS)
+            close_ms = open_ms + CANDLE_INTERVAL_MS
+            before = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
+            at_close = datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc).isoformat()
+            kwargs = dict(
+                candles=[[open_ms, 102, 102, 102, 102, 1.0]],
+                exchange="okx",
+                symbol="BTCUSDT",
+                ts_iso=ts,
+                window_seconds=WINDOW_1H_S,
+            )
+            self.assertIsNone(price_evidence_from_candles(**kwargs, observed_at=before))
+            mature = price_evidence_from_candles(**kwargs, observed_at=at_close)
+            self.assertIsNotNone(mature)
+            self.assertEqual(mature["candle_close_epoch_ms"], close_ms)
+            self.assertEqual(mature["maturity_rule"], "OBSERVED_AT_GTE_CANDLE_CLOSE_EPOCH_MS")
+
+    async def test_t29_proof_gate_rejects_premature_candle_observation(self):
+        row = qualified_row(1)
+        ev1 = row["audit"]["outcomes_dual"]["price_evidence_v1"]["1h"]
+        close_ms = ev1["candle_close_epoch_ms"]
+        ev1["observed_at"] = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
+        self.assertFalse(validate_price_evidence(
+            ev1,
+            expected_exchange=row["exchange_used"],
+            expected_symbol=row["symbol"],
+            expected_ts=row["ts"],
+            expected_window_seconds=WINDOW_1H_S,
+        ))
+        self.assertFalse(settlement_proof.is_proof_qualified(row))
+        self.assertEqual(settlement_proof.proof_status(row), "RAW_UNVERIFIED")
+
+    async def test_t30_primary_cas_rejects_premature_historical_evidence(self):
+        row = pending_row(1)
+        fake = FakePostgrest([row])
+        ev15 = evidence(row, WINDOW_15M_S, 101)
+        ev1 = evidence(row, WINDOW_1H_S, 102)
+        close_ms = ev1["candle_close_epoch_ms"]
+        ev1["observed_at"] = datetime.fromtimestamp((close_ms - 1) / 1000, tz=timezone.utc).isoformat()
+        ok = await self._with_client(
+            fake,
+            supabase_client.update_outcome_dual(
+                1, "WIN", "WIN", 101, 102,
+                price_evidence_15m=ev15,
+                price_evidence_1h=ev1,
+            ),
+        )
+        self.assertFalse(ok)
+        self.assertIsNone(fake.rows[0]["outcome"])
+        self.assertFalse(any(kind == "PATCH" for kind, _ in fake.calls))
+
+    async def test_t31_restart_between_invocations_cannot_hide_row_within_bound(self):
+        rows = [pending_row(i + 1, "LONG", proof=False) for i in range(125)]
+        rows.append(pending_row(1000, "LONG"))
+        fake = FakePostgrest(rows)
+        old = supabase_client._get_client
+        supabase_client._get_client = lambda: fake
+        try:
+            first = await supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2)
+            supabase_client.reset_pending_scan_cursor()
+            second = await supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2)
+        finally:
+            supabase_client._get_client = old
+        self.assertIn(1000, {r["id"] for r in first})
+        self.assertIn(1000, {r["id"] for r in second})
+        self.assertEqual(supabase_client.get_pending_scan_diagnostics()["fairness_scope"], "RESTART_SAFE_FULL_VISIBLE_BACKLOG")
+
+    async def test_t32_backlog_beyond_fairness_bound_is_explicitly_downgraded(self):
+        rows = [pending_row(i + 1, "LONG", proof=False) for i in range(250)]
+        fake = FakePostgrest(rows)
+        seen = await self._with_client(fake, supabase_client.fetch_pending_outcomes(3600, 100, max_pages=2))
+        scan = supabase_client.get_pending_scan_diagnostics()
+        self.assertEqual(len(seen), 200)
+        self.assertTrue(scan["scan_cap_hit"])
+        self.assertEqual(scan["fairness_bound_rows_per_invocation"], 200)
+        self.assertEqual(scan["fairness_scope"], "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP")
+
+    async def test_t33_obsolete_startup_backfill_is_zero_io_quarantine(self):
+        source = (Path(__file__).parents[1] / "backend" / "oracle_runner.py").read_text()
+        self.assertNotIn("_backfill_bogus_outcomes", source)
+        self.assertNotIn("bogus_backfill_", source)
+        fetch = AsyncMock(return_value=[])
+        update = AsyncMock(return_value=False)
+        with (
+            patch.object(supabase_client, "fetch_predictions", fetch),
+            patch.object(supabase_client, "update_outcome_dual", update),
+        ):
+            oracle_runner._quarantine_legacy_startup_backfill()
+        fetch.assert_not_awaited()
+        update.assert_not_awaited()
+        self.assertEqual(oracle_runner._state["legacy_startup_backfill_status"], "QUARANTINED_NO_READ_NO_WRITE")
 
 if __name__ == "__main__":
     unittest.main()

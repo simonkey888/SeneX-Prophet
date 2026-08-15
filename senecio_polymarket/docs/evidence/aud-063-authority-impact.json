@@ -1,4 +1,5 @@
 {
+  "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
   "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
   "base_tree": "3e323bcc2795f97b29242883d3bf2a015c092ccd",
   "baseline": {
@@ -20,9 +21,10 @@
     }
   },
   "edge_claim": "NO",
-  "generated_at_utc": "2026-08-15T03:15:00+00:00",
+  "generated_at_utc": "2026-08-15T04:05:00+00:00",
   "observable_eligible_directional_backlog": 57,
-  "order": "AUD-063",
+  "order": "AUD-063-R1",
+  "parent_order": "AUD-063",
   "post_fix_actual_settleable_rows": "NOT_ESTIMABLE_WITHOUT_MUTATING_OR_READING_PRIVATE_PER_ROW_PROOF",
   "post_fix_authority_delta": "NOT_ESTIMABLE",
   "source_class": "SANITIZED_PUBLIC_BASELINE_PLUS_FAIL_CLOSED_COUNTERFACTUAL",

@@ -146,14 +146,14 @@ async def count_predictions() -> int:
         return 0
 
 
-_pending_scan_cursor: tuple[str, str] | None = None
+PENDING_SCAN_PAGE_SIZE_MAX = 100
+PENDING_SCAN_MAX_PAGES = 2
 _pending_scan_diagnostics: dict[str, Any] = {}
 
 
 def reset_pending_scan_cursor() -> None:
-    """Reset the bounded keyset scan. Intended for restart semantics/tests."""
-    global _pending_scan_cursor, _pending_scan_diagnostics
-    _pending_scan_cursor = None
+    """Compatibility reset: AUD-063-R1 scanning is stateless across invocations."""
+    global _pending_scan_diagnostics
     _pending_scan_diagnostics = {}
 
 
@@ -161,19 +161,28 @@ def get_pending_scan_diagnostics() -> dict[str, Any]:
     return dict(_pending_scan_diagnostics)
 
 
-async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100) -> list[dict]:
-    """Fetch one bounded keyset page of eligible directional NULL outcomes.
+async def fetch_pending_outcomes(
+    older_than_seconds: int = 900,
+    limit: int = 100,
+    *,
+    max_pages: int = PENDING_SCAN_MAX_PAGES,
+) -> list[dict]:
+    """Fetch bounded directional NULL rows with restart-safe intra-call keyset paging.
 
-    FLAT/non-directional rows are excluded server-side. A stable (ts,id) cursor
-    advances even when a row later fails historical-price/proof validation, so
-    poison rows cannot permanently block later eligible rows. At end-of-pass the
-    cursor resets for a later retry pass; failed rows therefore remain retryable.
+    Every invocation begins from the oldest eligible `(ts,id)` and advances a
+    local keyset cursor for at most ``PENDING_SCAN_MAX_PAGES`` pages. Therefore
+    process/container restart between cycles cannot erase progress needed to
+    reach rows inside the declared per-invocation fairness bound. Rows beyond
+    that explicit bound are not claimed starvation-free; diagnostics expose the
+    cap. Failed rows remain retryable because no scan-progress mutation occurs.
     """
-    global _pending_scan_cursor, _pending_scan_diagnostics
+    global _pending_scan_diagnostics
     try:
         from datetime import timedelta
 
-        bounded_limit = max(1, min(int(limit), 500))
+        bounded_limit = max(1, min(int(limit), PENDING_SCAN_PAGE_SIZE_MAX))
+        bounded_pages = max(1, min(int(max_pages), PENDING_SCAN_MAX_PAGES))
+        fairness_bound_rows = bounded_limit * bounded_pages
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
         c = _get_client()
         base_params = {
@@ -184,7 +193,6 @@ async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100
             "order": "ts.asc,id.asc",
         }
 
-        # Backlog visibility is independent of the current page/cursor.
         metric_params = {
             "select": "id,ts,symbol,prediction",
             "outcome": "is.null",
@@ -208,56 +216,67 @@ async def fetch_pending_outcomes(older_than_seconds: int = 900, limit: int = 100
                 if total.isdigit():
                     eligible_count = int(total)
 
-        cursor_before = _pending_scan_cursor
-        params = dict(base_params)
-        params["limit"] = str(bounded_limit)
-        if cursor_before is not None:
-            cursor_ts, cursor_id = cursor_before
-            params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
+        collected: list[dict] = []
+        cursor: tuple[str, str] | None = None
+        pages_scanned = 0
+        pass_complete = False
+        error = None
 
-        r = await c.get(f"/{SUPABASE_TABLE}", params=params)
-        if r.status_code != 200:
-            log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])
-            _pending_scan_diagnostics = {
-                "eligible_directional_pending_count": eligible_count,
-                "oldest_eligible_directional_pending_id": (oldest or {}).get("id"),
-                "oldest_eligible_directional_pending_ts": (oldest or {}).get("ts"),
-                "rows_scanned_last_pass": 0,
-                "scan_cap_hit": False,
-                "cursor_before": cursor_before,
-                "cursor_after": cursor_before,
-                "pass_complete": False,
-                "error": f"HTTP_{r.status_code}",
-            }
-            return []
-        rows = r.json() or []
-        rows = rows if isinstance(rows, list) else []
+        for _ in range(bounded_pages):
+            params = dict(base_params)
+            params["limit"] = str(bounded_limit)
+            if cursor is not None:
+                cursor_ts, cursor_id = cursor
+                params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
+            r = await c.get(f"/{SUPABASE_TABLE}", params=params)
+            if r.status_code != 200:
+                log.error("supabase fetch_pending_outcomes failed: %s %s", r.status_code, r.text[:200])
+                error = f"HTTP_{r.status_code}"
+                break
+            page = r.json() or []
+            page = page if isinstance(page, list) else []
+            pages_scanned += 1
+            collected.extend(page)
+            if len(page) < bounded_limit:
+                pass_complete = True
+                break
+            last = page[-1]
+            cursor = (str(last.get("ts") or ""), str(last.get("id") or ""))
 
-        pass_complete = len(rows) < bounded_limit
-        cursor_after = cursor_before
-        if rows:
-            last = rows[-1]
-            cursor_after = (str(last.get("ts") or ""), str(last.get("id") or ""))
-        if pass_complete:
-            _pending_scan_cursor = None
+        scan_cap_hit = (not pass_complete and error is None and pages_scanned >= bounded_pages)
+        if eligible_count is not None and eligible_count <= fairness_bound_rows:
+            fairness_scope = "RESTART_SAFE_FULL_VISIBLE_BACKLOG"
+        elif eligible_count is None:
+            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_COUNT_UNKNOWN"
         else:
-            _pending_scan_cursor = cursor_after
+            fairness_scope = "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP"
 
         _pending_scan_diagnostics = {
             "eligible_directional_pending_count": eligible_count,
             "oldest_eligible_directional_pending_id": (oldest or {}).get("id"),
             "oldest_eligible_directional_pending_ts": (oldest or {}).get("ts"),
-            "rows_scanned_last_pass": len(rows),
-            "scan_cap_hit": len(rows) >= bounded_limit,
-            "cursor_before": cursor_before,
-            "cursor_after": cursor_after,
+            "rows_scanned_last_pass": len(collected),
+            "pages_scanned_last_pass": pages_scanned,
+            "scan_cap_hit": scan_cap_hit,
+            "cursor_before": None,
+            "cursor_after": cursor,
             "pass_complete": pass_complete,
-            "error": None,
+            "restart_safe_stateless": True,
+            "fairness_bound_rows_per_invocation": fairness_bound_rows,
+            "fairness_scope": fairness_scope,
+            "error": error,
         }
-        return rows
+        return collected
     except Exception as e:
         log.error("supabase fetch_pending_outcomes error: %s", e)
-        _pending_scan_diagnostics = {"error": type(e).__name__, "rows_scanned_last_pass": 0}
+        _pending_scan_diagnostics = {
+            "error": type(e).__name__,
+            "rows_scanned_last_pass": 0,
+            "pages_scanned_last_pass": 0,
+            "restart_safe_stateless": True,
+            "fairness_bound_rows_per_invocation": PENDING_SCAN_PAGE_SIZE_MAX * PENDING_SCAN_MAX_PAGES,
+            "fairness_scope": "FAIL_CLOSED_ERROR",
+        }
         return []
 
 async def update_outcome_dual(

@@ -10,7 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CANON = ROOT / "docs" / "evidence"
-GENERATED_AT = "2026-08-15T03:15:00+00:00"
+GENERATED_AT = "2026-08-15T04:05:00+00:00"
 BASE_SHA = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
 BASE_TREE = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
 PREFIX_RUN = 31860917485
@@ -42,7 +42,9 @@ def main() -> None:
     write_json(out, "aud-063-starvation-reproduction.json", reproduction)
 
     common = {
-        "order": "AUD-063",
+        "order": "AUD-063-R1",
+        "parent_order": "AUD-063",
+        "audited_parent_head": "0320f47657d4433bfc4dc3396fd0d31ffabe2270",
         "base_sha": BASE_SHA,
         "base_tree": BASE_TREE,
         "generated_at_utc": GENERATED_AT,
@@ -64,20 +66,24 @@ def main() -> None:
     selection = {
         **common,
         "source_class": "SOURCE_CONTRACT",
-        "server_side_filters": {"outcome": "is.null", "prediction": "in.(LONG,SHORT)", "horizon": "ts<=now-1h"},
+        "server_side_filters": {"outcome": "is.null", "prediction": "in.(LONG,SHORT)", "horizon": "ts<=now-1h-60s"},
         "order": "ts.asc,id.asc",
-        "pagination": "STABLE_KEYSET_TS_ID",
-        "bounded_batch": 100,
-        "cursor_rule": "advance_after_scan_even_if_row_unsettled; reset_at_end_of_pass_for_retry",
+        "pagination": "STATELESS_INTRA_INVOCATION_KEYSET_TS_ID",
+        "page_size": 100,
+        "max_pages_per_invocation": 2,
+        "fairness_bound_rows_per_invocation": 200,
+        "restart_dependency": "NONE_WITHIN_DECLARED_BOUND",
+        "beyond_bound_claim": "PREFIX_ONLY_EXPLICIT_CAP_NO_UNIVERSAL_STARVATION_CLAIM",
         "flat_can_enter_verifier_page": False,
-        "poison_row_can_permanently_block_later_rows": False,
-        "failed_row_retryable_next_pass": True,
+        "failed_row_retryable_next_invocation": True,
+        "maturity_buffer_seconds": 60,
         "observability": [
             "eligible_directional_pending_count", "oldest_eligible_directional_pending_id",
             "oldest_eligible_directional_pending_ts", "oldest_eligible_directional_pending_age_seconds",
-            "last_verify_rows_scanned", "last_verify_count", "last_verify_unresolved_proof",
-            "last_verify_unresolved_price", "last_verify_scan_cap_hit", "last_verify_cursor",
-            "last_verify_scan_pass_complete", "last_verify_no_progress_reason"
+            "last_verify_rows_scanned", "last_verify_pages_scanned", "last_verify_count",
+            "last_verify_unresolved_proof", "last_verify_unresolved_price", "last_verify_scan_cap_hit",
+            "last_verify_cursor", "last_verify_scan_pass_complete", "last_verify_restart_safe_stateless",
+            "last_verify_fairness_bound_rows", "last_verify_fairness_scope", "last_verify_no_progress_reason"
         ],
     }
     write_json(out, "aud-063-selection-contract.json", selection)
@@ -85,13 +91,19 @@ def main() -> None:
     cursor = {
         **common,
         "source_class": "DETERMINISTIC_ADVERSARIAL_SIMULATION",
+        "mechanism": "LOCAL_KEYSET_CURSOR_LIVES_ONLY_INSIDE_ONE_BOUNDED_INVOCATION",
+        "page_size": 100,
+        "max_pages_per_invocation": 2,
+        "fairness_bound_rows_per_invocation": 200,
         "cases": {
             "flat_head": {"old_flat": 125, "later_directional": 1, "post_fix_directional_seen": True},
-            "healthy_250": {"eligible": 250, "batch": 100, "pages": [100, 100, 50], "unique_visited": 250},
-            "poison_head": {"eligible": 101, "first_poison_unresolved": True, "later_row_reached": True, "poison_retryable_next_pass": True},
-            "mutation": {"first_page_removed_after_scan": True, "next_page_starts_after_saved_ts_id": True},
+            "restart_125_poison_then_healthy": {"eligible": 126, "cursor_reset_between_invocations": True, "healthy_seen_each_invocation": True},
+            "healthy_180": {"eligible": 180, "pages": [100, 80], "unique_visited": 180},
+            "over_bound_250": {"eligible": 250, "visited": 200, "scan_cap_hit": True, "fairness_scope": "RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP"},
+            "keyset": {"second_page_uses_ts_id_seek": True, "offset_pagination": False},
         },
-        "invariant": "NO_PERMANENT_STARVATION_UNDER_BOUNDED_WORK",
+        "invariant_within_bound": "RESTART_SAFE_LATER_ROWS_REACHABLE_WITHOUT_CROSS_CYCLE_MEMORY",
+        "universal_starvation_claim": False,
     }
     write_json(out, "aud-063-cursor-fairness.json", cursor)
 
@@ -99,16 +111,19 @@ def main() -> None:
         **common,
         "source_class": "SOURCE_AND_DETERMINISTIC_CANDLE_CONTRACT",
         "canonical_rule": "ONE_MINUTE_CANDLE_CONTAINING_EXACT_TARGET",
-        "containment": "candle_open_ms <= target_ms < candle_open_ms+60000",
+        "containment": "candle_open_ms <= target_ms < candle_close_ms",
+        "candle_close_identity": "candle_open_epoch_ms + candle_interval_ms",
+        "maturity_rule": "observed_at >= candle_close_epoch_ms",
+        "open_or_incomplete_candle": "INADMISSIBLE_NO_CAS",
         "windows_seconds": [900, 3600],
-        "both_windows_required_before_primary_cas": True,
+        "both_windows_required_and_mature_before_primary_cas": True,
         "same_source_as_origin_required": True,
         "allowed_public_sources": ["okx", "kraken", "gate", "mexc", "bitget"],
         "unsupported_source_fallback": None,
         "live_current_price_fallback": False,
         "external_directional_market_price_source": False,
         "equal_price_rule": "LOSS_FOR_LONG_AND_SHORT",
-        "legacy_without_historical_price_evidence": "RAW_UNVERIFIED",
+        "legacy_without_maturity_or_historical_price_evidence": "RAW_UNVERIFIED",
     }
     write_json(out, "aud-063-historical-price-contract.json", historical)
 
@@ -123,6 +138,7 @@ def main() -> None:
         "restart_after_patch": "IDEMPOTENT_NO_OVERWRITE",
         "audit_metadata_preserved": True,
         "reconciler_null_writer": False,
+        "maturity_validation_before_cas": True,
     }
     write_json(out, "aud-063-race-idempotence.json", race)
 
@@ -184,20 +200,47 @@ def main() -> None:
 
     findings = {
         **common,
-        "source_class": "AUD063_SOURCE_FORENSICS_AND_REGRESSION_EVIDENCE",
+        "source_class": "AUD063_R1_SOURCE_FORENSICS_AND_REGRESSION_EVIDENCE",
         "findings": [
-            {"id":"AUD063-F001","severity":"HIGH","status":"CLOSED","root_cause":"NULL selector ordered ts.asc limit100 without server-side direction filter; verifier skipped FLAT after fetch","evidence":"pre-fix run 31860917485 reproduced 100/100 FLAT twice and later LONG unseen","fix":"server-side LONG/SHORT filter + stable ts,id keyset","regression":"T1-T7","remaining_limitation":"production backlog intentionally not mutated"},
-            {"id":"AUD063-F002","severity":"HIGH","status":"CLOSED","root_cause":"primary verifier always fetched OKX historical candles even when origin exchange_used differed","evidence":"source trace oracle_runner._fetch_price_at_time vs persisted exchange_used","fix":"same-source historical evidence tied to origin witness; unsupported source fails closed","regression":"T8-T10,T19","remaining_limitation":"public venue historical availability may still fail, leaving row unresolved"},
-            {"id":"AUD063-F003","severity":"MEDIUM","status":"CLOSED","root_cause":"historical helper selected closest candle at/before target without explicit containment proof","evidence":"source trace","fix":"require exact 1m containing candle open<=target<open+60s and persist target/candle identity","regression":"T10","remaining_limitation":"1m candle close is the declared settlement estimator, not tick-level truth"},
-            {"id":"AUD063-F004","severity":"HIGH","status":"CLOSED_FAIL_CLOSED_LEGACY","root_cause":"proof gate did not require persisted historical source/candle identities","evidence":"legacy dual payload could qualify without per-window historical provenance","fix":"AUD063 proof requires aud063-v1 dual + both price_evidence_v1 records + same source","regression":"T19,T23","remaining_limitation":"legacy rows remain RAW_UNVERIFIED until independently reconstructible"},
-            {"id":"AUD063-F005","severity":"MEDIUM","status":"CLOSED","root_cause":"reconciler could fallback unsupported exchange to OKX","evidence":"source trace","fix":"repair-only reconciler uses exact origin source and no fallback; never NULL writer","regression":"T18","remaining_limitation":"conflicting old outcome remains unchanged and non-repaired"},
-            {"id":"AUD063-F006","severity":"MEDIUM","status":"CLOSED","root_cause":"runtime did not expose directional backlog/cursor/no-progress diagnostics","evidence":"baseline last_verify_count=0 while 57 eligible directionals existed","fix":"verifier state now exposes eligible count, oldest, scanned, unresolved, cap, cursor and no-progress reason","regression":"T25","remaining_limitation":"dashboard rendering may expose only fields already surfaced by state endpoint"},
-            {"id":"AUD063-F007","severity":"HIGH","status":"CLOSED","root_cause":"late recovery could only be causal if learning keys availability to actual persistence observation","evidence":"runtime replay already checks settlement observed epoch <= decision cutoff","fix":"new settlement writes actual observed_at; proof requires it after 1h target; tests pin earlier exclusion/later inclusion","regression":"T20-T24","remaining_limitation":"legacy rows without durable observation provenance fail authority gate"}
+            {"id":"AUD063-F001","severity":"HIGH","status":"CLOSED","fix":"server-side LONG/SHORT filter + stable ts,id keyset"},
+            {"id":"AUD063-F002","severity":"HIGH","status":"CLOSED","fix":"same-source historical evidence tied to origin witness; unsupported source fails closed"},
+            {"id":"AUD063-F003","severity":"MEDIUM","status":"CLOSED","fix":"exact 1m containing candle identity"},
+            {"id":"AUD063-F004","severity":"HIGH","status":"CLOSED_FAIL_CLOSED_LEGACY","fix":"both price evidence records required by proof gate"},
+            {"id":"AUD063-F005","severity":"MEDIUM","status":"CLOSED","fix":"reconciler repair-only; never NULL writer"},
+            {"id":"AUD063-F006","severity":"MEDIUM","status":"CLOSED","fix":"backlog/scan/no-progress observability"},
+            {"id":"AUD063-F007","severity":"HIGH","status":"CLOSED","fix":"actual persistence observation time governs causal learning"},
+            {"id":"R1-F001","severity":"HIGH","status":"CLOSED","root_cause":"containing 1m candle could be current/incomplete at evidence observation","fix":"persist candle_close_epoch_ms; writer and validator reject observed_at before candle close; 60s eligibility buffer","regression":"T28-T30"},
+            {"id":"R1-F002","severity":"MEDIUM","status":"CLOSED_BOUNDED","root_cause":"fairness cursor existed only in process memory across verifier cycles","fix":"stateless per-invocation two-page ts,id keyset traversal; restart-safe for first 200 eligible rows each invocation; explicit cap/no universal claim beyond bound","regression":"T4-T7,T31-T32"},
+            {"id":"R1-F003","severity":"MEDIUM","status":"CLOSED","root_cause":"obsolete startup resettlement read historical data then called a NULL-only CAS that could never mutate settled rows","fix":"remove obsolete resettlement loop; explicit synchronous zero-read/zero-write quarantine; reconciler remains sole settled-row repair path","regression":"T33"}
         ]
     }
     write_json(out, "aud-063-findings.json", findings)
 
-    report = f"""# AUD-063 — Settlement starvation, authority and causal-learning remediation\n\nGenerated: {GENERATED_AT}\n\n## Independent reproduction\n\nThe exact `main` implementation at `{BASE_SHA}` was executed against an in-memory PostgREST boundary before the fix. Run `{PREFIX_RUN}` reproduced the defect: two consecutive bounded selector calls returned 100/100 `FLAT`, no server-side direction predicate was present, and the later directional fixture was never returned. The separate public read-only baseline observed 388 visible rows, 347 `outcome=NULL`, 57 directional NULL rows older than one hour, and 104 older FLAT NULL rows ahead of the oldest eligible directional row.\n\n## Remediation\n\n- Directional selection is server-side, oldest-first and keyset-paginated by `(ts,id)`. Failed rows do not block later rows and become retryable after pass reset.\n- Both 15m and 1h prices must come from a one-minute candle containing the exact target on the same public exchange as the origin witness. No current-price or unsupported-source fallback is authoritative.\n- NULL settlement is one CAS writer; HTTP success without a returned changed row is a no-op. Reconciler remains repair-only for already-settled rows.\n- Authority now requires `aud063-v1` historical price evidence. Legacy rows lacking it remain RAW/UNVERIFIED.\n- Settlement availability is the actual persisted observation time. A later recovery cannot enter a replay whose decision cutoff predates that observation.\n\n## Safety\n\nNo production/database/Northflank/GitHub-settings/RUNTIME017 mutation was performed. No merge or deploy. No threshold or weight tuning. External directional activation remains off. The 57-row observed backlog is inventory evidence only; no performance or edge claim is made.\n\n## Residual limitations\n\nHistorical public one-minute candles can be unavailable or venue-limited; those rows fail closed and remain unresolved. Legacy rows lacking reconstructible source/candle provenance are intentionally excluded from authority. Production backlog recovery is code/simulation only under this order.\n"""
+    report = f"""# AUD-063-R1 — Settlement starvation remediation hardening
+
+Generated: {GENERATED_AT}
+Parent AUD-063 head: `0320f47657d4433bfc4dc3396fd0d31ffabe2270`
+
+## Preserved AUD-063 corrections
+
+Server-side LONG/SHORT filtering, stable `(ts,id)` keyset semantics, same-origin public historical evidence, both windows, NULL-only CAS, repair-only reconciler, actual recovery observation time, independent authority N, temporal learning cutoffs, symbol isolation, PAPER/live-capital locks, and external-directional OFF remain intact.
+
+## R1-F001 — closed candle maturity
+
+Historical evidence now persists `candle_close_epoch_ms` and is invalid unless `observed_at >= candle_close_epoch_ms`. The primary selector waits an additional 60 seconds beyond the one-hour horizon, and the validator independently rejects open/incomplete candles. No current ticker, nearest-candle, or alternate-venue fallback is authoritative.
+
+## R1-F002 — restart-safe bounded fairness
+
+The cross-cycle process-memory cursor was removed. Each verifier invocation starts from the oldest eligible directional row and performs at most two 100-row pages using local `(ts,id)` keyset seek. This is restart-safe for the first 200 eligible rows in every invocation. If the visible backlog exceeds 200, diagnostics explicitly report `RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP`; there is no universal no-starvation claim beyond that bound. Failed rows remain retryable because scan progress is not persisted.
+
+## R1-F003 — obsolete startup backfill quarantined
+
+The legacy startup resettlement loop was removed. Startup performs only a synchronous zero-read/zero-write quarantine marker, then reaches the primary verifier. Existing settled-row evidence repair remains exclusively in `settlement_reconciler`, which cannot create NULL->WIN/LOSS authority.
+
+## Safety
+
+No production/database/Northflank/GitHub-settings/RUNTIME017 mutation. No merge or deploy. No threshold or weight tuning. External directional activation remains off. Production backlog recovery remains unexecuted and no edge claim is made.
+"""
     (out / "../AUD-063-REPORT.md").resolve().parent.mkdir(parents=True, exist_ok=True)
     report_path = (out / "../AUD-063-REPORT.md").resolve()
     report_path.write_text(report, encoding="utf-8")

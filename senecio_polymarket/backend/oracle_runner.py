@@ -9,7 +9,7 @@ ACT XXIII changes:
   - Dual-window settlement: both outcome_15m AND outcome_1h stored in audit jsonb
   - Directional gate logic: LONG ≥50% n≥30, SHORT ≥55% n≥30, global ≥52% n≥100
   - SHORT_ONLY_PAPER_MODE flag emitted when LONG fails gate but SHORT passes
-  - Backfill routine now computes both 15m and 1h outcomes for already-settled rows
+  - Legacy startup resettlement is quarantined; settled-row repair belongs only to the reconciler
   - No live capital — paper trading only (directive 5)
 
 Responsibilities:
@@ -68,10 +68,9 @@ _state: dict[str, Any] = {
     "verified_total": 0,              # raw cross-symbol diagnostic count only
     "verified_total_diagnostic_only": True,
     "verified_total_scope": "CROSS_SYMBOL_RAW_PROOF_QUALIFIED",
-    # ACT-XXII-prereq: bogus-outcome backfill state
-    "bogus_backfill_done": False,     # set True after _backfill_bogus_outcomes() runs once
-    "bogus_backfill_count": None,     # how many rows re-settled with historical price
-    "bogus_backfill_errors": None,    # how many rows we couldn't re-settle (no historical price)
+    # AUD-063-R1: obsolete startup resettlement is an explicit zero-I/O quarantine.
+    "legacy_startup_backfill_status": "QUARANTINED_NO_READ_NO_WRITE",
+    "legacy_startup_backfill_reason": "SETTLED_ROW_REPAIR_IS_RECONCILER_ONLY",
     # AUD-057: proof-qualified directional stats and gates are symbol-scoped.
     # Any cross-symbol view is explicitly diagnostic and must never configure
     # a symbol-specific score, Kelly input, or PAPER portfolio gate.
@@ -101,6 +100,10 @@ MAX_CONCURRENT_PREDICTIONS = 1  # serialize to keep memory bounded
 WINDOW_15M_S = 900
 WINDOW_1H_S = 3600
 PRIMARY_WINDOW = "1h"   # gating source of truth per ACT XXIII directive 1
+SETTLEMENT_MATURITY_BUFFER_S = 60  # containing 1m candle must be closed before CAS
+VERIFY_PAGE_SIZE = 100
+VERIFY_MAX_PAGES = 2
+VERIFY_MAX_ROWS_PER_INVOCATION = VERIFY_PAGE_SIZE * VERIFY_MAX_PAGES
 
 
 def _normalize_symbol(value: Any) -> str:
@@ -332,7 +335,7 @@ def _outcome_for_direction(direction: str, price_now: float, price_later: float)
     return directional_outcome(direction, price_now, price_later)
 
 async def _verify_pending_outcomes() -> int:
-    """Settle one bounded, starvation-safe page of directional predictions."""
+    """Settle one bounded restart-safe keyset pass of directional predictions."""
     try:
         from . import supabase_client
         from .settlement_contract import normalize_exchange, normalize_symbol, target_epoch_ms
@@ -342,7 +345,9 @@ async def _verify_pending_outcomes() -> int:
 
     try:
         pending = await supabase_client.fetch_pending_outcomes(
-            older_than_seconds=WINDOW_1H_S, limit=100
+            older_than_seconds=WINDOW_1H_S + SETTLEMENT_MATURITY_BUFFER_S,
+            limit=VERIFY_PAGE_SIZE,
+            max_pages=VERIFY_MAX_PAGES,
         )
         scan = supabase_client.get_pending_scan_diagnostics()
     except Exception as e:
@@ -353,9 +358,13 @@ async def _verify_pending_outcomes() -> int:
     _state["oldest_eligible_directional_pending_id"] = scan.get("oldest_eligible_directional_pending_id")
     _state["oldest_eligible_directional_pending_ts"] = scan.get("oldest_eligible_directional_pending_ts")
     _state["last_verify_rows_scanned"] = scan.get("rows_scanned_last_pass", len(pending))
+    _state["last_verify_pages_scanned"] = scan.get("pages_scanned_last_pass")
     _state["last_verify_scan_cap_hit"] = bool(scan.get("scan_cap_hit"))
     _state["last_verify_cursor"] = scan.get("cursor_after")
     _state["last_verify_scan_pass_complete"] = bool(scan.get("pass_complete"))
+    _state["last_verify_restart_safe_stateless"] = bool(scan.get("restart_safe_stateless"))
+    _state["last_verify_fairness_bound_rows"] = scan.get("fairness_bound_rows_per_invocation")
+    _state["last_verify_fairness_scope"] = scan.get("fairness_scope")
     oldest_ts = scan.get("oldest_eligible_directional_pending_ts")
     try:
         oldest_dt = datetime.fromisoformat(str(oldest_ts).replace("Z", "+00:00"))
@@ -469,9 +478,9 @@ async def _verify_pending_outcomes() -> int:
     _state["last_verify_no_progress_reason"] = reason
 
     log.info(
-        "verifier aud063: scanned=%d settled=%d proof_unresolved=%d price_unresolved=%d cas=%d cap=%s",
-        len(pending), settled, unresolved_proof, unresolved_price, cas_conflicts,
-        bool(scan.get("scan_cap_hit")),
+        "verifier aud063-r1: scanned=%d pages=%s settled=%d proof_unresolved=%d price_unresolved=%d cas=%d cap=%s fairness=%s",
+        len(pending), scan.get("pages_scanned_last_pass"), settled, unresolved_proof, unresolved_price, cas_conflicts,
+        bool(scan.get("scan_cap_hit")), scan.get("fairness_scope"),
     )
     await _refresh_directional_stats()
     if settled > 0:
@@ -482,148 +491,17 @@ async def _verify_pending_outcomes() -> int:
             log.warning("forensics pipeline scheduling failed (continuing): %s", f_err)
     return settled
 
-async def _backfill_bogus_outcomes() -> int:
-    """Re-settle predictions whose outcome was computed with the buggy
-    current-price verifier (before ACT-XXII-prereq), AND upgrade them to
-    dual-window outcomes (15m + 1h) per ACT XXIII directive 1.
+def _quarantine_legacy_startup_backfill() -> None:
+    """Truthful zero-I/O quarantine for the obsolete settled-row resettlement path.
 
-    The bug: _fetch_current_price() returned the spot price AT VERIFIER RUNTIME
-    instead of the historical close at ts+15min. This meant all predictions
-    got the same price_15m_later, conflating a multi-hour trend with 15min
-    directional accuracy.
-
-    ACT XXIII upgrade: now also fetches ts+1h close and stores both outcomes
-    in audit.outcomes_dual. The primary `outcome` column is set to outcome_1h
-    (the gating source of truth per directive 1).
-
-    Triggered once on startup (when bogus_backfill_done != True).
-    Marks _state['bogus_backfill_done']=True when complete.
-
-    Returns the number of outcomes re-settled.
+    Existing WIN/LOSS evidence repair belongs exclusively to
+    ``settlement_reconciler``. The primary writer remains NULL->settled CAS-only.
+    This function intentionally performs no Supabase read, historical-price
+    request, or database write, so startup reaches the primary verifier without
+    legacy settled-row work in front of it.
     """
-    if _state.get("bogus_backfill_done"):
-        return 0
-
-    try:
-        from . import supabase_client
-    except Exception as e:
-        log.warning("supabase_client unavailable for backfill: %s", e)
-        return 0
-
-    try:
-        # Fetch ALL predictions that already have WIN/LOSS — those are the
-        # ones that may have been settled with the buggy current-price logic.
-        # We re-fetch their historical price (15m AND 1h) and recompute outcomes.
-        rows = await supabase_client.fetch_predictions(limit=500)
-        to_resettle = [
-            r for r in rows
-            if r.get("outcome") in ("WIN", "LOSS")
-            and r.get("ts")
-            and r.get("price_now")
-        ]
-    except Exception as e:
-        log.exception("backfill fetch failed: %s", e)
-        return 0
-
-    if not to_resettle:
-        log.info("backfill: no WIN/LOSS rows to re-settle")
-        _state["bogus_backfill_done"] = True
-        _state["bogus_backfill_count"] = 0
-        await _refresh_directional_stats()
-        return 0
-
-    log.info(
-        "backfill: re-settling %d outcomes with dual-window historical prices",
-        len(to_resettle),
-    )
-
-    resettled = 0
-    errors = 0
-    cache: dict[tuple[str, int, int], Optional[float]] = {}
-
-    for row in to_resettle:
-        pred_id = row.get("id")
-        sym_raw = row.get("symbol", "")
-        sym_ccxt = sym_raw[:3] + "/" + sym_raw[3:] if len(sym_raw) >= 6 else sym_raw
-        direction = (row.get("prediction") or "").upper()
-        price_now = float(row.get("price_now") or 0)
-        ts_iso = str(row.get("ts"))
-
-        try:
-            ts_dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-        except Exception as e:
-            log.warning("backfill: cannot parse ts=%s id=%s: %s", ts_iso, pred_id, e)
-            errors += 1
-            continue
-
-        # Fetch prices at both windows (cached per symbol+minute+window)
-        prices: dict[str, Optional[float]] = {}
-        for window_name, window_s in (("15m", WINDOW_15M_S), ("1h", WINDOW_1H_S)):
-            settle_dt = ts_dt + timedelta(seconds=window_s)
-            settle_minute_ms = int(settle_dt.timestamp() // 60 * 60 * 1000)
-            cache_key = (sym_ccxt, settle_minute_ms, window_s)
-            if cache_key in cache:
-                prices[window_name] = cache[cache_key]
-            else:
-                p = await _fetch_price_at_time(sym_ccxt, ts_iso, window_seconds=window_s)
-                cache[cache_key] = p
-                prices[window_name] = p
-                await asyncio.sleep(0.3)
-
-        price_15m = prices.get("15m")
-        price_1h = prices.get("1h")
-
-        if not price_15m or price_15m <= 0:
-            log.warning(
-                "backfill: no 15m price for %s id=%s, leaving as-is",
-                sym_ccxt, pred_id,
-            )
-            errors += 1
-            continue
-        if not price_1h or price_1h <= 0:
-            log.warning(
-                "backfill: no 1h price for %s id=%s, leaving as-is",
-                sym_ccxt, pred_id,
-            )
-            errors += 1
-            continue
-
-        outcome_15m = _outcome_for_direction(direction, price_now, price_15m)
-        outcome_1h = _outcome_for_direction(direction, price_now, price_1h)
-        if outcome_15m is None or outcome_1h is None:
-            continue
-
-        old_outcome = row.get("outcome")
-        ok = await supabase_client.update_outcome_dual(
-            prediction_id=pred_id,
-            outcome_15m=outcome_15m,
-            outcome_1h=outcome_1h,
-            price_15m_later=price_15m,
-            price_1h_later=price_1h,
-            primary_window=PRIMARY_WINDOW,
-        )
-        if ok:
-            resettled += 1
-            if old_outcome != outcome_1h:
-                log.info(
-                    "backfill FLIP id=%s %s %s now=$%.2f 15m=$%.2f(%s) 1h=$%.2f(%s) → primary=%s (was %s)",
-                    pred_id, sym_raw, direction, price_now, price_15m, outcome_15m,
-                    price_1h, outcome_1h, outcome_1h, old_outcome,
-                )
-        else:
-            errors += 1
-        await asyncio.sleep(0.1)
-
-    _state["bogus_backfill_done"] = True
-    _state["bogus_backfill_count"] = resettled
-    _state["bogus_backfill_errors"] = errors
-    log.info(
-        "backfill complete (dual-window): resettled=%d errors=%d (flips logged above)",
-        resettled, errors,
-    )
-    # Refresh directional stats + gates with newly settled outcomes
-    await _refresh_directional_stats()
-    return resettled
+    _state["legacy_startup_backfill_status"] = "QUARANTINED_NO_READ_NO_WRITE"
+    _state["legacy_startup_backfill_reason"] = "SETTLED_ROW_REPAIR_IS_RECONCILER_ONLY"
 
 
 async def _refresh_directional_stats() -> None:
@@ -784,14 +662,9 @@ async def _oracle_loop() -> None:
     log.info("oracle_loop waiting %ds before first cycle...", INITIAL_DELAY_S)
     await asyncio.sleep(INITIAL_DELAY_S)
 
-    # ACT-XXII-prereq: ONE-TIME backfill of bogus outcomes that were settled
-    # with current-price instead of historical price. Runs once at startup
-    # before the first prediction cycle, so the dashboard reflects correct
-    # win rates as soon as possible.
-    try:
-        await _backfill_bogus_outcomes()
-    except Exception as e:
-        log.exception("backfill error (non-fatal, continuing): %s", e)
+    # AUD-063-R1: explicit zero-I/O quarantine. No settled-row historical
+    # reads or writes are allowed to delay the first primary verifier cycle.
+    _quarantine_legacy_startup_backfill()
 
     while True:
         cycle_start = datetime.now(timezone.utc)
@@ -799,9 +672,9 @@ async def _oracle_loop() -> None:
         _state["cycles_run"] += 1
         log.info("=== oracle cycle #%d start @ %s ===", _state["cycles_run"], cycle_start.isoformat())
 
-        # ACT XXI: Verify pending outcomes BEFORE producing new predictions.
-        # This settles predictions whose 15min window elapsed in the previous cycle.
-        # First cycle after boot will backfill all 200+ accumulated predictions.
+        # Verify mature pending outcomes BEFORE producing new predictions.
+        # Work is bounded to VERIFY_MAX_ROWS_PER_INVOCATION and uses stateless
+        # intra-invocation keyset paging; no legacy settled-row backfill precedes it.
         try:
             settled = await _verify_pending_outcomes()
             if settled > 0:

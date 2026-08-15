@@ -1,23 +1,24 @@
-# AUD-063 — Settlement starvation, authority and causal-learning remediation
+# AUD-063-R1 — Settlement starvation remediation hardening
 
-Generated: 2026-08-15T03:15:00+00:00
+Generated: 2026-08-15T04:05:00+00:00
+Parent AUD-063 head: `0320f47657d4433bfc4dc3396fd0d31ffabe2270`
 
-## Independent reproduction
+## Preserved AUD-063 corrections
 
-The exact `main` implementation at `49c5f0a69609c005da80e48b585e91d8582a5ac6` was executed against an in-memory PostgREST boundary before the fix. Run `31860917485` reproduced the defect: two consecutive bounded selector calls returned 100/100 `FLAT`, no server-side direction predicate was present, and the later directional fixture was never returned. The separate public read-only baseline observed 388 visible rows, 347 `outcome=NULL`, 57 directional NULL rows older than one hour, and 104 older FLAT NULL rows ahead of the oldest eligible directional row.
+Server-side LONG/SHORT filtering, stable `(ts,id)` keyset semantics, same-origin public historical evidence, both windows, NULL-only CAS, repair-only reconciler, actual recovery observation time, independent authority N, temporal learning cutoffs, symbol isolation, PAPER/live-capital locks, and external-directional OFF remain intact.
 
-## Remediation
+## R1-F001 — closed candle maturity
 
-- Directional selection is server-side, oldest-first and keyset-paginated by `(ts,id)`. Failed rows do not block later rows and become retryable after pass reset.
-- Both 15m and 1h prices must come from a one-minute candle containing the exact target on the same public exchange as the origin witness. No current-price or unsupported-source fallback is authoritative.
-- NULL settlement is one CAS writer; HTTP success without a returned changed row is a no-op. Reconciler remains repair-only for already-settled rows.
-- Authority now requires `aud063-v1` historical price evidence. Legacy rows lacking it remain RAW/UNVERIFIED.
-- Settlement availability is the actual persisted observation time. A later recovery cannot enter a replay whose decision cutoff predates that observation.
+Historical evidence now persists `candle_close_epoch_ms` and is invalid unless `observed_at >= candle_close_epoch_ms`. The primary selector waits an additional 60 seconds beyond the one-hour horizon, and the validator independently rejects open/incomplete candles. No current ticker, nearest-candle, or alternate-venue fallback is authoritative.
+
+## R1-F002 — restart-safe bounded fairness
+
+The cross-cycle process-memory cursor was removed. Each verifier invocation starts from the oldest eligible directional row and performs at most two 100-row pages using local `(ts,id)` keyset seek. This is restart-safe for the first 200 eligible rows in every invocation. If the visible backlog exceeds 200, diagnostics explicitly report `RESTART_SAFE_PREFIX_ONLY_EXPLICIT_CAP`; there is no universal no-starvation claim beyond that bound. Failed rows remain retryable because scan progress is not persisted.
+
+## R1-F003 — obsolete startup backfill quarantined
+
+The legacy startup resettlement loop was removed. Startup performs only a synchronous zero-read/zero-write quarantine marker, then reaches the primary verifier. Existing settled-row evidence repair remains exclusively in `settlement_reconciler`, which cannot create NULL->WIN/LOSS authority.
 
 ## Safety
 
-No production/database/Northflank/GitHub-settings/RUNTIME017 mutation was performed. No merge or deploy. No threshold or weight tuning. External directional activation remains off. The 57-row observed backlog is inventory evidence only; no performance or edge claim is made.
-
-## Residual limitations
-
-Historical public one-minute candles can be unavailable or venue-limited; those rows fail closed and remain unresolved. Legacy rows lacking reconstructible source/candle provenance are intentionally excluded from authority. Production backlog recovery is code/simulation only under this order.
+No production/database/Northflank/GitHub-settings/RUNTIME017 mutation. No merge or deploy. No threshold or weight tuning. External directional activation remains off. Production backlog recovery remains unexecuted and no edge claim is made.
