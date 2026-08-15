@@ -1,0 +1,12 @@
+{
+  "activation_authorized": false,
+  "blended_shadow": "NOT_ESTIMABLE",
+  "exact_observation_timestamps_future_rows": true,
+  "external_applied": 0,
+  "horizon_mismatch_explicit": true,
+  "incremental_value": "NOT_ESTIMABLE",
+  "metric_name": "same_market_5m_resolved_label_agreement",
+  "observed_value": 0.813253,
+  "senex_1h_predictive_accuracy": false,
+  "version": "AUD-062-R1-external-truth-v1"
+}

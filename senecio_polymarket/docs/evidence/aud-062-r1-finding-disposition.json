@@ -1,0 +1,50 @@
+{
+  "all_findings_closed_or_fail_closed": true,
+  "deploy": false,
+  "external_directional_activation": 0,
+  "findings": {
+    "F001": {
+      "evidence": "single canonical EV authority; historical anchor disabled; EV NOT_ESTIMABLE",
+      "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
+    },
+    "F002": {
+      "evidence": "one survivability calculation supplies machine probability and reason",
+      "status": "CLOSED"
+    },
+    "F003": {
+      "evidence": "direct-push workflow removed; settings manifest proposed but not applied",
+      "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
+    },
+    "F004": {
+      "evidence": "future persisted-only round trip complete; legacy rows remain insufficient",
+      "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
+    },
+    "F005": {
+      "evidence": "OKX spot instruments named; account-tier/fill costs unauthoritative so tradeability false",
+      "status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"
+    },
+    "F006": {
+      "evidence": "heuristic score names plus deprecated non-calibrated aliases",
+      "status": "CLOSED"
+    },
+    "F007": {
+      "evidence": "reporting, learning mutation, and size calibration authorities separated; decision uses frozen weights",
+      "status": "CLOSED"
+    },
+    "F008": {
+      "evidence": "machine reason classes distinguish negative EV from below-dynamic-min",
+      "status": "CLOSED"
+    },
+    "F009": {
+      "evidence": "same-market agreement truthfully descriptive; blend/value-add not estimable; external_applied=0",
+      "status": "CLOSED"
+    }
+  },
+  "github_settings_applied": false,
+  "merge": false,
+  "post_hoc_weight_tuning": 0,
+  "production_mutations": 0,
+  "runtime017_mutations": 0,
+  "threshold_changes": 0,
+  "version": "AUD-062-R1-finding-disposition-v1"
+}

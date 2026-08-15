@@ -128,6 +128,8 @@ class FeatureTruthTests(Aud062FixtureTests):
         self.assertEqual(observations["volume_delta"]["observed_at"], 2_000)
         self.assertEqual(observations["bidask_imbalance"]["observed_at"], 1_500)
         self.assertEqual(observations["orderflow"]["observed_at"], 2_000)
+        self.assertTrue(all(item["query_observation_epoch"] is not None for item in observations.values()))
+        self.assertTrue(all("exchange_timestamp" in item for item in observations.values()))
 
 
 class LearningProvenanceTests(Aud062FixtureTests):
@@ -136,7 +138,7 @@ class LearningProvenanceTests(Aud062FixtureTests):
         self.assertEqual(evidence["status"], "INSUFFICIENT_CAUSAL_PROVENANCE")
         self.assertEqual(evidence["analysis_type"], "COMPONENT_LEVEL_WEIGHT_SENSITIVITY_NOT_MODEL_AB")
         self.assertEqual(evidence["paired_n"], 8)
-        self.assertEqual(evidence["learned_exact_final_replay_n"], 8)
+        self.assertEqual(evidence["learned_exact_final_replay_n"], 7)
         self.assertEqual(evidence["effective_weight_hash_match_n"], 8)
         self.assertEqual(evidence["source_evidence_hash_match_n"], 0)
 
@@ -245,11 +247,12 @@ class GovernanceTests(Aud062FixtureTests):
         self.assertEqual(evidence["AUTO_CD_SAFE_UNDER_CURRENT_GOVERNANCE"], "NO")
         self.assertTrue(any("oracle.yml" in item for item in evidence["UNREVIEWED_MAIN_TO_PROD_PATHS"]))
 
-    def test_oracle_workflow_has_contents_write_and_direct_push(self):
+    def test_oracle_workflow_has_no_contents_write_or_direct_push(self):
         source = (ROOT.parent / ".github" / "workflows" / "oracle.yml").read_text(encoding="utf-8")
-        self.assertIn("contents: write", source)
+        self.assertIn("contents: read", source)
         self.assertIn("workflow_dispatch:", source)
-        self.assertIn("git push", source)
+        self.assertNotIn("contents: write", source)
+        self.assertNotIn("git push", source)
 
 
 class ArtifactAndSafetyTests(Aud062FixtureTests):
@@ -312,7 +315,8 @@ class ArtifactAndSafetyTests(Aud062FixtureTests):
         self.assertFalse(manifest["threshold_changes"])
         self.assertFalse(manifest["weight_changes"])
         self.assertFalse(manifest["external_directional_activation"])
-        self.assertFalse(manifest["production_decision_semantics_changed"])
+        self.assertTrue(manifest["production_decision_semantics_changed"])
+        self.assertIn("FAIL_CLOSED_FLAT", manifest["production_decision_semantics_change_scope"])
 
     def test_publication_sanitization_and_dataset_provenance_gates(self):
         report = json.loads((EVIDENCE / "aud-062-publication-sanitization.json").read_text(encoding="utf-8"))

@@ -1,0 +1,199 @@
+{
+  "btc_eth_separated": {
+    "BTCUSDT": {
+      "FLAT": 174
+    },
+    "ETHUSDT": {
+      "FLAT": 174
+    }
+  },
+  "canonical_ev_shadow_distribution": {
+    "FLAT": 348,
+    "LONG": 0,
+    "SHORT": 0,
+    "fail_closed": 348,
+    "tradeable": 0
+  },
+  "cost_contribution_distribution_decimal_return": {
+    "historical_anchor_impact_diagnostic": {
+      "max": 0.0002015628,
+      "mean": 0.0002009171,
+      "median": 0.0002010299,
+      "min": 0.0002000194,
+      "n": 348
+    },
+    "historical_fee_round_trip": {
+      "max": 0.0004,
+      "mean": 0.0004,
+      "median": 0.0004,
+      "min": 0.0004,
+      "n": 348
+    },
+    "historical_slippage_round_trip": {
+      "max": 0.0002,
+      "mean": 0.0002,
+      "median": 0.0002,
+      "min": 0.0002,
+      "n": 348
+    },
+    "literal_or_semantic_double_counting_in_r1": false,
+    "r1_authoritative_cost": "NOT_ESTIMABLE"
+  },
+  "decision_changes": {
+    "by_exact_cause": {
+      "COST_MODEL_NOT_AUTHORITATIVE": 95
+    },
+    "total": 95
+  },
+  "external_shadow_horizons": {
+    "aligned_rows": 0,
+    "blended_shadow": "NOT_ESTIMABLE",
+    "boros": "FUNDING_PRODUCT_AND_HORIZON_MISMATCH",
+    "external_applied": 0,
+    "kalshi": "15m_MISMATCH",
+    "mismatched_rows": 668,
+    "polymarket": "5m_MISMATCH"
+  },
+  "feature_availability_missingness": {
+    "classification_counts": {
+      "LEGACY|BTCUSDT|bidask_imbalance": {
+        "REAL_NONZERO": 170
+      },
+      "LEGACY|BTCUSDT|funding_signal": {
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+      },
+      "LEGACY|BTCUSDT|oi_momentum": {
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+      },
+      "LEGACY|BTCUSDT|orderflow": {
+        "REAL_NONZERO": 170
+      },
+      "LEGACY|BTCUSDT|price_momentum": {
+        "REAL_NONZERO": 168,
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 2
+      },
+      "LEGACY|BTCUSDT|volume_delta": {
+        "REAL_NONZERO": 170
+      },
+      "LEGACY|ETHUSDT|bidask_imbalance": {
+        "REAL_NONZERO": 170
+      },
+      "LEGACY|ETHUSDT|funding_signal": {
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+      },
+      "LEGACY|ETHUSDT|oi_momentum": {
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 170
+      },
+      "LEGACY|ETHUSDT|orderflow": {
+        "REAL_NONZERO": 170
+      },
+      "LEGACY|ETHUSDT|price_momentum": {
+        "REAL_NONZERO": 169,
+        "UNKNOWN_LEGACY_ZERO_CONFLATED": 1
+      },
+      "LEGACY|ETHUSDT|volume_delta": {
+        "REAL_NONZERO": 170
+      },
+      "POST_AUD061|BTCUSDT|bidask_imbalance": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|BTCUSDT|funding_signal": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|BTCUSDT|oi_momentum": {
+        "MISSING": 1,
+        "REAL_NONZERO": 3
+      },
+      "POST_AUD061|BTCUSDT|orderflow": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|BTCUSDT|price_momentum": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|BTCUSDT|volume_delta": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|ETHUSDT|bidask_imbalance": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|ETHUSDT|funding_signal": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|ETHUSDT|oi_momentum": {
+        "MISSING": 1,
+        "REAL_NONZERO": 3
+      },
+      "POST_AUD061|ETHUSDT|orderflow": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|ETHUSDT|price_momentum": {
+        "REAL_NONZERO": 4
+      },
+      "POST_AUD061|ETHUSDT|volume_delta": {
+        "REAL_NONZERO": 4
+      }
+    },
+    "legacy_provenance_complete": false,
+    "masked_row_count": 2
+  },
+  "historical_distribution": {
+    "flat_n": 253,
+    "flat_rate": 0.727011,
+    "long_n": 47,
+    "n": 348,
+    "short_n": 48
+  },
+  "historical_first_binding_gates": {
+    "EV_BELOW_DYNAMIC_MIN": 22,
+    "EV_NEGATIVE": 148,
+    "NO_DIRECTIONAL_SIGNAL": 16,
+    "OTHER_EXPLICIT": 39,
+    "REGIME_REJECT": 28
+  },
+  "historical_long_short_flat_separated": {
+    "FLAT": {
+      "FLAT": 253
+    },
+    "LONG": {
+      "FLAT": 47
+    },
+    "SHORT": {
+      "FLAT": 48
+    }
+  },
+  "learning_frozen_vs_shadow_learned": {
+    "historical_decision_changes": null,
+    "historical_paired_n": 8,
+    "r1_decision_weights": "FROZEN_BASE_ONLY",
+    "r1_learned_weights": "SHADOW_ONLY"
+  },
+  "pre_post_aud061_separated": {
+    "POST_AUD061": {
+      "FLAT": 8
+    },
+    "PRE_AUD061": {
+      "FLAT": 340
+    }
+  },
+  "risk_contribution_distribution": {
+    "historical_core_risk_score": {
+      "max": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "min": 0.0,
+      "n": 348
+    },
+    "historical_survival_discount": {
+      "max": 1.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "min": 1.0,
+      "n": 348
+    },
+    "r1_threshold_change": false
+  },
+  "row_count": 348,
+  "same_sample_win_rate_or_edge_claim": false,
+  "untouched_temporal_oos_edge_evidence": "ABSENT",
+  "version": "AUD-062-R1-behavior-summary-v1"
+}

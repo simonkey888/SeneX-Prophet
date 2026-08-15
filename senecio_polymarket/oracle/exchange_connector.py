@@ -2351,9 +2351,11 @@ DEFAULT_FALLBACK_CHAIN = ["okx", "kraken", "gate", "mexc", "bitget"]
 def build_feature_observations(
     *, exchange: str, ohlcv: list | None, orderbook: dict | None,
     funding: dict | None, open_interest: dict | None,
-    fallback_used: bool = False,
+    fallback_used: bool = False, instrument: str | None = None,
+    query_observation_epoch: float | None = None,
 ) -> dict:
     """Describe the six predictor inputs without conflating absence with zero."""
+    query_observation_epoch = float(query_observation_epoch if query_observation_epoch is not None else time.time())
     def observed(value: float) -> str:
         return "REAL_OBSERVED_ZERO" if abs(float(value)) <= 1e-12 else "REAL_NONZERO"
 
@@ -2377,6 +2379,8 @@ def build_feature_observations(
             "status": status, "source": source,
             "transport_status": transport, "fallback_value": fallback,
             "observed_value": observed_value, "observed_at": observed_at,
+            "exchange_timestamp": observed_at,
+            "query_observation_epoch": query_observation_epoch,
             "instrument": instrument, "market_type": market_type,
         }
 
@@ -2401,16 +2405,19 @@ def build_feature_observations(
             observed(price_momentum) if candles_ok else "MISSING",
             f"{exchange}:ohlcv", None if candles_ok else 0.0,
             observed_at=candle_observed_at,
+            instrument=instrument, market_type="SPOT_OBSERVATION",
         ),
         "volume_delta": item(
             observed(volume_delta) if candles_ok else "MISSING",
             f"{exchange}:ohlcv", None if candles_ok else 0.0,
             observed_at=candle_observed_at,
+            instrument=instrument, market_type="SPOT_OBSERVATION",
         ),
         "bidask_imbalance": item(
             observed(imbalance) if book_ok else "MISSING",
             f"{exchange}:orderbook", None if book_ok else 0.0,
             observed_at=book_observed_at if book_ok else None,
+            instrument=instrument, market_type="SPOT_OBSERVATION",
         ),
         "orderflow": item(
             observed(imbalance * (1.0 + abs(volume_delta))) if book_ok and candles_ok else "MISSING",
@@ -2420,6 +2427,7 @@ def build_feature_observations(
                 if candle_observed_at is not None and book_observed_at is not None
                 else None
             ),
+            instrument=instrument, market_type="SPOT_OBSERVATION",
         ),
         "funding_signal": item(
             observed(funding_signal) if funding_ok else unavailable,
@@ -2579,6 +2587,8 @@ def fetch_market_snapshot_with_fallback(
                     funding=funding,
                     open_interest=oi,
                     fallback_used=exchange_index > 0,
+                    instrument=symbol,
+                    query_observation_epoch=time.time(),
                 ),
             }
 

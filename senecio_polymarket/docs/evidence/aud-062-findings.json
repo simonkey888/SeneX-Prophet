@@ -3,7 +3,7 @@
     "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
     "RAW_OR_DERIVED": "DERIVED",
     "ROW_COUNT": 9,
-    "SHA256": "7f5fb7b62a77c1b748635a0215b68096d1e1518038f25e90f14fe1b1e17988da",
+    "SHA256": "7da37b78ff21037bee1354b6200774344341b8b42bb3e4f15adbbda975abd571",
     "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
     "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
     "TRANSFORMATION": "MATERIAL_FINDING_CLASSIFICATION",
@@ -138,9 +138,10 @@
           "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
         },
         "learning": {
-          "decision_semantics_changed": false,
+          "decision_semantics_changed": true,
+          "decision_semantics_scope": "LEARNED_WEIGHTS_SHADOW_ONLY_AND_FROZEN_BASE_WEIGHTS_FOR_PAPER_DECISIONS",
           "historical_rows_unchanged": true,
-          "new_field": "decision_replay_v1.learning_source_settlement_observation_epochs",
+          "new_field": "decision_provenance_roundtrip_v2.learning_source_settlement_observation_epochs",
           "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
         }
       },

@@ -13,11 +13,12 @@ concurrency:
 
 jobs:
   forensic-gates:
+    name: AUD_EXACT_HEAD_GATE
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout exact candidate head
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -37,7 +38,7 @@ jobs:
           test "$(git merge-base "$EXPECTED_BASE" HEAD)" = "$EXPECTED_BASE"
           git diff --name-only "$EXPECTED_BASE"...HEAD > /tmp/aud062-changed-paths.txt
           test -s /tmp/aud062-changed-paths.txt
-          if grep -Eiv '^(.github/workflows/aud-062-forensics\.yml|senecio_polymarket/(backend/research/aud062_forensics\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/test_aud_062\.py|docs/AUD-062-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
+          if grep -Eiv '^(.github/workflows/(aud-062-forensics|oracle)\.yml|senecio_polymarket/(backend/research/aud062_(forensics|r1_contracts)\.py|scripts/(run_aud062|aud062_publication_scan)\.py|tests/(test_aud_062(_r1)?|test_aud_061|test_authoritative_learning)\.py|docs/AUD-062(-R1)?-REPORT\.md|docs/evidence/aud-062-[^/]+\.(json|csv)|docs/evidence/aud062-public-inputs\.json\.gz|oracle/(institutional_core|survivability|exchange_connector)\.py|oracle_runtime/(institutional_core|institutional_core_real|predict_only)\.py))$' /tmp/aud062-changed-paths.txt; then
             echo 'AUD-062 scope violation'
             exit 1
           fi
@@ -47,7 +48,6 @@ jobs:
           fi
           git diff --exit-code "$EXPECTED_BASE" -- \
             senecio_polymarket/oracle/institutional_core.py \
-            senecio_polymarket/oracle_runtime/institutional_core_real.py \
             senecio_polymarket/backend/main_real.py \
             senecio_polymarket/backend/oracle_runner.py \
             senecio_polymarket/backend/portfolio \
@@ -71,7 +71,7 @@ jobs:
           fi
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: pip
@@ -89,6 +89,10 @@ jobs:
       - name: AUD-062 deterministic regression and forensic tests
         working-directory: senecio_polymarket
         run: python -m unittest tests.test_aud_062 -v 2>&1 | tee /tmp/aud062-tests.log
+
+      - name: AUD-062-R1 focused finding regression tests
+        working-directory: senecio_polymarket
+        run: python -m unittest tests.test_aud_062_r1 -v 2>&1 | tee /tmp/aud062-r1-tests.log
 
       - name: Full repository regression with nonzero discovery proof
         working-directory: senecio_polymarket
@@ -115,6 +119,31 @@ jobs:
           done
           sha256sum "$left"/aud-062-* > /tmp/aud062-artifact-sha256.txt
 
+      - name: YAML parse and immutable action pin gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import yaml
+          workflows = [Path('.github/workflows/aud-062-forensics.yml'), Path('.github/workflows/oracle.yml')]
+          def action_refs(value):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      if key == 'uses' and isinstance(item, str):
+                          yield item
+                      yield from action_refs(item)
+              elif isinstance(value, list):
+                  for item in value:
+                      yield from action_refs(item)
+          for path in workflows:
+              payload = yaml.safe_load(path.read_text(encoding='utf-8'))
+              for ref in action_refs(payload):
+                  assert '@' in ref, (path, ref)
+                  assert re.fullmatch(r'[0-9a-f]{40}', ref.rsplit('@', 1)[1]), (path, ref)
+          PY
+          ! grep -Eq 'contents:[[:space:]]*write|git[[:space:]]+push' .github/workflows/oracle.yml
+
       - name: No secret no mutation and safety-lock gates
         working-directory: senecio_polymarket
         shell: bash
@@ -133,7 +162,8 @@ jobs:
           assert manifest['threshold_changes'] is False
           assert manifest['weight_changes'] is False
           assert manifest['external_directional_activation'] is False
-          assert manifest['production_decision_semantics_changed'] is False
+          assert manifest['production_decision_semantics_changed'] is True
+          assert manifest['production_decision_semantics_change_scope'] == 'PAPER_DIRECTIONAL_CANDIDATES_FAIL_CLOSED_FLAT_WHILE_CANONICAL_EV_AND_COST_AUTHORITY_ARE_NOT_ESTIMABLE'
           external = json.loads((root / 'aud-062-external-shadow-ledger.json').read_text())
           assert all(row['external_applied'] == 0 for row in external['ledger'])
           assert all(row['external_applied'] == 0 for row in external['kalshi_ledger'])
@@ -149,7 +179,7 @@ jobs:
           PY
 
       - name: Upload exact-head forensic evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: aud-062-${{ github.event.pull_request.head.sha }}
           if-no-files-found: error

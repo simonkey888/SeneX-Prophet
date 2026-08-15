@@ -67,7 +67,9 @@ class LearningCausalityTests(unittest.TestCase):
         self.assertEqual(state["proof_qualified_raw_available_before_decision"], 10)
         self.assertEqual(state["proof_qualified_n"], 3)
         self.assertEqual(state["authority_cohort"], "INDEPENDENT_NONOVERLAP_1H")
-        self.assertEqual(state["status"], "WARMUP")
+        self.assertEqual(state["status"], "WARMUP_SHADOW_ONLY")
+        self.assertEqual(state["learning_mutation_authority"], "SHADOW_ONLY")
+        self.assertEqual(state["size_calibration_authority"], "FROZEN_BASE_ONLY")
 
     def test_current_row_and_unsettled_horizon_cannot_influence_itself(self):
         rows = [proof_row(i) for i in range(1, 12)]

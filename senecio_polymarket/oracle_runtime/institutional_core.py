@@ -28,7 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
+from backend.research.aud062_r1_contracts import (
+    attach_truthful_score_semantics,
+    canonical_ev_contract,
+    enrich_action_reason,
+)
 
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
@@ -52,7 +56,7 @@ for _name in dir(_original):
 
 OriginalSingleDecisionCore = _original.SingleDecisionCore
 
-LEARNING_VERSION = "proof-qualified-replay-v4-aud061-r1"
+LEARNING_VERSION = "proof-qualified-shadow-replay-v5-aud062-r1"
 MIN_LEARNING_EXAMPLES = 10
 MAX_LEARNING_EXAMPLES = 50
 FETCH_LIMIT = 240
@@ -192,6 +196,8 @@ def fetch_authoritative_rows(symbol: str) -> list[dict[str, Any]]:
     The response is still only a candidate set. Strict proof qualification is
     applied locally before any row can influence a weight.
     """
+    import httpx
+
     normalized = _normalize_symbol(symbol)
     if not normalized:
         return []
@@ -386,8 +392,18 @@ def replay_authoritative_learning(
         "effective_weights": _weights_payload(core.weights),
         "effective_weights_hash": effective_weights_hash(core.weights),
         "mutations": 0,
+        "reporting_authority": "INSUFFICIENT_EVIDENCE",
+        "learning_mutation_authority": "SHADOW_ONLY",
+        "size_calibration_authority": "FROZEN_BASE_ONLY",
+        "production_learning_mutation_enabled": False,
     }
     if len(qualified) < MIN_LEARNING_EXAMPLES:
+        _reset_replay_state(core)
+        state["status"] = "WARMUP_SHADOW_ONLY"
+        state["decision_weights"] = _weights_payload(core.weights)
+        state["decision_weights_hash"] = effective_weights_hash(core.weights)
+        state["effective_weights"] = _weights_payload(core.weights)
+        state["effective_weights_hash"] = effective_weights_hash(core.weights)
         return state
 
     learning_rate = float(getattr(core, "learning_rate", 0.03))
@@ -445,10 +461,27 @@ def replay_authoritative_learning(
                 core.weights[weight_name] = new
                 mutations += 1
 
-    state["status"] = "ACTIVE"
-    state["mutations"] = mutations
+    shadow_weights = _weights_payload(core.weights)
+    shadow_weights_hash = effective_weights_hash(core.weights)
+    _reset_replay_state(core)
+    state["status"] = "SHADOW_ONLY_FAIL_CLOSED"
+    state["shadow_mutations"] = mutations
+    state["mutations"] = 0
+    state["shadow_weights"] = shadow_weights
+    state["shadow_weights_hash"] = shadow_weights_hash
+    state["decision_weights"] = _weights_payload(core.weights)
+    state["decision_weights_hash"] = effective_weights_hash(core.weights)
     state["effective_weights"] = _weights_payload(core.weights)
     state["effective_weights_hash"] = effective_weights_hash(core.weights)
+    state["activation_contract"] = {
+        "status": "NOT_PREREGISTERED",
+        "independent_nonoverlap_cohort": "REQUIRED",
+        "minimum_evidence_contract": "MUST_BE_DEFINED_BEFORE_FUTURE_OUTCOMES",
+        "temporal_cutoff": "MUST_BE_DEFINED_BEFORE_FUTURE_OUTCOMES",
+        "same_row_self_leakage": "PROHIBITED",
+        "calibration_learning_cohort_separation": "REQUIRED",
+        "rollback": "FROZEN_BASE_WEIGHTS",
+    }
     return state
 
 
@@ -481,21 +514,82 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         The frozen core continues to make the complete risk decision. This
         bridge adds only the machine field corresponding to ``surv_reason``.
         """
-        result = super().filter_risk(features, risk_state)
+        captured: dict[str, Any] = {}
+        survivability = self.survivability
+        original = getattr(survivability, "should_reduce_risk", None)
+        if callable(original):
+            def capture_once(*args: Any, **kwargs: Any) -> dict[str, Any]:
+                value = original(*args, **kwargs)
+                captured.clear()
+                if isinstance(value, dict):
+                    captured.update(value)
+                return value
+
+            survivability.should_reduce_risk = capture_once
+        try:
+            result = super().filter_risk(features, risk_state)
+        finally:
+            if callable(original):
+                survivability.should_reduce_risk = original
         if not isinstance(result, dict) or "surv_reason" not in result:
             return result
         survivability_ruin_prob = None
-        if self.survivability is not None:
-            check = self.survivability.should_reduce_risk(n_trades=100)
-            raw_probability = check.get("ruin_prob")
-            if isinstance(raw_probability, (int, float)):
-                survivability_ruin_prob = _clamp(float(raw_probability), 0.0, 1.0)
+        raw_probability = captured.get("ruin_prob")
+        if isinstance(raw_probability, (int, float)):
+            survivability_ruin_prob = _clamp(float(raw_probability), 0.0, 1.0)
         enriched = dict(result)
+        if captured.get("reason") is not None:
+            enriched["surv_reason"] = captured["reason"]
         enriched["survivability_ruin_prob"] = (
             round(survivability_ruin_prob, 6)
             if survivability_ruin_prob is not None else None
         )
+        enriched["ruin_probability_semantics_v1"] = {
+            "core_ruin_prob": "CORE_DRAWDOWN_VAR_STREAK_RISK_STATE",
+            "survivability_ruin_prob": "SURVIVABILITY_MODULE_PRIOR_OR_EMPIRICAL_ESTIMATE",
+            "same_semantics": False,
+            "survivability_reason_and_machine_field_same_calculation": True,
+        }
         return enriched
+
+    def compute_ev(
+        self,
+        features: dict,
+        risk_filter: dict,
+        market_state: dict,
+        slippage_bps: float = 12.0,
+        ohlcv: list | None = None,
+    ) -> dict:
+        """Demote both historical EV branches and enforce the R1 authority lock."""
+        historical = super().compute_ev(
+            features,
+            risk_filter,
+            market_state,
+            slippage_bps=slippage_bps,
+            ohlcv=ohlcv,
+        )
+        result = dict(historical)
+        result["historical_adjusted_ev"] = historical.get("adjusted_ev")
+        result["historical_tradeable"] = historical.get("tradeable")
+        base_ev = historical.get("base_ev")
+        survival_discount = historical.get("survival_discount")
+        result["core_survival_ev"] = (
+            round(float(base_ev) * float(survival_discount), 8)
+            if isinstance(base_ev, (int, float))
+            and isinstance(survival_discount, (int, float))
+            else None
+        )
+        result["market_anchor_ev"] = None
+        result["parallel_market_anchor_decision_authority"] = False
+        result["canonical_ev_v1"] = canonical_ev_contract(
+            market_state.get("symbol"), features, risk_filter, historical
+        )
+        result["tradeable"] = False
+        result["canonical_tradeable"] = False
+        result["fail_closed_reason"] = "COST_MODEL_NOT_AUTHORITATIVE"
+        result["threshold_changed"] = False
+        result["edge_claimed"] = False
+        return result
 
     def produce_action(
         self,
@@ -505,24 +599,13 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
         feasibility: dict,
         market_state: dict,
     ) -> dict:
-        """Correct an EV-rejection label without changing its HOLD decision."""
+        """Serialize one reproducible first binding gate for every candidate."""
         result = super().produce_action(
             features, risk_filter, ev_result, feasibility, market_state
         )
-        if (
-            isinstance(result, dict)
-            and result.get("action") == "HOLD"
-            and not ev_result.get("tradeable", False)
-            and str(result.get("reason") or "").startswith("negative_ev:")
-        ):
-            truthful = dict(result)
-            truthful["reason"] = (
-                "ev_below_dynamic_min: "
-                f"adjusted_ev={ev_result['adjusted_ev']:.8f} "
-                f"<= dynamic_min_ev={ev_result['dynamic_min_ev']:.8f}"
-            )
-            return truthful
-        return result
+        if not isinstance(result, dict):
+            return result
+        return enrich_action_reason(result, features, risk_filter, ev_result, feasibility)
 
     def _load_learning_for_symbol(self, symbol: str, decision_cutoff: Any | None = None) -> None:
         normalized = _normalize_symbol(symbol)
@@ -689,11 +772,14 @@ class SingleDecisionCore(OriginalSingleDecisionCore):
                 "missing_excluded_from_agreement_denominator": True,
             },
         })
-        return features
+        return attach_truthful_score_semantics(features)
 
     def decide(self, market: dict, risk_state: dict, execution_state: dict) -> dict:
         # Learning snapshot is loaded before the prediction decision.
-        self._load_learning_for_symbol(str(market.get("symbol") or ""))
+        self._load_learning_for_symbol(
+            str(market.get("symbol") or ""),
+            decision_cutoff=market.get("timestamp", market.get("candle_ts")),
+        )
         action_vector = super().decide(market, risk_state, execution_state)
         pipeline = action_vector.setdefault("pipeline", {})
         step2 = pipeline.setdefault("step2_features", {})

@@ -1,0 +1,113 @@
+{
+  "contracts": {
+    "BTCUSDT": {
+      "base_currency": "BTC",
+      "cost_model_authority": "COST_MODEL_NOT_AUTHORITATIVE",
+      "decision_horizon": "1h",
+      "execution_mode": "PAPER_ONLY",
+      "fee": {
+        "historical_literal_0_0002_per_side_authoritative": false,
+        "primary_source": "https://www.okx.com/help/trading-fee-rules-faq",
+        "round_trip_convention": "entry_plus_exit",
+        "source_version_observed_at": "2026-08-14",
+        "status": "NOT_AUTHORITATIVE_ACCOUNT_TIER_AND_ORDER_TYPE_UNKNOWN",
+        "unit": "decimal_return_per_side"
+      },
+      "instrument_contract": "OKX:BTC-USDT:SPOT:PAPER:1H",
+      "instrument_id": "BTC-USDT",
+      "instrument_type": "SPOT",
+      "live_capital_locked": true,
+      "maker_taker_interpretation": "UNRESOLVED_ORDER_TYPE",
+      "market_impact": {
+        "status": "NOT_AUTHORITATIVE_DEFAULT_DEPTH_500000_IS_DIAGNOSTIC_ONLY",
+        "unit": "decimal_return_per_side"
+      },
+      "order_book_depth": {
+        "primary_source": "https://www.okx.com/docs-v5/en/",
+        "status": "REQUIRES_TIMESTAMPED_LEVELS_AND_PAPER_SIZE",
+        "unit": "base_and_quote_quantity_by_price_level"
+      },
+      "orders_enabled": false,
+      "quote_currency": "USDT",
+      "slippage": {
+        "historical_runtime_source": "max(1bp, observed_spread_bps/2)",
+        "status": "NOT_AUTHORITATIVE_NO_PREREGISTERED_FILL_MODEL",
+        "unit": "decimal_return_per_side"
+      },
+      "spread": {
+        "primary_source": "https://www.okx.com/docs-v5/en/",
+        "source": "OKX_PUBLIC_ORDER_BOOK_FOR_EXACT_INSTRUMENT",
+        "status": "REQUIRES_DECISION_TIME_INSTRUMENT_ORDER_BOOK",
+        "unit": "decimal_return_one_way"
+      },
+      "symbol": "BTCUSDT",
+      "tradeable": false,
+      "unit_conversions": {
+        "bps_to_decimal_formula": "bps / 10000",
+        "one_basis_point_decimal_return": 0.0001,
+        "one_percent_decimal_return": 0.01
+      },
+      "version": "aud-062-r1-canonical-paper-ev-v1"
+    },
+    "ETHUSDT": {
+      "base_currency": "ETH",
+      "cost_model_authority": "COST_MODEL_NOT_AUTHORITATIVE",
+      "decision_horizon": "1h",
+      "execution_mode": "PAPER_ONLY",
+      "fee": {
+        "historical_literal_0_0002_per_side_authoritative": false,
+        "primary_source": "https://www.okx.com/help/trading-fee-rules-faq",
+        "round_trip_convention": "entry_plus_exit",
+        "source_version_observed_at": "2026-08-14",
+        "status": "NOT_AUTHORITATIVE_ACCOUNT_TIER_AND_ORDER_TYPE_UNKNOWN",
+        "unit": "decimal_return_per_side"
+      },
+      "instrument_contract": "OKX:ETH-USDT:SPOT:PAPER:1H",
+      "instrument_id": "ETH-USDT",
+      "instrument_type": "SPOT",
+      "live_capital_locked": true,
+      "maker_taker_interpretation": "UNRESOLVED_ORDER_TYPE",
+      "market_impact": {
+        "status": "NOT_AUTHORITATIVE_DEFAULT_DEPTH_500000_IS_DIAGNOSTIC_ONLY",
+        "unit": "decimal_return_per_side"
+      },
+      "order_book_depth": {
+        "primary_source": "https://www.okx.com/docs-v5/en/",
+        "status": "REQUIRES_TIMESTAMPED_LEVELS_AND_PAPER_SIZE",
+        "unit": "base_and_quote_quantity_by_price_level"
+      },
+      "orders_enabled": false,
+      "quote_currency": "USDT",
+      "slippage": {
+        "historical_runtime_source": "max(1bp, observed_spread_bps/2)",
+        "status": "NOT_AUTHORITATIVE_NO_PREREGISTERED_FILL_MODEL",
+        "unit": "decimal_return_per_side"
+      },
+      "spread": {
+        "primary_source": "https://www.okx.com/docs-v5/en/",
+        "source": "OKX_PUBLIC_ORDER_BOOK_FOR_EXACT_INSTRUMENT",
+        "status": "REQUIRES_DECISION_TIME_INSTRUMENT_ORDER_BOOK",
+        "unit": "decimal_return_one_way"
+      },
+      "symbol": "ETHUSDT",
+      "tradeable": false,
+      "unit_conversions": {
+        "bps_to_decimal_formula": "bps / 10000",
+        "one_basis_point_decimal_return": 0.0001,
+        "one_percent_decimal_return": 0.01
+      },
+      "version": "aud-062-r1-canonical-paper-ev-v1"
+    }
+  },
+  "double_counting": {
+    "authoritative_cost_terms_applied": 0,
+    "reason": "cost authority is fail-closed rather than estimated from convenient constants",
+    "status": "PASS"
+  },
+  "one_bp_fixture": {
+    "basis_points": 1,
+    "decimal_return": 0.0001,
+    "pass": true
+  },
+  "version": "AUD-062-R1-instrument-cost-contract-v1"
+}

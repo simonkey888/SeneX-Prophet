@@ -1,0 +1,74 @@
+{
+  "fixture": {
+    "code_hash": "4a1933b06cf695fcff4acaba1fdbaa7f10ce109d3c7f57bbf62f6bb572658de8",
+    "config_hash": "48882ab48bfdf3bef2fe65e3304e91ccfd8f74e357c183367ad6fe903fe0e697",
+    "decision_time": "2026-08-14T00:00:00+00:00",
+    "decision_weights_hash": "88f00ef1097e66f79379d498dbc05a060255ad71b626b5ab867c555252ecfbb4",
+    "external_observations": [
+      {
+        "directional_use": false,
+        "observed_at": "2026-08-14T00:00:00+00:00",
+        "source": "polymarket",
+        "source_identity": "POLYMARKET_PUBLIC",
+        "status": "OK"
+      },
+      {
+        "directional_use": false,
+        "observed_at": "2026-08-14T00:00:00+00:00",
+        "source": "kalshi",
+        "source_identity": "KALSHI_PUBLIC_REST",
+        "status": "OK"
+      },
+      {
+        "directional_use": false,
+        "observed_at": "2026-08-14T00:00:00+00:00",
+        "source": "boros",
+        "source_identity": "BOROS_PUBLIC_API",
+        "status": "OK"
+      }
+    ],
+    "feature_observations": [
+      {
+        "exchange_timestamp": null,
+        "feature": "funding_signal",
+        "observed_at": null,
+        "query_observation_epoch": 1786665600.0,
+        "source_identity": "not_applicable_spot",
+        "status": "MISSING"
+      },
+      {
+        "exchange_timestamp": 1786665600000,
+        "feature": "price_momentum",
+        "observed_at": "2026-08-14T00:00:00+00:00",
+        "query_observation_epoch": 1786665600.0,
+        "source_identity": "okx:BTC-USDT:ohlcv",
+        "status": "REAL_NONZERO"
+      }
+    ],
+    "learning_evidence_hash": "1205bade1d24755802a9e9653fbc571d11e828a396046786e55b80651990b4ba",
+    "learning_source_prediction_ids": [
+      "fixture-prior-1"
+    ],
+    "learning_source_settlement_observation_epochs": [
+      {
+        "observed_at_epoch": 1786662000.0,
+        "prediction_id": "fixture-prior-1"
+      }
+    ],
+    "legacy_timestamp_invention": false,
+    "market_snapshot_identity": "5f257b37ef3325a6879510efef20fcab7bb5d33cd3d2dc6585cf7c20ad9e86da",
+    "shadow_weights_hash": "0145f173077cedcaf0a459c76634405f763f741a450f6d26f40d8c1336f632d0",
+    "source_evidence_hash": "09dd93f99743aa7295961e8bb21e4aa242416587f12c62e132dcdeeb16f92e6a",
+    "version": "decision-provenance-roundtrip-v2"
+  },
+  "invented_timestamps": 0,
+  "legacy_rows": "INSUFFICIENT_CAUSAL_PROVENANCE",
+  "persisted_json_reload_check": {
+    "feature_observation_cutoff_classification": "COMPLETE",
+    "hash_matches": true,
+    "learning_hash_present": true,
+    "market_snapshot_identity_present": true,
+    "source_evidence_hash": "09dd93f99743aa7295961e8bb21e4aa242416587f12c62e132dcdeeb16f92e6a"
+  },
+  "version": "AUD-062-R1-provenance-roundtrip-v1"
+}

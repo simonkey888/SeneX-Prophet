@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from oracle_runtime import institutional_core_real as _learning_core
+from backend.research.aud062_r1_contracts import feature_provenance_contract
 
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
@@ -47,14 +48,14 @@ for _name in dir(_base):
 
 
 def _poly_snapshot_for_prediction() -> dict[str, Any]:
+    observed_at = datetime.now(timezone.utc).isoformat()
     try:
         from backend.polymarket_market_adapter import get_polymarket_snapshot
         raw = get_polymarket_snapshot()
     except Exception:
-        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
+        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "observed_at": observed_at, "eligible_for_prediction": False}
     if not isinstance(raw, dict):
-        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "eligible_for_prediction": False}
-    observed_at = datetime.now(timezone.utc).isoformat()
+        return {"source": "POLYMARKET_PUBLIC", "status": "UNAVAILABLE", "observed_at": observed_at, "eligible_for_prediction": False}
     market = raw.get("market") if isinstance(raw.get("market"), dict) else {}
     up = raw.get("up") if isinstance(raw.get("up"), dict) else {}
     down = raw.get("down") if isinstance(raw.get("down"), dict) else {}
@@ -92,14 +93,14 @@ def _poly_snapshot_for_prediction() -> dict[str, Any]:
 
 
 def _kalshi_snapshot_for_audit() -> dict[str, Any]:
+    observed_at = datetime.now(timezone.utc).isoformat()
     try:
         from backend.kalshi_market_adapter import get_kalshi_snapshot
         raw = get_kalshi_snapshot()
     except Exception:
-        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
+        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "observed_at": observed_at, "directional_use": False}
     if not isinstance(raw, dict):
-        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "directional_use": False}
-    observed_at = datetime.now(timezone.utc).isoformat()
+        return {"source": "KALSHI_PUBLIC_REST", "status": "UNAVAILABLE", "observed_at": observed_at, "directional_use": False}
     return {
         "source": "KALSHI_PUBLIC_REST",
         "version": "kalshi-btc-15m-context-v1",
@@ -115,14 +116,14 @@ def _kalshi_snapshot_for_audit() -> dict[str, Any]:
 
 
 def _boros_snapshot_for_audit() -> dict[str, Any]:
+    observed_at = datetime.now(timezone.utc).isoformat()
     try:
         from backend.boros_market_adapter import get_boros_snapshot
         raw = get_boros_snapshot()
     except Exception:
-        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
+        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "observed_at": observed_at, "directional_use": False}
     if not isinstance(raw, dict):
-        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "directional_use": False}
-    observed_at = datetime.now(timezone.utc).isoformat()
+        return {"source": "BOROS_PUBLIC_API", "status": "UNAVAILABLE", "observed_at": observed_at, "directional_use": False}
     markets = raw.get("markets") if isinstance(raw.get("markets"), list) else []
     return {
         "source": "BOROS_PUBLIC_API",
@@ -151,6 +152,7 @@ def _decision_replay_snapshot(market: dict[str, Any], result: dict[str, Any]) ->
             "symbol", "timeframe", "ticker", "orderbook", "funding",
             "open_interest", "timestamp", "candle_ts", "liquidity_quality",
             "exchange_used", "feature_observations", "polymarket_context",
+            "kalshi_context", "boros_context",
         )
     }
     bounded_market["ohlcv"] = copy.deepcopy(ohlcv[-16:])
@@ -221,6 +223,15 @@ def run_prediction(market_data: dict) -> dict:
             "calibrated_probability": False,
             "brier_ece_authority_eligible": False,
         }
+        audit["probability_semantics_v1"] = {
+            "version": "senex-probability-semantics-v1",
+            "heuristic_up_score": {"class": "HEURISTIC_DIRECTIONAL_SCORE", "calibrated_probability": False},
+            "heuristic_down_score": {"class": "HEURISTIC_DIRECTIONAL_SCORE", "calibrated_probability": False},
+            "up_prob": {"deprecated_alias": "heuristic_up_score", "calibrated_probability": False},
+            "down_prob": {"deprecated_alias": "heuristic_down_score", "calibrated_probability": False},
+            "polymarket_up_probability": {"class": "MARKET_IMPLIED_PRICE", "senex_calibrated_probability": False},
+            "kalshi_yes_probability": {"class": "MARKET_IMPLIED_PRICE", "senex_calibrated_probability": False},
+        }
         external = {
             "version": "real-market-context-v1",
             "polymarket": poly,
@@ -230,14 +241,16 @@ def run_prediction(market_data: dict) -> dict:
         pipeline = audit.get("pipeline") if isinstance(audit.get("pipeline"), dict) else {}
         step2 = pipeline.get("step2_features") if isinstance(pipeline, dict) else {}
         market_up = poly.get("up_probability")
-        model_up = step2.get("up_prob") if isinstance(step2, dict) else None
+        model_up = step2.get("heuristic_up_score", step2.get("up_prob")) if isinstance(step2, dict) else None
         try:
             if market_up is not None and model_up is not None:
-                external["polymarket_model_edge_v1"] = {
-                    "model_up": round(float(model_up), 6),
-                    "market_up": round(float(market_up), 6),
-                    "up_edge": round(float(model_up) - float(market_up), 6),
+                external["polymarket_heuristic_score_difference_v1"] = {
+                    "heuristic_up_score": round(float(model_up), 6),
+                    "market_implied_up_price": round(float(market_up), 6),
+                    "descriptive_difference": round(float(model_up) - float(market_up), 6),
                     "diagnostic_only": True,
+                    "predictive_accuracy": False,
+                    "incremental_value": "NOT_ESTIMABLE",
                 }
         except (TypeError, ValueError):
             pass
@@ -246,17 +259,20 @@ def run_prediction(market_data: dict) -> dict:
         kalshi_yes = kalshi_market.get("yes_probability")
         try:
             if kalshi_yes is not None and model_up is not None:
-                external["kalshi_cross_venue_v1"] = {
-                    "model_up": round(float(model_up), 6),
+                external["kalshi_cross_venue_descriptive_v1"] = {
+                    "heuristic_up_score": round(float(model_up), 6),
                     "kalshi_15m_yes": round(float(kalshi_yes), 6),
-                    "difference": round(float(model_up) - float(kalshi_yes), 6),
+                    "descriptive_difference": round(float(model_up) - float(kalshi_yes), 6),
                     "diagnostic_only": True,
                     "horizon_mismatch": True,
+                    "predictive_accuracy": False,
+                    "incremental_value": "NOT_ESTIMABLE",
                 }
         except (TypeError, ValueError):
             pass
         audit["external_markets_v1"] = external
         audit["decision_replay_v1"] = _decision_replay_snapshot(working, result)
+        audit["decision_provenance_roundtrip_v2"] = feature_provenance_contract(working, result)
         try:
             from backend.research.aud061_pipeline import classify_flat_reason
             audit["decision_waterfall_v1"] = {

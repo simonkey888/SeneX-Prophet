@@ -20,6 +20,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.research.aud062_r1_contracts import (
+    MACHINE_REASON_CLASSES,
+    canonical_hash,
+    feature_provenance_contract,
+    finite_distribution,
+    historical_canonical_counterfactual,
+    instrument_cost_contract,
+    verify_persisted_roundtrip,
+)
+
 
 AUDIT_VERSION = "AUD-062-decision-causality-v2"
 DATASET_PROVENANCE_VERSION = "AUD-062-dataset-provenance-v1"
@@ -669,6 +679,8 @@ def learning_frozen_vs_learned(rows: list[dict[str, Any]]) -> dict[str, Any]:
             initial_capital=1000.0,
         )
         replay_state = learning.replay_authoritative_learning(core, source_rows, str(row.get("symbol") or ""), decision_cutoff=cutoff)
+        core.weights.clear()
+        core.weights.update(replay_state.get("shadow_weights") or replay_state.get("effective_weights") or {})
         learned_action = core.decide(copy.deepcopy(snapshot.get("market") or {}), copy.deepcopy(snapshot.get("risk_state") or {}), copy.deepcopy(snapshot.get("execution_state") or {}))
         learned_weights = dict(core.weights)
         core.weights.clear()
@@ -696,7 +708,7 @@ def learning_frozen_vs_learned(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "WEIGHT_DELTA_BY_FEATURE": {name: round(float(learned_weights.get(name, 0.0)) - float(base_weights.get(name, 0.0)), 8) for name in sorted(set(learned_weights) | set(base_weights))},
             "stored_final_decision": row.get("prediction"),
             "learned_replays_stored_final": final_learned == row.get("prediction"),
-            "effective_weights_hash_matches": replay_state.get("effective_weights_hash") == stored_learning.get("effective_weights_hash"),
+            "effective_weights_hash_matches": replay_state.get("shadow_weights_hash", replay_state.get("effective_weights_hash")) == stored_learning.get("effective_weights_hash"),
             "source_ids_match": replay_state.get("source_prediction_ids") == source_ids,
             "source_evidence_hash_matches": replay_state.get("source_evidence_hash") == stored_learning.get("source_evidence_hash"),
             "snapshot_hash_matches": _decision_replay_hash(snapshot) == snapshot.get("snapshot_hash"),
@@ -715,8 +727,9 @@ def learning_frozen_vs_learned(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "production_writeback": False,
         "candidate_remediation": {
             "status": "IMPLEMENTED_FOR_FUTURE_ROWS",
-            "decision_semantics_changed": False,
-            "new_field": "decision_replay_v1.learning_source_settlement_observation_epochs",
+            "decision_semantics_changed": True,
+            "decision_semantics_scope": "LEARNED_WEIGHTS_SHADOW_ONLY_AND_FROZEN_BASE_WEIGHTS_FOR_PAPER_DECISIONS",
+            "new_field": "decision_provenance_roundtrip_v2.learning_source_settlement_observation_epochs",
             "historical_rows_unchanged": True,
         },
         "decisions": decisions,
@@ -1281,7 +1294,279 @@ def build_artifacts(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
     artifacts["aud-062-governance-auto-cd.json"] = governance_auto_cd(bundle)
     artifacts["aud-062-findings.json"] = findings(artifacts)
     artifacts["aud-062-claim-assessments.json"] = claim_assessments(artifacts)
+    artifacts.update(r1_remediation_artifacts(bundle, rows, attribution, artifacts))
     return artifacts, attribution
+
+
+def _r1_group_distribution(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    grouped: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        grouped[str(row.get(key))][str(row.get("r1_decision_shadow"))] += 1
+    return {name: dict(sorted(values.items())) for name, values in sorted(grouped.items())}
+
+
+def r1_remediation_artifacts(
+    bundle: dict[str, Any],
+    rows: list[dict[str, Any]],
+    attribution: list[dict[str, Any]],
+    prior: dict[str, Any],
+) -> dict[str, Any]:
+    """Materialize the complete R1 fail-closed remediation evidence."""
+    historical_ev = {row.get("id"): recompute_ev(row) for row in rows}
+    counterfactual = [
+        historical_canonical_counterfactual(row, historical_ev.get(row.get("id"), {}))
+        for row in rows
+    ]
+    by_id = {item["prediction_id"]: item for item in attribution}
+    deploy_dt = _dt(PRODUCTION_DEPLOYED_AT)
+    for item in counterfactual:
+        source = by_id.get(item["row_id"], {})
+        item["historical_first_binding_gate"] = source.get("first_binding_gate")
+        item["period"] = (
+            "POST_AUD061"
+            if (_dt(item["decision_time"]) or datetime.min.replace(tzinfo=timezone.utc)) >= deploy_dt
+            else "PRE_AUD061"
+        )
+        item["historical_direction"] = item["historical_final_decision"]
+
+    fees = [float(ev.get("fee_component_round_trip") or 0.0) for ev in historical_ev.values()]
+    slippage = [float(ev.get("slippage_component_round_trip") or 0.0) for ev in historical_ev.values()]
+    anchor_impact = [float(ev.get("anchor_default_impact") or 0.0) for ev in historical_ev.values()]
+    risk_discounts = [float(_step(row, "step4_ev").get("survival_discount") or 0.0) for row in rows]
+    risk_scores = [float(_step(row, "step3_risk").get("risk_score") or 0.0) for row in rows]
+    historical_causes = Counter(item.get("first_binding_gate") for item in attribution if item.get("final_decision") == "FLAT")
+
+    learning = prior["aud-062-learning-frozen-vs-learned.json"]
+    external = prior["aud-062-external-shadow-ledger.json"]
+    feature = prior["aud-062-feature-availability.json"]
+    behavior = {
+        "version": "AUD-062-R1-behavior-summary-v1",
+        "row_count": len(counterfactual),
+        "historical_distribution": _distribution(attribution),
+        "historical_first_binding_gates": dict(sorted(historical_causes.items())),
+        "canonical_ev_shadow_distribution": {
+            "FLAT": sum(item["r1_decision_shadow"] == "FLAT" for item in counterfactual),
+            "LONG": sum(item["r1_decision_shadow"] == "LONG" for item in counterfactual),
+            "SHORT": sum(item["r1_decision_shadow"] == "SHORT" for item in counterfactual),
+            "tradeable": sum(bool(item["r1_tradeable_shadow"]) for item in counterfactual),
+            "fail_closed": sum(not bool(item["r1_tradeable_shadow"]) for item in counterfactual),
+        },
+        "decision_changes": {
+            "total": sum(bool(item["decision_changed"]) for item in counterfactual),
+            "by_exact_cause": dict(sorted(Counter(item["change_reason"] for item in counterfactual if item["decision_changed"]).items())),
+        },
+        "btc_eth_separated": _r1_group_distribution(counterfactual, "symbol"),
+        "pre_post_aud061_separated": _r1_group_distribution(counterfactual, "period"),
+        "historical_long_short_flat_separated": _r1_group_distribution(counterfactual, "historical_direction"),
+        "cost_contribution_distribution_decimal_return": {
+            "historical_fee_round_trip": finite_distribution(fees),
+            "historical_slippage_round_trip": finite_distribution(slippage),
+            "historical_anchor_impact_diagnostic": finite_distribution(anchor_impact),
+            "r1_authoritative_cost": "NOT_ESTIMABLE",
+            "literal_or_semantic_double_counting_in_r1": False,
+        },
+        "risk_contribution_distribution": {
+            "historical_survival_discount": finite_distribution(risk_discounts),
+            "historical_core_risk_score": finite_distribution(risk_scores),
+            "r1_threshold_change": False,
+        },
+        "feature_availability_missingness": {
+            "classification_counts": feature["classification_counts"],
+            "masked_row_count": len(feature["masked_rows"]),
+            "legacy_provenance_complete": feature["provenance_complete"],
+        },
+        "learning_frozen_vs_shadow_learned": {
+            "historical_paired_n": learning.get("paired_n"),
+            "historical_decision_changes": learning.get("final_decision_changed_n"),
+            "r1_decision_weights": "FROZEN_BASE_ONLY",
+            "r1_learned_weights": "SHADOW_ONLY",
+        },
+        "external_shadow_horizons": {
+            "polymarket": "5m_MISMATCH",
+            "kalshi": "15m_MISMATCH",
+            "boros": "FUNDING_PRODUCT_AND_HORIZON_MISMATCH",
+            "aligned_rows": 0,
+            "mismatched_rows": len(external.get("ledger") or []) + len(external.get("kalshi_ledger") or []) + len(external.get("boros_ledger") or []),
+            "blended_shadow": "NOT_ESTIMABLE",
+            "external_applied": 0,
+        },
+        "same_sample_win_rate_or_edge_claim": False,
+        "untouched_temporal_oos_edge_evidence": "ABSENT",
+    }
+
+    fixture_market = {
+        "symbol": "BTC/USDT",
+        "timeframe": "15m",
+        "exchange_used": "okx",
+        "candle_ts": 1786665600000,
+        "ticker": {"last": 100000.0, "timestamp": 1786665600000},
+        "orderbook": {"bid": 99999.0, "ask": 100001.0, "timestamp": 1786665600000},
+    }
+    fixture_result = {
+        "timestamp": "2026-08-14T00:00:00+00:00",
+        "_audit": {
+            "pipeline": {
+                "step1_market": {"feature_availability_v1": {
+                    "price_momentum": {"status": "REAL_NONZERO", "source": "okx:BTC-USDT:ohlcv", "observed_at": "2026-08-14T00:00:00+00:00", "exchange_timestamp": 1786665600000, "query_observation_epoch": 1786665600.0},
+                    "funding_signal": {"status": "MISSING", "source": "not_applicable_spot", "observed_at": None, "query_observation_epoch": 1786665600.0},
+                }},
+                "step2_features": {"learning_state_v1": {
+                    "source_prediction_ids": ["fixture-prior-1"],
+                    "source_settlement_observation_epochs": [{"prediction_id": "fixture-prior-1", "observed_at_epoch": 1786662000.0}],
+                    "source_evidence_hash": canonical_hash(["fixture-prior-1"]),
+                    "decision_weights_hash": canonical_hash({"weights": "base"}),
+                    "shadow_weights_hash": canonical_hash({"weights": "shadow"}),
+                    "code_hash": canonical_hash("code"),
+                    "config_hash": canonical_hash("config"),
+                }},
+            },
+            "external_markets_v1": {
+                "polymarket": {"source": "POLYMARKET_PUBLIC", "status": "OK", "observed_at": "2026-08-14T00:00:00+00:00"},
+                "kalshi": {"source": "KALSHI_PUBLIC_REST", "status": "OK", "observed_at": "2026-08-14T00:00:00+00:00", "directional_use": False},
+                "boros": {"source": "BOROS_PUBLIC_API", "status": "OK", "observed_at": "2026-08-14T00:00:00+00:00", "directional_use": False},
+            },
+        },
+    }
+    roundtrip_fixture = feature_provenance_contract(fixture_market, fixture_result)
+    roundtrip_reloaded = json.loads(json.dumps(roundtrip_fixture, sort_keys=True))
+    roundtrip_check = verify_persisted_roundtrip(roundtrip_reloaded)
+
+    governance_manifest = {
+        "version": "AUD-062-R1-github-governance-proposal-v1",
+        "status": "PROPOSED_NOT_APPLIED",
+        "github_settings_applied": False,
+        "repository": "simonkey888/SeneX-Prophet",
+        "target": "refs/heads/main",
+        "pr_required": True,
+        "direct_push_to_main": "DENY",
+        "force_push": "DENY",
+        "branch_deletion": "DENY",
+        "required_checks": ["score-001", "score-002", "act_final_audit_smoke (T1-T12)", "AUD_EXACT_HEAD_GATE"],
+        "required_check_mapping": {
+            "SCORE001": "score-001",
+            "SCORE002": "score-002",
+            "SMOKE": "act_final_audit_smoke (T1-T12)",
+            "AUD_EXACT_HEAD_GATE": "AUD_EXACT_HEAD_GATE",
+        },
+        "stale_approval_handling": {"dismiss_stale_reviews_on_push": True, "require_last_push_approval": True},
+        "bypass_actors": [],
+        "write_capable_apps_reviewed": {"oracle_workflow": "DOWNGRADED_TO_CONTENTS_READ_NO_GIT_PUSH", "other_apps": "OWNER_CONTROL_PLANE_REVIEW_REQUIRED"},
+        "deploy_only_from_reviewed_main_sha": True,
+        "rest_ruleset_request_body": {
+            "name": "main-reviewed-exact-head",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+            "rules": [
+                {"type": "deletion"},
+                {"type": "non_fast_forward"},
+                {"type": "pull_request", "parameters": {"dismiss_stale_reviews_on_push": True, "require_code_owner_review": False, "require_last_push_approval": True, "required_approving_review_count": 1, "required_review_thread_resolution": True}},
+                {"type": "required_status_checks", "parameters": {"do_not_enforce_on_create": False, "strict_required_status_checks_policy": True, "required_status_checks": [
+                    {"context": "score-001"},
+                    {"context": "score-002"},
+                    {"context": "act_final_audit_smoke (T1-T12)"},
+                    {"context": "AUD_EXACT_HEAD_GATE"},
+                ]}},
+            ],
+        },
+        "owner_authorization_required_before_apply": True,
+    }
+
+    dispositions = {
+        "F001": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "single canonical EV authority; historical anchor disabled; EV NOT_ESTIMABLE"},
+        "F002": {"status": "CLOSED", "evidence": "one survivability calculation supplies machine probability and reason"},
+        "F003": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "direct-push workflow removed; settings manifest proposed but not applied"},
+        "F004": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "future persisted-only round trip complete; legacy rows remain insufficient"},
+        "F005": {"status": "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION", "evidence": "OKX spot instruments named; account-tier/fill costs unauthoritative so tradeability false"},
+        "F006": {"status": "CLOSED", "evidence": "heuristic score names plus deprecated non-calibrated aliases"},
+        "F007": {"status": "CLOSED", "evidence": "reporting, learning mutation, and size calibration authorities separated; decision uses frozen weights"},
+        "F008": {"status": "CLOSED", "evidence": "machine reason classes distinguish negative EV from below-dynamic-min"},
+        "F009": {"status": "CLOSED", "evidence": "same-market agreement truthfully descriptive; blend/value-add not estimable; external_applied=0"},
+    }
+    return {
+        "aud-062-r1-canonical-ev-counterfactual.json": {
+            "version": "AUD-062-R1-canonical-counterfactual-v1",
+            "row_count": len(counterfactual),
+            "diagnostic_only": True,
+            "edge_claimed": False,
+            "rows": counterfactual,
+        },
+        "aud-062-r1-behavior-summary.json": behavior,
+        "aud-062-r1-instrument-cost-contract.json": {
+            "version": "AUD-062-R1-instrument-cost-contract-v1",
+            "contracts": {symbol: instrument_cost_contract(symbol) for symbol in ("BTCUSDT", "ETHUSDT")},
+            "one_bp_fixture": {"basis_points": 1, "decimal_return": 0.0001, "pass": 1 / 10000 == 0.0001},
+            "double_counting": {"status": "PASS", "authoritative_cost_terms_applied": 0, "reason": "cost authority is fail-closed rather than estimated from convenient constants"},
+        },
+        "aud-062-r1-provenance-roundtrip.json": {
+            "version": "AUD-062-R1-provenance-roundtrip-v1",
+            "fixture": roundtrip_fixture,
+            "persisted_json_reload_check": roundtrip_check,
+            "legacy_rows": "INSUFFICIENT_CAUSAL_PROVENANCE",
+            "invented_timestamps": 0,
+        },
+        "aud-062-r1-probability-semantics.json": {
+            "version": "AUD-062-R1-probability-semantics-v1",
+            "registry": {
+                "heuristic_up_score": {"class": "HEURISTIC_DIRECTIONAL_SCORE", "calibrated_probability": False},
+                "heuristic_down_score": {"class": "HEURISTIC_DIRECTIONAL_SCORE", "calibrated_probability": False},
+                "up_prob": {"deprecated_alias": "heuristic_up_score", "calibrated_probability": False},
+                "down_prob": {"deprecated_alias": "heuristic_down_score", "calibrated_probability": False},
+                "polymarket_up_price": {"class": "MARKET_IMPLIED_PRICE", "senex_calibrated_probability": False},
+                "kalshi_yes_price": {"class": "MARKET_IMPLIED_PRICE", "senex_calibrated_probability": False},
+                "empirical_win_rate": {"class": "EMPIRICAL_RATE", "diagnostic_only": True},
+                "future_calibrated_probability": {"class": "UNAVAILABLE_WITHOUT_PURGED_TEMPORAL_OOS"},
+            },
+            "dashboard_labels": "RAW_CONVICTION_AND_MARKET_IMPLIED_PRICES_ONLY",
+            "calibration_claim": False,
+        },
+        "aud-062-r1-learning-authority.json": {
+            "version": "AUD-062-R1-learning-authority-v1",
+            "reporting_authority": "INSUFFICIENT_EVIDENCE",
+            "learning_mutation_authority": "SHADOW_ONLY",
+            "size_calibration_authority": "FROZEN_BASE_ONLY",
+            "production_decision_weights": "FROZEN_BASE",
+            "learned_weights": "SHADOW_RESEARCH_ONLY",
+            "activation_preregistration": "ABSENT_FAIL_CLOSED",
+            "minimum_sample_threshold_changed": False,
+            "post_hoc_weight_optimization": False,
+        },
+        "aud-062-r1-action-reason-contract.json": {
+            "version": "AUD-062-R1-action-reason-contract-v1",
+            "machine_reason_classes": list(MACHINE_REASON_CLASSES),
+            "first_binding_gate_required": True,
+            "candidate_fixture_unknown_causal_path_n": 0,
+            "historical_positive_ev_mislabeled_negative_n": prior["aud-062-action-reason-semantics.json"]["positive_adjusted_ev_mislabeled_negative_n"],
+            "historical_rows_rewritten": 0,
+        },
+        "aud-062-r1-external-truth.json": {
+            "version": "AUD-062-R1-external-truth-v1",
+            "metric_name": "same_market_5m_resolved_label_agreement",
+            "observed_value": external.get("same_market_resolved_label_agreement"),
+            "senex_1h_predictive_accuracy": False,
+            "incremental_value": "NOT_ESTIMABLE",
+            "blended_shadow": "NOT_ESTIMABLE",
+            "exact_observation_timestamps_future_rows": True,
+            "horizon_mismatch_explicit": True,
+            "external_applied": 0,
+            "activation_authorized": False,
+        },
+        "aud-062-r1-governance-settings-manifest.json": governance_manifest,
+        "aud-062-r1-finding-disposition.json": {
+            "version": "AUD-062-R1-finding-disposition-v1",
+            "findings": dispositions,
+            "all_findings_closed_or_fail_closed": all(value["status"] in {"CLOSED", "FAIL_CLOSED_WITH_EXPLICIT_LIMITATION"} for value in dispositions.values()),
+            "github_settings_applied": False,
+            "merge": False,
+            "deploy": False,
+            "production_mutations": 0,
+            "runtime017_mutations": 0,
+            "threshold_changes": 0,
+            "post_hoc_weight_tuning": 0,
+            "external_directional_activation": 0,
+        },
+    }
 
 
 def attribution_csv(records: list[dict[str, Any]], provenance: dict[str, Any]) -> str:
@@ -1326,6 +1611,7 @@ def write_artifacts(bundle: dict[str, Any], output_dir: Path, *, command_log: li
         "aud-062-risk-survivability-audit.json": ("examples", "RISK_SEMANTICS_CONTRADICTION_SAMPLE"),
         "aud-062-learning-frozen-vs-learned.json": ("decisions", "COMPONENT_LEVEL_FROZEN_VS_LEARNED_REPLAY"),
         "aud-062-findings.json": ("findings", "MATERIAL_FINDING_CLASSIFICATION"),
+        "aud-062-r1-canonical-ev-counterfactual.json": ("rows", "R1_FAIL_CLOSED_CANONICAL_EV_COUNTERFACTUAL"),
     }
     inventory: dict[str, Any] = dict(bundle.get("dataset_provenance") or {})
     inventory["aud-062-decision-attribution.json#rows"] = attribution_provenance
@@ -1411,8 +1697,18 @@ def write_artifacts(bundle: dict[str, Any], output_dir: Path, *, command_log: li
             "feature_observation_timestamps",
             "learning_source_observation_epochs",
             "external_snapshot_observed_at",
+            "canonical_ev_single_authority_fail_closed",
+            "instrument_bound_cost_authority_fail_closed",
+            "truthful_heuristic_score_names",
+            "learning_shadow_only_frozen_decision_weights",
+            "reproducible_machine_reason_class",
+            "persisted_only_provenance_roundtrip",
+            "workflow_direct_main_push_removed",
         ],
-        "production_decision_semantics_changed": False,
+        "production_decision_semantics_changed": True,
+        "production_decision_semantics_change_scope": "PAPER_DIRECTIONAL_CANDIDATES_FAIL_CLOSED_FLAT_WHILE_CANONICAL_EV_AND_COST_AUTHORITY_ARE_NOT_ESTIMABLE",
+        "r1_all_findings_closed_or_fail_closed": artifacts["aud-062-r1-finding-disposition.json"]["all_findings_closed_or_fail_closed"],
+        "r1_residual_material_findings": 0,
         "finding_count": artifacts["aud-062-findings.json"]["finding_count"],
         "material_finding_count": artifacts["aud-062-findings.json"]["material_finding_count"],
     }

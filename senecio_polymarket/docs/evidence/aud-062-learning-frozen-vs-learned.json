@@ -1,16 +1,17 @@
 {
   "analysis_type": "COMPONENT_LEVEL_WEIGHT_SENSITIVITY_NOT_MODEL_AB",
   "candidate_remediation": {
-    "decision_semantics_changed": false,
+    "decision_semantics_changed": true,
+    "decision_semantics_scope": "LEARNED_WEIGHTS_SHADOW_ONLY_AND_FROZEN_BASE_WEIGHTS_FOR_PAPER_DECISIONS",
     "historical_rows_unchanged": true,
-    "new_field": "decision_replay_v1.learning_source_settlement_observation_epochs",
+    "new_field": "decision_provenance_roundtrip_v2.learning_source_settlement_observation_epochs",
     "status": "IMPLEMENTED_FOR_FUTURE_ROWS"
   },
   "dataset_provenance": {
     "CAPTURE_TIME_UTC": "2026-08-14T21:46:28Z",
     "RAW_OR_DERIVED": "DERIVED",
     "ROW_COUNT": 8,
-    "SHA256": "fafe070c5649093777afa2d7a92462e8e6625da0c28d7b0c650d9c9c2796ef7e",
+    "SHA256": "fa51ed16196aa904c5ee0e6cbecf9e5a6eb5442f1084daf53c996273a1180416",
     "SOURCE_CLASS": "PRODUCTION_DERIVED_FROM_PUBLIC_INPUTS",
     "SOURCE_ENDPOINT_OR_CLASS": "AUD062_FROZEN_PUBLIC_INPUT_BUNDLE",
     "TRANSFORMATION": "COMPONENT_LEVEL_FROZEN_VS_LEARNED_REPLAY",
@@ -30,9 +31,9 @@
         "bidask_imbalance": -0.0875,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.11551186,
-        "price_momentum": -0.0652865,
-        "volume_delta": 0.01833791
+        "orderflow": -0.115512,
+        "price_momentum": -0.065286,
+        "volume_delta": 0.018338
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -52,12 +53,12 @@
       "LEARNED_EV": -3.808e-05,
       "LEARNED_PRESSURE": 1.04331,
       "WEIGHT_DELTA_BY_FEATURE": {
-        "bidask_imbalance": -0.08198613,
+        "bidask_imbalance": -0.081986,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.08999698,
-        "price_momentum": -0.03923396,
-        "volume_delta": -0.04869291
+        "orderflow": -0.089997,
+        "price_momentum": -0.039234,
+        "volume_delta": -0.048693
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -80,9 +81,9 @@
         "bidask_imbalance": -0.0875,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.11551186,
-        "price_momentum": -0.0652865,
-        "volume_delta": 0.01833791
+        "orderflow": -0.115512,
+        "price_momentum": -0.065286,
+        "volume_delta": 0.018338
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -95,22 +96,22 @@
     },
     {
       "DECISION_CHANGED": false,
-      "FROZEN_DECISION": "SHORT",
+      "FROZEN_DECISION": "FLAT",
       "FROZEN_EV": 7.542e-05,
       "FROZEN_PRESSURE": -0.380056,
-      "LEARNED_DECISION": "SHORT",
+      "LEARNED_DECISION": "FLAT",
       "LEARNED_EV": 5.686e-05,
       "LEARNED_PRESSURE": -0.336654,
       "WEIGHT_DELTA_BY_FEATURE": {
-        "bidask_imbalance": -0.08198613,
+        "bidask_imbalance": -0.081986,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.08999698,
-        "price_momentum": -0.03923396,
-        "volume_delta": -0.04869291
+        "orderflow": -0.089997,
+        "price_momentum": -0.039234,
+        "volume_delta": -0.048693
       },
       "effective_weights_hash_matches": true,
-      "learned_replays_stored_final": true,
+      "learned_replays_stored_final": false,
       "prediction_id": 345,
       "snapshot_hash_matches": true,
       "source_evidence_hash_matches": false,
@@ -130,9 +131,9 @@
         "bidask_imbalance": -0.0875,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.11551186,
-        "price_momentum": -0.0652865,
-        "volume_delta": 0.01833791
+        "orderflow": -0.115512,
+        "price_momentum": -0.065286,
+        "volume_delta": 0.018338
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -152,12 +153,12 @@
       "LEARNED_EV": -8.839e-05,
       "LEARNED_PRESSURE": 0.109515,
       "WEIGHT_DELTA_BY_FEATURE": {
-        "bidask_imbalance": -0.08198613,
+        "bidask_imbalance": -0.081986,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.08999698,
-        "price_momentum": -0.03923396,
-        "volume_delta": -0.04869291
+        "orderflow": -0.089997,
+        "price_momentum": -0.039234,
+        "volume_delta": -0.048693
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -180,9 +181,9 @@
         "bidask_imbalance": -0.0875,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.11551186,
-        "price_momentum": -0.0652865,
-        "volume_delta": 0.01833791
+        "orderflow": -0.115512,
+        "price_momentum": -0.065286,
+        "volume_delta": 0.018338
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -202,12 +203,12 @@
       "LEARNED_EV": -0.00013882,
       "LEARNED_PRESSURE": 0.420828,
       "WEIGHT_DELTA_BY_FEATURE": {
-        "bidask_imbalance": -0.08198613,
+        "bidask_imbalance": -0.081986,
         "funding_signal": 0.0,
         "oi_momentum": 0.0,
-        "orderflow": -0.08999698,
-        "price_momentum": -0.03923396,
-        "volume_delta": -0.04869291
+        "orderflow": -0.089997,
+        "price_momentum": -0.039234,
+        "volume_delta": -0.048693
       },
       "effective_weights_hash_matches": true,
       "learned_replays_stored_final": true,
@@ -220,7 +221,7 @@
     }
   ],
   "effective_weight_hash_match_n": 8,
-  "learned_exact_final_replay_n": 8,
+  "learned_exact_final_replay_n": 7,
   "paired_n": 8,
   "production_writeback": false,
   "reason": "process_local_query_observation_epoch_is_hashed_but_not_serialized",

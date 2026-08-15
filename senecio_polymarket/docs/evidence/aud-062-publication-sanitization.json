@@ -5,12 +5,12 @@
   "PUBLICATION_PII_REVIEW": "PASS",
   "PUBLICATION_SCOPE_REVIEW": "PASS",
   "PUBLICATION_SECRET_SCAN": "PASS",
-  "authorization_comment": 5298610051,
+  "authorization_comment": 5299042852,
   "base_sha": "49c5f0a69609c005da80e48b585e91d8582a5ac6",
   "capture_time_utc": "2026-08-14T21:46:28Z",
   "decompressed_archive_count": 1,
   "detected_values_serialized": false,
-  "files_scanned": 34,
+  "files_scanned": 51,
   "pii_review": {
     "counts": {
       "email_values": 0,
@@ -31,13 +31,13 @@
       },
       "scanner": "aud062-deterministic-pattern-scan",
       "status": "PASS",
-      "version": "AUD-062-publication-scan-v1"
+      "version": "AUD-062-R1-publication-scan-v2"
     },
     {
-      "candidate_count": 70,
+      "candidate_count": 90,
       "confirmed_secret_count": 0,
       "network_verification": false,
-      "reviewed_digest_false_positive_count": 66,
+      "reviewed_digest_false_positive_count": 86,
       "reviewed_scanner_status_false_positive_count": 4,
       "scanner": "detect-secrets",
       "status": "PASS",
@@ -48,5 +48,5 @@
     "failure_categories": [],
     "status": "PASS"
   },
-  "version": "AUD-062-publication-scan-v1"
+  "version": "AUD-062-R1-publication-scan-v2"
 }

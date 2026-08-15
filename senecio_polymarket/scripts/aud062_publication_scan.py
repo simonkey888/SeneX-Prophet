@@ -15,20 +15,27 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 
-SCANNER_VERSION = "AUD-062-publication-scan-v1"
+SCANNER_VERSION = "AUD-062-R1-publication-scan-v2"
 DETECT_SECRETS_VERSION = "1.5.0"
 BASE_SHA = "49c5f0a69609c005da80e48b585e91d8582a5ac6"
 SOURCE_PATHS = (
     ".github/workflows/aud-062-forensics.yml",
+    ".github/workflows/oracle.yml",
     "senecio_polymarket/backend/research/aud062_forensics.py",
+    "senecio_polymarket/backend/research/aud062_r1_contracts.py",
     "senecio_polymarket/scripts/run_aud062.py",
     "senecio_polymarket/scripts/aud062_publication_scan.py",
     "senecio_polymarket/tests/test_aud_062.py",
+    "senecio_polymarket/tests/test_aud_062_r1.py",
+    "senecio_polymarket/tests/test_aud_061.py",
+    "senecio_polymarket/tests/test_authoritative_learning.py",
     "senecio_polymarket/docs/AUD-062-REPORT.md",
+    "senecio_polymarket/docs/AUD-062-R1-REPORT.md",
     "senecio_polymarket/oracle/institutional_core.py",
     "senecio_polymarket/oracle/survivability.py",
     "senecio_polymarket/oracle/exchange_connector.py",
     "senecio_polymarket/oracle_runtime/institutional_core.py",
+    "senecio_polymarket/oracle_runtime/institutional_core_real.py",
     "senecio_polymarket/oracle_runtime/predict_only.py",
 )
 SENSITIVE_QUERY_KEYS = {
@@ -53,10 +60,11 @@ PUBLIC_HOSTS = {
     "data.chain.link",
     "gamma-api.polymarket.com",
     "h011-web--senecio-h011--wbjggn89fnf8.code.run",
+    "www.okx.com",
 }
 SEMANTIC_DIGEST_HINTS = (
     "hash", "sha", "tree", "lineage", "commit", "expected_base",
-    "expected_tree", "deployed_sha", "condition_id", "blob",
+    "expected_tree", "deployed_sha", "condition_id", "blob", "identity",
 )
 
 
@@ -215,7 +223,7 @@ def _scanner_status_false_positive(filename: str, secret_type: str, line: str) -
         return "PUBLICATION_" in line or line.strip() == 'if secret_type != "Secret Keyword":'
     # detect-secrets treats the GitHub Actions mapping key ``run: |`` as a
     # secret keyword. Match only that exact workflow syntax; no value exists.
-    return name == "aud-062-forensics.yml" and line.strip() == "run: |"
+    return name in {"aud-062-forensics.yml", "oracle.yml"} and line.strip() == "run: |"
 
 
 def _entropy_scan(paths: list[Path]) -> dict[str, object]:
@@ -289,7 +297,7 @@ def scan(repo_root: Path, evidence_dir: Path, input_path: Path) -> dict:
     scope_pass = not scope_failures
     return {
         "version": SCANNER_VERSION,
-        "authorization_comment": 5298610051,
+        "authorization_comment": 5299042852,
         "base_sha": BASE_SHA,
         "capture_time_utc": (bundle.get("observation") or {}).get("captured_at"),
         "files_scanned": len(paths),

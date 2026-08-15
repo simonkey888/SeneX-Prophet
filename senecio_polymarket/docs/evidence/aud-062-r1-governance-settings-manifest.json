@@ -1,0 +1,87 @@
+{
+  "branch_deletion": "DENY",
+  "bypass_actors": [],
+  "deploy_only_from_reviewed_main_sha": true,
+  "direct_push_to_main": "DENY",
+  "force_push": "DENY",
+  "github_settings_applied": false,
+  "owner_authorization_required_before_apply": true,
+  "pr_required": true,
+  "repository": "simonkey888/SeneX-Prophet",
+  "required_check_mapping": {
+    "AUD_EXACT_HEAD_GATE": "AUD_EXACT_HEAD_GATE",
+    "SCORE001": "score-001",
+    "SCORE002": "score-002",
+    "SMOKE": "act_final_audit_smoke (T1-T12)"
+  },
+  "required_checks": [
+    "score-001",
+    "score-002",
+    "act_final_audit_smoke (T1-T12)",
+    "AUD_EXACT_HEAD_GATE"
+  ],
+  "rest_ruleset_request_body": {
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "~DEFAULT_BRANCH"
+        ]
+      }
+    },
+    "enforcement": "active",
+    "name": "main-reviewed-exact-head",
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "parameters": {
+          "dismiss_stale_reviews_on_push": true,
+          "require_code_owner_review": false,
+          "require_last_push_approval": true,
+          "required_approving_review_count": 1,
+          "required_review_thread_resolution": true
+        },
+        "type": "pull_request"
+      },
+      {
+        "parameters": {
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "score-001"
+            },
+            {
+              "context": "score-002"
+            },
+            {
+              "context": "act_final_audit_smoke (T1-T12)"
+            },
+            {
+              "context": "AUD_EXACT_HEAD_GATE"
+            }
+          ],
+          "strict_required_status_checks_policy": true
+        },
+        "type": "required_status_checks"
+      }
+    ],
+    "target": "branch"
+  },
+  "stale_approval_handling": {
+    "dismiss_stale_reviews_on_push": true,
+    "require_last_push_approval": true
+  },
+  "status": "PROPOSED_NOT_APPLIED",
+  "target": "refs/heads/main",
+  "version": "AUD-062-R1-github-governance-proposal-v1",
+  "write_capable_apps_reviewed": {
+    "oracle_workflow": "DOWNGRADED_TO_CONTENTS_READ_NO_GIT_PUSH",
+    "other_apps": "OWNER_CONTROL_PLANE_REVIEW_REQUIRED"
+  }
+}

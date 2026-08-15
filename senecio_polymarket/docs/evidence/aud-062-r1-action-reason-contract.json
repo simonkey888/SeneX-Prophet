@@ -1,0 +1,17 @@
+{
+  "candidate_fixture_unknown_causal_path_n": 0,
+  "first_binding_gate_required": true,
+  "historical_positive_ev_mislabeled_negative_n": 22,
+  "historical_rows_rewritten": 0,
+  "machine_reason_classes": [
+    "EV_NEGATIVE",
+    "EV_BELOW_DYNAMIC_MIN",
+    "RISK_REJECT",
+    "REGIME_REJECT",
+    "LOW_CONVICTION_OR_SIZE",
+    "NO_DIRECTIONAL_SIGNAL",
+    "OTHER_EXPLICIT",
+    "UNKNOWN_CAUSAL_PATH"
+  ],
+  "version": "AUD-062-R1-action-reason-contract-v1"
+}

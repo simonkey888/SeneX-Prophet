@@ -1,0 +1,11 @@
+{
+  "activation_preregistration": "ABSENT_FAIL_CLOSED",
+  "learned_weights": "SHADOW_RESEARCH_ONLY",
+  "learning_mutation_authority": "SHADOW_ONLY",
+  "minimum_sample_threshold_changed": false,
+  "post_hoc_weight_optimization": false,
+  "production_decision_weights": "FROZEN_BASE",
+  "reporting_authority": "INSUFFICIENT_EVIDENCE",
+  "size_calibration_authority": "FROZEN_BASE_ONLY",
+  "version": "AUD-062-R1-learning-authority-v1"
+}

@@ -1,0 +1,38 @@
+{
+  "calibration_claim": false,
+  "dashboard_labels": "RAW_CONVICTION_AND_MARKET_IMPLIED_PRICES_ONLY",
+  "registry": {
+    "down_prob": {
+      "calibrated_probability": false,
+      "deprecated_alias": "heuristic_down_score"
+    },
+    "empirical_win_rate": {
+      "class": "EMPIRICAL_RATE",
+      "diagnostic_only": true
+    },
+    "future_calibrated_probability": {
+      "class": "UNAVAILABLE_WITHOUT_PURGED_TEMPORAL_OOS"
+    },
+    "heuristic_down_score": {
+      "calibrated_probability": false,
+      "class": "HEURISTIC_DIRECTIONAL_SCORE"
+    },
+    "heuristic_up_score": {
+      "calibrated_probability": false,
+      "class": "HEURISTIC_DIRECTIONAL_SCORE"
+    },
+    "kalshi_yes_price": {
+      "class": "MARKET_IMPLIED_PRICE",
+      "senex_calibrated_probability": false
+    },
+    "polymarket_up_price": {
+      "class": "MARKET_IMPLIED_PRICE",
+      "senex_calibrated_probability": false
+    },
+    "up_prob": {
+      "calibrated_probability": false,
+      "deprecated_alias": "heuristic_up_score"
+    }
+  },
+  "version": "AUD-062-R1-probability-semantics-v1"
+}

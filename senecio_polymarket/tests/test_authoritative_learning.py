@@ -84,7 +84,7 @@ class AuthoritativeLearningTests(unittest.TestCase):
         state = learning.replay_authoritative_learning(
             core, [_row(i) for i in range(1, 10)], "BTCUSDT"
         )
-        self.assertEqual(state["status"], "WARMUP")
+        self.assertEqual(state["status"], "WARMUP_SHADOW_ONLY")
         self.assertEqual(state["proof_qualified_n"], 9)
         self.assertEqual(core.weights, before)
 
@@ -94,7 +94,7 @@ class AuthoritativeLearningTests(unittest.TestCase):
         rows = [_row(i) for i in range(1, 10)] + [_row(10, outcome="WIN", valid=False)]
         state = learning.replay_authoritative_learning(core, rows, "BTCUSDT")
         self.assertEqual(state["proof_qualified_n"], 9)
-        self.assertEqual(state["status"], "WARMUP")
+        self.assertEqual(state["status"], "WARMUP_SHADOW_ONLY")
         self.assertEqual(core.weights, before)
 
     def test_losses_penalize_all_mapped_agreeing_pressures_with_drift_bound(self):
@@ -103,9 +103,11 @@ class AuthoritativeLearningTests(unittest.TestCase):
         state = learning.replay_authoritative_learning(
             core, [_row(i) for i in range(1, 11)], "BTCUSDT"
         )
-        self.assertEqual(state["status"], "ACTIVE")
+        self.assertEqual(state["status"], "SHADOW_ONLY_FAIL_CLOSED")
         self.assertEqual(state["proof_qualified_n"], 10)
-        self.assertGreater(state["mutations"], 0)
+        self.assertEqual(state["mutations"], 0)
+        self.assertGreater(state["shadow_mutations"], 0)
+        self.assertEqual(core.weights, before)
         for name in (
             "orderflow",
             "volume_delta",
@@ -114,8 +116,8 @@ class AuthoritativeLearningTests(unittest.TestCase):
             "oi_momentum",
             "price_momentum",
         ):
-            self.assertLess(core.weights[name], before[name], name)
-            self.assertGreaterEqual(core.weights[name], before[name] * 0.75, name)
+            self.assertLess(state["shadow_weights"][name], before[name], name)
+            self.assertGreaterEqual(state["shadow_weights"][name], before[name] * 0.75 - 1e-12, name)
 
     def test_replay_is_deterministic(self):
         rows = [_row(i, outcome="WIN" if i % 3 == 0 else "LOSS") for i in range(1, 31)]
@@ -125,6 +127,7 @@ class AuthoritativeLearningTests(unittest.TestCase):
         state_b = learning.replay_authoritative_learning(b, rows, "BTCUSDT")
         self.assertEqual(a.weights, b.weights)
         self.assertEqual(state_a["effective_weights"], state_b["effective_weights"])
+        self.assertEqual(state_a["shadow_weights"], state_b["shadow_weights"])
         self.assertEqual(state_a["source_prediction_ids"], state_b["source_prediction_ids"])
 
     def test_learning_state_is_attached_to_prediction_pipeline(self):
@@ -147,17 +150,20 @@ class AuthoritativeLearningTests(unittest.TestCase):
         risk = {"drawdown": 0.0, "var": 0.0, "loss_streak": 0, "capital": 1000.0}
         execution = {"liquidity_quality": 0.99, "slippage_bps": 1.0, "latency_ms": 150.0, "spread_bps": 1.0}
 
-        with mock.patch.dict(os.environ, {"SUPABASE_URL": "https://example.invalid", "SUPABASE_KEY": "sb_secret_test"}, clear=False):
+        test_key = "test-only-placeholder"
+        with mock.patch.dict(os.environ, {"SUPABASE_URL": "https://example.invalid", "SUPABASE_KEY": test_key}, clear=False):
             with mock.patch.object(learning, "fetch_authoritative_rows", return_value=rows):
                 decision = core.decide(market, risk, execution)
 
         state = decision["pipeline"]["step2_features"]["learning_state_v1"]
-        self.assertEqual(state["status"], "ACTIVE")
+        self.assertEqual(state["status"], "SHADOW_ONLY_FAIL_CLOSED")
         self.assertEqual(state["proof_qualified_n"], 10)
         self.assertEqual(state["authority_cohort"], "INDEPENDENT_NONOVERLAP_1H")
         for key in ("source_evidence_hash", "effective_weights_hash", "code_hash", "config_hash"):
             self.assertEqual(len(state[key]), 64, key)
-        self.assertNotIn("sb_secret_test", repr(state))
+        self.assertEqual(state["learning_mutation_authority"], "SHADOW_ONLY")
+        self.assertEqual(state["size_calibration_authority"], "FROZEN_BASE_ONLY")
+        self.assertNotIn(test_key, repr(state))
 
     def test_runtime_predictor_forces_real_learning_core_for_base_import(self):
         previous = sys.modules.get("institutional_core")

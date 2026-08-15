@@ -36,7 +36,8 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
 
 
 def polymarket_experiment_enabled() -> bool:
-    return (os.environ.get(POLYMARKET_EXPERIMENT_FLAG) or "").strip().lower() in {"1", "true", "yes", "on"}
+    """AUD-062-R1 lock: external direction cannot be activated by environment."""
+    return False
 
 
 class SingleDecisionCore(LearningSingleDecisionCore):
