@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           git merge-base --is-ancestor 49c5f0a69609c005da80e48b585e91d8582a5ac6 HEAD
-          test "$(git show 49c5f0a69609c005da80e48b585e91d8582a5ac6^{tree})" = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
+          test "$(git rev-parse '49c5f0a69609c005da80e48b585e91d8582a5ac6^{tree}')" = "3e323bcc2795f97b29242883d3bf2a015c092ccd"
 
       - name: Reproduce old selector and capture public runtime baseline
         env:
