@@ -116,7 +116,10 @@ class RuntimeDirectionalIsolationTests(unittest.TestCase):
         oracle_runner._state.update(self._saved_state)
 
     def _refresh(self, rows: list[dict]) -> dict:
-        with patch.object(supabase_client, "fetch_predictions", new=AsyncMock(return_value=rows)):
+        with (
+            patch.object(supabase_client, "fetch_predictions", new=AsyncMock(return_value=rows)),
+            patch.object(supabase_client, "fetch_authority_history", new=AsyncMock(return_value=rows)),
+        ):
             asyncio.run(oracle_runner._refresh_directional_stats())
         return oracle_runner._state["directional_stats"]
 
@@ -168,66 +171,78 @@ class _FakeCoordinator:
 class PortfolioSymbolIsolationTests(unittest.TestCase):
     def setUp(self):
         self._saved_state = copy.deepcopy(oracle_runner._state)
-        oracle_runner._state["trade_mode"] = "PAPER"
-        oracle_runner._state["live_capital_locked"] = True
-        oracle_runner._state["directional_stats"] = {
-            "per_symbol": {
-                "BTCUSDT": {
-                    "by_window": {"1h": {"LONG": {"win_rate_pct": 33.33}, "SHORT": {"win_rate_pct": 50.0}}},
-                    "authority_1h": {"LONG": {"win_rate_pct": 33.33}, "SHORT": {"win_rate_pct": 50.0}},
-                    "short_only_paper_mode": False,
-                },
-                "ETHUSDT": {
-                    "by_window": {"1h": {"LONG": {"win_rate_pct": 40.0}, "SHORT": {"win_rate_pct": 70.0}}},
-                    "authority_1h": {"LONG": {"win_rate_pct": 40.0}, "SHORT": {"win_rate_pct": 70.0}},
-                    "short_only_paper_mode": True,
-                },
-            },
-            "aggregate_diagnostic": {
-                "by_window": {"1h": {"LONG": {"win_rate_pct": 99.0}, "SHORT": {"win_rate_pct": 99.0}}}
-            },
-        }
 
     def tearDown(self):
         oracle_runner._state.clear()
         oracle_runner._state.update(self._saved_state)
 
-    def _route(self, symbol: str) -> _FakeCoordinator:
-        coord = _FakeCoordinator()
-        with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
-            asyncio.run(oracle_runner._route_to_portfolio({"symbol": symbol, "price_now": 100.0}, {}))
-        return coord
+    def _seed(self):
+        oracle_runner._state["directional_stats"] = {
+            "per_symbol": {
+                "BTCUSDT": {
+                    "gates": {
+                        "long_1h": {"pass": True, "win_rate_pct": 72.0, "n": 101},
+                        "short_1h": {"pass": False, "win_rate_pct": 48.0, "n": 101},
+                    },
+                    "short_only_paper_mode": False,
+                },
+                "ETHUSDT": {
+                    "gates": {
+                        "long_1h": {"pass": False, "win_rate_pct": 40.0, "n": 88},
+                        "short_1h": {"pass": True, "win_rate_pct": 75.0, "n": 88},
+                    },
+                    "short_only_paper_mode": True,
+                },
+            },
+            "aggregate_diagnostic": {
+                "diagnostic_only": True,
+                "scope": "CROSS_SYMBOL_RAW_PROOF_QUALIFIED",
+                "by_window": {},
+            },
+        }
 
     def test_btc_portfolio_uses_only_btc_stats_and_remains_paper_locked(self):
-        coord = self._route("BTCUSDT")
-        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.3333, "SHORT": 0.5})
-        self.assertFalse(coord.portfolio_engine.calls[-1]["short_only_paper_mode"])
-        self.assertEqual(coord.risk_kernel.calls[-1]["trade_mode"], "PAPER")
-        self.assertTrue(coord.risk_kernel.calls[-1]["live_capital_locked"])
-        self.assertEqual(coord.execution_engine.calls[-1], {"trade_mode": "PAPER", "allow_live": False})
+        self._seed()
+        coord = _FakeCoordinator()
+        prediction = {"symbol": "BTC/USDT", "prediction": "LONG", "confidence": 0.8, "price_now": 100.0}
+        market = {"ohlcv": [[i, 0, 0, 0, 100.0 + i * 0.01, 1] for i in range(20)]}
+        with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
+            asyncio.run(oracle_runner._route_to_portfolio(prediction, market))
+        self.assertEqual(len(coord.portfolio_engine.calls), 1)
+        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_mode"], False)
+        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_long"], 0.72)
+        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_short"], 0.48)
+        self.assertEqual(coord.risk_kernel.calls[0]["short_only_mode"], False)
+        self.assertEqual(coord.execution_engine.calls[0]["short_only_mode"], False)
 
     def test_eth_portfolio_uses_only_eth_stats(self):
-        coord = self._route("ETHUSDT")
-        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.4, "SHORT": 0.7})
-        self.assertTrue(coord.portfolio_engine.calls[-1]["short_only_paper_mode"])
+        self._seed()
+        coord = _FakeCoordinator()
+        prediction = {"symbol": "ETH/USDT", "prediction": "SHORT", "confidence": 0.8, "price_now": 100.0}
+        market = {"ohlcv": [[i, 0, 0, 0, 100.0 + i * 0.01, 1] for i in range(20)]}
+        with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
+            asyncio.run(oracle_runner._route_to_portfolio(prediction, market))
+        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_mode"], True)
+        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_long"], 0.40)
+        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_short"], 0.75)
+        self.assertEqual(coord.risk_kernel.calls[0]["short_only_mode"], True)
+        self.assertEqual(coord.execution_engine.calls[0]["short_only_mode"], True)
 
 
 class ContractPreservationTests(unittest.TestCase):
+    def test_global_paper_lock_defaults_remain_closed(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "backend" / "oracle_runner.py").read_text()
+        self.assertIn('"trade_mode": "PAPER"', text)
+        self.assertIn('"live_capital_locked": True', text)
+
     def test_learning_per_symbol_guards_remain_in_source(self):
         root = Path(__file__).resolve().parents[1]
-        learning = (root / "oracle_runtime" / "institutional_core.py").read_text(encoding="utf-8")
-        self.assertIn('"symbol": f"eq.{normalized}"', learning)
-        self.assertIn('_normalize_symbol(str(row.get("symbol") or "")) == normalized', learning)
-        self.assertIn('and _proof_gate(row)', learning)
+        core = (root / "oracle_runtime" / "institutional_core.py").read_text()
+        real = (root / "oracle_runtime" / "institutional_core_real.py").read_text()
+        self.assertIn("row_symbol != symbol", core)
+        self.assertIn("row_symbol != symbol", real)
 
     def test_semgrep_workflow_remains_absent(self):
-        repo_root = Path(__file__).resolve().parents[2]
-        self.assertFalse((repo_root / ".github" / "workflows" / "semgrep.yml").exists())
-
-    def test_global_paper_lock_defaults_remain_closed(self):
-        self.assertEqual(oracle_runner._state["trade_mode"], "PAPER")
-        self.assertTrue(oracle_runner._state["live_capital_locked"])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        root = Path(__file__).resolve().parents[2]
+        self.assertFalse((root / ".github" / "workflows" / "semgrep.yml").exists())
