@@ -95,12 +95,15 @@ async def authoritative_oracle_score(symbol: str | None = Query(default=None)):
         str(symbol).upper().replace("/", "").replace("-", "").strip()
         if symbol else None
     )
-    rows = await supabase_client.fetch_predictions(limit=500, symbol=normalized_symbol)
-    return build_authoritative_score(
+    rows = await supabase_client.fetch_authority_history(symbol=normalized_symbol)
+    score = build_authoritative_score(
         rows,
         oracle_runner.get_state(),
         symbol=normalized_symbol,
     )
+    score["authority_history_complete"] = True
+    score["authority_history_rows"] = len(rows)
+    return score
 
 
 def _install_authoritative_score_route() -> None:

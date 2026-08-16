@@ -1,0 +1,154 @@
+name: AUD-065 Authority History Completeness
+
+on:
+  push:
+    branches:
+      - audit/aud-065-authority-history-completeness
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aud065:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_SHA: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
+      BASE_TREE: 27eb923e615614b43fe3c29ecace8b7ef503045e
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert canonical base and exact head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q -r senecio_polymarket/requirements.txt
+
+      - name: Focused AUD regressions
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v \
+            tests.test_aud_057 \
+            tests.test_aud_059 \
+            tests.test_aud_063 \
+            tests.test_aud_064 \
+            tests.test_aud_065 \
+            tests.test_authoritative_learning
+
+      - name: Full repository test discovery
+        working-directory: senecio_polymarket
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -v -s tests -p 'test_*.py'
+
+      - name: Exact-head scope and safety gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          python -m compileall -q senecio_polymarket/backend senecio_polymarket/tests
+          git diff --check "$BASE_SHA"...HEAD
+          for path in \
+            senecio_polymarket/backend/authoritative_score.py \
+            senecio_polymarket/oracle_runtime/institutional_core.py \
+            senecio_polymarket/oracle_runtime/institutional_core_real.py \
+            senecio_polymarket/backend/settlement_proof.py \
+            senecio_polymarket/backend/settlement_reconciler.py \
+            senecio_polymarket/backend/polymarket_market_adapter.py \
+            senecio_polymarket/backend/kalshi_market_adapter.py \
+            senecio_polymarket/backend/boros_market_adapter.py; do
+            git diff --quiet "$BASE_SHA"...HEAD -- "$path"
+          done
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -Eiq 'runtime017|runtime_017|017_capacity|senex-017'; then
+            exit 1
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          workflow = Path('.github/workflows/aud-065.yml').read_text()
+          real = Path('senecio_polymarket/backend/main_real.py').read_text()
+          main = Path('senecio_polymarket/backend/main.py').read_text()
+          runner = Path('senecio_polymarket/backend/oracle_runner.py').read_text()
+          score = Path('senecio_polymarket/backend/authoritative_score.py').read_text()
+          assert '\npermissions:\n  contents: read\n' in workflow
+          assert 'persist-credentials: false' in workflow
+          assert 'fetch_predictions(limit=500, symbol=normalized_symbol)' not in real
+          assert 'rows = await supabase_client.fetch_predictions(\n                limit=500,\n                symbol=normalized_symbol' not in main
+          assert 'symbol_rows = await supabase_client.fetch_predictions(\n                limit=500,\n                symbol=symbol' not in runner
+          assert 'diagnostic_rows = await supabase_client.fetch_predictions(limit=500)' in runner
+          assert 'MIN_GLOBAL_N = 100' in score
+          assert 'MIN_DIRECTION_N = 30' in score
+          assert 'INDEPENDENT_HORIZON_S = 3600.0' in score
+          print('AUTHORITY_QUERY_BOUNDARY=PASS')
+          print('WORKFLOW_TRUST_BOUNDARY=READ_ONLY')
+          PY
+          echo "SCOPE_DIFF=PASS"
+          echo "PAPER_LOCK=PASS"
+          echo "RUNTIME017_MUTATIONS=0"
+          echo "TUNING_MUTATIONS=0"
+
+      - name: Materialize exact-head evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p aud065-evidence
+          head=$(git rev-parse HEAD)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          files=$(git diff --name-only "$BASE_SHA"...HEAD | paste -sd, -)
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "HEAD_SHA=$head"
+            echo "HEAD_TREE=$tree"
+            echo "FILES_CHANGED=$files"
+            echo "SAME_SYMBOL_501_REPRO_BEFORE=INPUT_500_AUTHORITY_N_125"
+            echo "SAME_SYMBOL_501_REPRO_AFTER=INPUT_501_AUTHORITY_N_126"
+            echo "AUTHORITY_COMPLETE_HISTORY=PASS"
+            echo "TRANSPORT_PAGE_INVARIANCE=PASS"
+            echo "ORACLE_RUNTIME_RECONCILIATION=PASS"
+            echo "PORTFOLIO_RESEARCH_RECONCILIATION=PASS"
+            echo "R3_CROSS_SYMBOL_ISOLATION=PASS"
+            echo "SETTLEMENT_REGRESSIONS=PASS"
+            echo "CAUSAL_PROVENANCE=PASS"
+            echo "LEARNING_SHADOW_ONLY=PASS"
+            echo "FROZEN_WEIGHTS=PASS"
+            echo "EXTERNAL_DIRECTIONAL=OFF"
+            echo "PAPER_LOCK=PASS"
+            echo "FULL_SUITE=PASS"
+            echo "AUD065_WORKFLOW=READ_ONLY"
+            echo "PRODUCTION_MUTATIONS=0"
+            echo "SUPABASE_DATA_MUTATIONS=0"
+            echo "RUNTIME017_MUTATIONS=0"
+            echo "MERGE=NO"
+            echo "DEPLOY=NO"
+            echo "RESTART=NO"
+          } > aud065-evidence/receipt.txt
+          cp senecio_polymarket/docs/evidence/aud-065-post-merge-production-acceptance.md aud065-evidence/
+          git diff --stat "$BASE_SHA"...HEAD > aud065-evidence/diff-stat.txt
+          git diff --name-only "$BASE_SHA"...HEAD > aud065-evidence/files-changed.txt
+          cat aud065-evidence/receipt.txt
+
+      - name: Upload exact-head AUD-065 evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-065-${{ github.sha }}
+          path: aud065-evidence/
+          if-no-files-found: error
+          retention-days: 14

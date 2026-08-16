@@ -325,19 +325,26 @@ async def _symbol_scoped_paper_live_gate_state(coord, *, symbol: str) -> dict:
 
     normalized_symbol = _normalize_authority_symbol(symbol)
     rows = []
+    history_complete = False
     if normalized_symbol:
         try:
-            rows = await supabase_client.fetch_predictions(
-                limit=500,
-                symbol=normalized_symbol,
-            )
+            rows = await supabase_client.fetch_authority_history(symbol=normalized_symbol)
+            history_complete = True
         except Exception as e:
-            log.warning("symbol-scoped live-gate fetch failed for %s: %s", normalized_symbol, e)
-    return _paper_locked_live_gate_state(
+            log.warning("symbol-scoped complete authority fetch failed for %s: %s", normalized_symbol, e)
+    state = _paper_locked_live_gate_state(
         coord,
         rows,
         symbol=normalized_symbol,
     )
+    state["authority_history_complete"] = history_complete
+    state["authority_history_rows"] = len(rows)
+    if not history_complete:
+        state["effective_gate"] = "LOCKED_BY_INCOMPLETE_AUTHORITY_HISTORY"
+        failed = state.setdefault("failed_reasons", [])
+        if "AUTHORITY_HISTORY_INCOMPLETE" not in failed:
+            failed.append("AUTHORITY_HISTORY_INCOMPLETE")
+    return state
 
 
 @app.get("/api/portfolio/state")
