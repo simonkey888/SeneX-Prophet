@@ -595,17 +595,17 @@ async def _refresh_directional_stats() -> None:
     configured_symbols = {_normalize_symbol(symbol) for symbol in SYMBOLS}
     symbols = sorted(configured_symbols)
     qualified_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    history_complete_by_symbol: dict[str, bool] = {}
+    history_rows_by_symbol: dict[str, int] = {}
     for symbol in symbols:
         try:
-            # PostgREST applies this equality filter before the bounded limit,
-            # preserving an independent evidence window for each instrument.
-            symbol_rows = await supabase_client.fetch_predictions(
-                limit=500,
-                symbol=symbol,
-            )
+            symbol_rows = await supabase_client.fetch_authority_history(symbol=symbol)
+            history_complete_by_symbol[symbol] = True
         except Exception as e:
-            log.warning("directional stats fetch failed for %s: %s", symbol, e)
+            log.warning("directional authority history fetch failed for %s: %s", symbol, e)
             symbol_rows = []
+            history_complete_by_symbol[symbol] = False
+        history_rows_by_symbol[symbol] = len(symbol_rows)
         qualified_by_symbol[symbol] = [
             row for row in symbol_rows
             if is_proof_qualified(row)
@@ -631,6 +631,8 @@ async def _refresh_directional_stats() -> None:
             "proof_qualified_rows_raw": score["proof_qualified_rows_raw"],
             "independent_1h_rows": score["independent_1h_rows"],
             "authority_cohort": score["authority_cohort"],
+            "authority_history_complete": history_complete_by_symbol.get(symbol, False),
+            "authority_history_rows": history_rows_by_symbol.get(symbol, 0),
         }
         log.info(
             "directional gates symbol=%s LONG_1h=%s(wr=%.1f%% n=%d) "

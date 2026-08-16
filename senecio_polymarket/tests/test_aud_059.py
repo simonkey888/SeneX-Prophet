@@ -165,7 +165,7 @@ class RuntimeControlAuthorityTests(unittest.TestCase):
         oracle_runner._state.update(self._saved_state)
 
     def _refresh(self, rows):
-        with patch.object(supabase_client, "fetch_predictions", new=AsyncMock(return_value=rows)):
+        with patch.object(supabase_client, "fetch_authority_history", new=AsyncMock(return_value=rows)):
             import asyncio
             asyncio.run(oracle_runner._refresh_directional_stats())
         return oracle_runner._state["directional_stats"]
@@ -206,7 +206,7 @@ class RuntimeControlAuthorityTests(unittest.TestCase):
 
         def refresh(rows):
             boundary = _BoundedPredictionFetch(rows)
-            with patch.object(supabase_client, "fetch_predictions", new=boundary):
+            with patch.object(supabase_client, "fetch_authority_history", new=boundary):
                 import asyncio
                 asyncio.run(oracle_runner._refresh_directional_stats())
             return copy.deepcopy(oracle_runner._state["directional_stats"]), boundary.calls
@@ -218,10 +218,10 @@ class RuntimeControlAuthorityTests(unittest.TestCase):
         for key in ("authority_1h", "gates", "short_only_paper_mode", "authority_cohort"):
             self.assertEqual(btc_solo[key], btc_mixed[key], key)
         self.assertEqual(btc_mixed["independent_1h_rows"], 40)
-        self.assertIn({"limit": 500, "symbol": "BTCUSDT"}, mixed_calls)
-        self.assertIn({"limit": 500, "symbol": "ETHUSDT"}, mixed_calls)
-        self.assertIn({"limit": 500, "symbol": None}, mixed_calls)
-        self.assertIn({"limit": 500, "symbol": "BTCUSDT"}, solo_calls)
+        self.assertIn({"limit": 50, "symbol": "BTCUSDT"}, mixed_calls)
+        self.assertIn({"limit": 50, "symbol": "ETHUSDT"}, mixed_calls)
+        self.assertNotIn({"limit": 50, "symbol": None}, mixed_calls)
+        self.assertIn({"limit": 50, "symbol": "BTCUSDT"}, solo_calls)
 
 
 class LiveReadinessAuthorityTests(unittest.TestCase):
@@ -333,7 +333,7 @@ class LiveReadinessAuthorityTests(unittest.TestCase):
             boundary = _BoundedPredictionFetch(rows)
             with (
                 patch.object(main, "_get_coordinator", return_value=_BoundaryGateCoordinator()),
-                patch.object(supabase_client, "fetch_predictions", new=boundary),
+                patch.object(supabase_client, "fetch_authority_history", new=boundary),
             ):
                 state = asyncio.run(main.portfolio_live_gate(symbol="BTC/USDT"))
             return state, boundary.calls
@@ -343,7 +343,7 @@ class LiveReadinessAuthorityTests(unittest.TestCase):
         for key in ("verified", "conditions", "unlocked", "trade_mode", "live_capital_locked"):
             self.assertEqual(solo[key], mixed[key], key)
         self.assertEqual(mixed["verified"], 40)
-        self.assertEqual(calls, [{"limit": 500, "symbol": "BTCUSDT"}])
+        self.assertEqual(calls, [{"limit": 50, "symbol": "BTCUSDT"}])
 
     def test_research_report_query_boundary_filters_btc_before_limit(self):
         import asyncio
@@ -392,7 +392,7 @@ class LiveReadinessAuthorityTests(unittest.TestCase):
             with (
                 patch.object(main, "_research_coord", ResearchCoordinatorStub()),
                 patch.object(main, "_get_coordinator", return_value=_BoundaryGateCoordinator()),
-                patch.object(supabase_client, "fetch_predictions", new=boundary),
+                patch.object(supabase_client, "fetch_authority_history", new=boundary),
                 patch.object(research, "build_institutional_report", side_effect=build_report_stub),
             ):
                 result = asyncio.run(main.research_report(RequestStub()))
@@ -403,7 +403,7 @@ class LiveReadinessAuthorityTests(unittest.TestCase):
         for key in ("verified", "conditions", "unlocked", "trade_mode", "live_capital_locked"):
             self.assertEqual(solo[key], mixed[key], key)
         self.assertEqual(mixed["verified"], 40)
-        self.assertEqual(calls, [{"limit": 500, "symbol": "BTCUSDT"}])
+        self.assertEqual(calls, [{"limit": 50, "symbol": "BTCUSDT"}])
 
 
 class TestDiscoveryIntegrityTests(unittest.TestCase):

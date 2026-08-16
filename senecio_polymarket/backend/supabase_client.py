@@ -128,6 +128,89 @@ async def fetch_predictions(limit: int = 50, symbol: Optional[str] = None) -> li
         return []
 
 
+AUTHORITY_HISTORY_PAGE_SIZE_MAX = 500
+AUTHORITY_HISTORY_MAX_PAGES = 10_000
+
+
+class AuthorityHistoryIncompleteError(RuntimeError):
+    """Raised when complete authority history cannot be proven retrieved."""
+
+
+async def fetch_authority_history(
+    symbol: Optional[str] = None,
+    *,
+    page_size: int = 250,
+    max_pages: int = AUTHORITY_HISTORY_MAX_PAGES,
+) -> list[dict]:
+    """Fetch complete history with deterministic keyset pagination.
+
+    Authority/control callers must use this instead of a newest-N query. Each
+    request page is bounded, but the semantic result is the complete visible
+    dataset. Any HTTP, response-shape, cursor, or page-cap failure raises rather
+    than silently returning a truncated authority cohort.
+    """
+    normalized_symbol = (
+        str(symbol).upper().replace("/", "").replace("-", "").strip()
+        if symbol else None
+    )
+    bounded_page_size = max(1, min(int(page_size), AUTHORITY_HISTORY_PAGE_SIZE_MAX))
+    bounded_max_pages = max(1, int(max_pages))
+    c = _get_client()
+    collected: list[dict] = []
+    cursor: tuple[str, str] | None = None
+    seen: set[tuple[str, str]] = set()
+
+    for _ in range(bounded_max_pages):
+        params = {
+            "limit": str(bounded_page_size),
+            "order": "ts.asc,id.asc",
+        }
+        if normalized_symbol:
+            params["symbol"] = f"eq.{normalized_symbol}"
+        if cursor is not None:
+            cursor_ts, cursor_id = cursor
+            params["or"] = f"(ts.gt.{cursor_ts},and(ts.eq.{cursor_ts},id.gt.{cursor_id}))"
+
+        try:
+            r = await c.get(f"/{SUPABASE_TABLE}", params=params)
+        except Exception as exc:
+            raise AuthorityHistoryIncompleteError(
+                f"AUTHORITY_HISTORY_REQUEST_ERROR:{type(exc).__name__}"
+            ) from exc
+        if r.status_code != 200:
+            raise AuthorityHistoryIncompleteError(
+                f"AUTHORITY_HISTORY_HTTP_{r.status_code}"
+            )
+        page = r.json()
+        if not isinstance(page, list):
+            raise AuthorityHistoryIncompleteError("AUTHORITY_HISTORY_RESPONSE_NOT_LIST")
+
+        for row in page:
+            if not isinstance(row, dict):
+                raise AuthorityHistoryIncompleteError("AUTHORITY_HISTORY_ROW_NOT_OBJECT")
+            ts = str(row.get("ts") or "")
+            row_id = str(row.get("id") or "")
+            if not ts or not row_id:
+                raise AuthorityHistoryIncompleteError("AUTHORITY_HISTORY_CURSOR_FIELD_MISSING")
+            key = (ts, row_id)
+            if key in seen:
+                raise AuthorityHistoryIncompleteError("AUTHORITY_HISTORY_DUPLICATE_CURSOR")
+            seen.add(key)
+            collected.append(row)
+
+        if len(page) < bounded_page_size:
+            return collected
+        last = page[-1]
+        next_cursor = (str(last.get("ts") or ""), str(last.get("id") or ""))
+        if not all(next_cursor) or next_cursor == cursor:
+            raise AuthorityHistoryIncompleteError("AUTHORITY_HISTORY_CURSOR_STALLED")
+        cursor = next_cursor
+
+    raise AuthorityHistoryIncompleteError(
+        f"AUTHORITY_HISTORY_PAGE_CAP_HIT:{bounded_max_pages}"
+    )
+
+
 async def count_predictions() -> int:
     """Get total prediction count by fetching all IDs (works around content-range header issues)."""
     try:
