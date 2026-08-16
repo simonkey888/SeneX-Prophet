@@ -88,7 +88,7 @@ jobs:
           main = Path('senecio_polymarket/backend/main.py').read_text()
           runner = Path('senecio_polymarket/backend/oracle_runner.py').read_text()
           score = Path('senecio_polymarket/backend/authoritative_score.py').read_text()
-          assert 'contents: write' not in workflow
+          assert '\npermissions:\n  contents: read\n' in workflow
           assert 'persist-credentials: false' in workflow
           assert 'fetch_predictions(limit=500, symbol=normalized_symbol)' not in real
           assert 'rows = await supabase_client.fetch_predictions(\n                limit=500,\n                symbol=normalized_symbol' not in main
