@@ -177,19 +177,21 @@ class PortfolioSymbolIsolationTests(unittest.TestCase):
         oracle_runner._state.update(self._saved_state)
 
     def _seed(self):
+        oracle_runner._state["trade_mode"] = "PAPER"
+        oracle_runner._state["live_capital_locked"] = True
         oracle_runner._state["directional_stats"] = {
             "per_symbol": {
                 "BTCUSDT": {
-                    "gates": {
-                        "long_1h": {"pass": True, "win_rate_pct": 72.0, "n": 101},
-                        "short_1h": {"pass": False, "win_rate_pct": 48.0, "n": 101},
+                    "authority_1h": {
+                        "LONG": {"win_rate_pct": 72.0, "verified": 101},
+                        "SHORT": {"win_rate_pct": 48.0, "verified": 101},
                     },
                     "short_only_paper_mode": False,
                 },
                 "ETHUSDT": {
-                    "gates": {
-                        "long_1h": {"pass": False, "win_rate_pct": 40.0, "n": 88},
-                        "short_1h": {"pass": True, "win_rate_pct": 75.0, "n": 88},
+                    "authority_1h": {
+                        "LONG": {"win_rate_pct": 40.0, "verified": 88},
+                        "SHORT": {"win_rate_pct": 75.0, "verified": 88},
                     },
                     "short_only_paper_mode": True,
                 },
@@ -208,12 +210,13 @@ class PortfolioSymbolIsolationTests(unittest.TestCase):
         market = {"ohlcv": [[i, 0, 0, 0, 100.0 + i * 0.01, 1] for i in range(20)]}
         with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
             asyncio.run(oracle_runner._route_to_portfolio(prediction, market))
-        self.assertEqual(len(coord.portfolio_engine.calls), 1)
-        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_mode"], False)
-        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_long"], 0.72)
-        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_short"], 0.48)
-        self.assertEqual(coord.risk_kernel.calls[0]["short_only_mode"], False)
-        self.assertEqual(coord.execution_engine.calls[0]["short_only_mode"], False)
+        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_paper_mode"], False)
+        self.assertEqual(coord.risk_kernel.calls[0]["short_only_paper_mode"], False)
+        self.assertEqual(coord.risk_kernel.calls[0]["trade_mode"], "PAPER")
+        self.assertTrue(coord.risk_kernel.calls[0]["live_capital_locked"])
+        self.assertEqual(coord.execution_engine.calls[0]["trade_mode"], "PAPER")
+        self.assertFalse(coord.execution_engine.calls[0]["allow_live"])
+        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.72, "SHORT": 0.48})
 
     def test_eth_portfolio_uses_only_eth_stats(self):
         self._seed()
@@ -222,11 +225,13 @@ class PortfolioSymbolIsolationTests(unittest.TestCase):
         market = {"ohlcv": [[i, 0, 0, 0, 100.0 + i * 0.01, 1] for i in range(20)]}
         with patch.object(oracle_runner, "_get_portfolio_coordinator", return_value=coord):
             asyncio.run(oracle_runner._route_to_portfolio(prediction, market))
-        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_mode"], True)
-        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_long"], 0.40)
-        self.assertEqual(coord.portfolio_engine.calls[0]["win_rate_short"], 0.75)
-        self.assertEqual(coord.risk_kernel.calls[0]["short_only_mode"], True)
-        self.assertEqual(coord.execution_engine.calls[0]["short_only_mode"], True)
+        self.assertEqual(coord.portfolio_engine.calls[0]["short_only_paper_mode"], True)
+        self.assertEqual(coord.risk_kernel.calls[0]["short_only_paper_mode"], True)
+        self.assertEqual(coord.risk_kernel.calls[0]["trade_mode"], "PAPER")
+        self.assertTrue(coord.risk_kernel.calls[0]["live_capital_locked"])
+        self.assertEqual(coord.execution_engine.calls[0]["trade_mode"], "PAPER")
+        self.assertFalse(coord.execution_engine.calls[0]["allow_live"])
+        self.assertEqual(coord.ingested[0]["win_rate_by_direction"], {"LONG": 0.40, "SHORT": 0.75})
 
 
 class ContractPreservationTests(unittest.TestCase):
@@ -240,8 +245,13 @@ class ContractPreservationTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         core = (root / "oracle_runtime" / "institutional_core.py").read_text()
         real = (root / "oracle_runtime" / "institutional_core_real.py").read_text()
-        self.assertIn("row_symbol != symbol", core)
-        self.assertIn("row_symbol != symbol", real)
+        self.assertIn(
+            '_normalize_symbol(str(row.get("symbol") or "")) == normalized',
+            core,
+        )
+        self.assertIn("normalized = _learning._normalize_symbol(symbol)", real)
+        self.assertIn("fetch_shadow_authoritative_rows(normalized)", real)
+        self.assertIn("replay_shadow_only_learning(", real)
 
     def test_semgrep_workflow_remains_absent(self):
         root = Path(__file__).resolve().parents[2]
