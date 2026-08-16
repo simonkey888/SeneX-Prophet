@@ -4,9 +4,10 @@ on:
   push:
     branches:
       - audit/aud-065-authority-history-completeness
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   aud065:
@@ -15,14 +16,13 @@ jobs:
     env:
       BASE_SHA: 7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690
       BASE_TREE: 27eb923e615614b43fe3c29ecace8b7ef503045e
-      BRANCH: audit/aud-065-authority-history-completeness
     steps:
-      - name: Checkout AUD-065 branch
+      - name: Checkout exact candidate head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: audit/aud-065-authority-history-completeness
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Assert canonical base and exact head
         shell: bash
@@ -33,49 +33,19 @@ jobs:
           test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
           test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
 
-      - name: Materialize correction once
-        id: materialize
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f senecio_polymarket/tests/test_aud_065.py ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          python scripts/aud065_materialize.py
-          git config user.name "Simon Dalmasso"
-          git config user.email "simondalmasso44@gmail.com"
-          git add \
-            senecio_polymarket/backend/supabase_client.py \
-            senecio_polymarket/backend/main_real.py \
-            senecio_polymarket/backend/oracle_runner.py \
-            senecio_polymarket/backend/main.py \
-            senecio_polymarket/tests/test_aud_059.py \
-            senecio_polymarket/tests/test_aud_065.py \
-            senecio_polymarket/docs/evidence/aud-065-post-merge-production-acceptance.md
-          git commit -m "aud065: make authority history complete beyond transport pages"
-          git push origin "HEAD:$BRANCH"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Materializer receipt
-        if: steps.materialize.outputs.changed == 'true'
-        shell: bash
-        run: echo "AUD065_CANDIDATE_PUSHED=YES"
-
       - name: Install test dependencies
-        if: steps.materialize.outputs.changed != 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install -q -r senecio_polymarket/requirements.txt
 
       - name: Focused AUD regressions
-        if: steps.materialize.outputs.changed != 'true'
         working-directory: senecio_polymarket
         shell: bash
         run: |
           set -euo pipefail
           python -m unittest -v \
+            tests.test_aud_057 \
             tests.test_aud_059 \
             tests.test_aud_063 \
             tests.test_aud_064 \
@@ -83,7 +53,6 @@ jobs:
             tests.test_authoritative_learning
 
       - name: Full repository test discovery
-        if: steps.materialize.outputs.changed != 'true'
         working-directory: senecio_polymarket
         shell: bash
         run: |
@@ -91,7 +60,6 @@ jobs:
           python -m unittest discover -v -s tests -p 'test_*.py'
 
       - name: Exact-head scope and safety gates
-        if: steps.materialize.outputs.changed != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -115,14 +83,22 @@ jobs:
           fi
           python - <<'PY'
           from pathlib import Path
+          workflow = Path('.github/workflows/aud-065.yml').read_text()
           real = Path('senecio_polymarket/backend/main_real.py').read_text()
           main = Path('senecio_polymarket/backend/main.py').read_text()
           runner = Path('senecio_polymarket/backend/oracle_runner.py').read_text()
+          score = Path('senecio_polymarket/backend/authoritative_score.py').read_text()
+          assert 'contents: write' not in workflow
+          assert 'persist-credentials: false' in workflow
           assert 'fetch_predictions(limit=500, symbol=normalized_symbol)' not in real
           assert 'rows = await supabase_client.fetch_predictions(\n                limit=500,\n                symbol=normalized_symbol' not in main
           assert 'symbol_rows = await supabase_client.fetch_predictions(\n                limit=500,\n                symbol=symbol' not in runner
           assert 'diagnostic_rows = await supabase_client.fetch_predictions(limit=500)' in runner
+          assert 'MIN_GLOBAL_N = 100' in score
+          assert 'MIN_DIRECTION_N = 30' in score
+          assert 'INDEPENDENT_HORIZON_S = 3600.0' in score
           print('AUTHORITY_QUERY_BOUNDARY=PASS')
+          print('WORKFLOW_TRUST_BOUNDARY=READ_ONLY')
           PY
           echo "SCOPE_DIFF=PASS"
           echo "PAPER_LOCK=PASS"
@@ -130,7 +106,6 @@ jobs:
           echo "TUNING_MUTATIONS=0"
 
       - name: Materialize exact-head evidence
-        if: steps.materialize.outputs.changed != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -143,8 +118,8 @@ jobs:
             echo "HEAD_SHA=$head"
             echo "HEAD_TREE=$tree"
             echo "FILES_CHANGED=$files"
-            echo "SAME_SYMBOL_501_REPRO_BEFORE=INDEPENDENT_N_125"
-            echo "SAME_SYMBOL_501_REPRO_AFTER=INDEPENDENT_N_126"
+            echo "SAME_SYMBOL_501_REPRO_BEFORE=INPUT_500_AUTHORITY_N_125"
+            echo "SAME_SYMBOL_501_REPRO_AFTER=INPUT_501_AUTHORITY_N_126"
             echo "AUTHORITY_COMPLETE_HISTORY=PASS"
             echo "TRANSPORT_PAGE_INVARIANCE=PASS"
             echo "ORACLE_RUNTIME_RECONCILIATION=PASS"
@@ -156,10 +131,8 @@ jobs:
             echo "FROZEN_WEIGHTS=PASS"
             echo "EXTERNAL_DIRECTIONAL=OFF"
             echo "PAPER_LOCK=PASS"
-            echo "SCORE001=PENDING_GENERIC_PR_GATE"
-            echo "SCORE002=PENDING_GENERIC_PR_GATE"
-            echo "SMOKE=PENDING_GENERIC_PR_GATE"
             echo "FULL_SUITE=PASS"
+            echo "AUD065_WORKFLOW=READ_ONLY"
             echo "PRODUCTION_MUTATIONS=0"
             echo "SUPABASE_DATA_MUTATIONS=0"
             echo "RUNTIME017_MUTATIONS=0"
@@ -173,7 +146,6 @@ jobs:
           cat aud065-evidence/receipt.txt
 
       - name: Upload exact-head AUD-065 evidence
-        if: steps.materialize.outputs.changed != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: aud-065-${{ github.sha }}
