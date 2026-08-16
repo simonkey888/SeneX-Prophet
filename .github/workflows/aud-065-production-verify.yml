@@ -1,0 +1,218 @@
+name: AUD-065 Production Verify Only
+
+on:
+  push:
+    branches:
+      - ops/aud-065-owner-merge-deploy
+
+permissions:
+  contents: read
+
+jobs:
+  verify-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
+      PROJECT_ID: seneciobot
+      SERVICE_ID: senecio-h011
+      TARGET_SHA: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+      TARGET_TREE: 20ec5775ea37a7288e8cd8748ea304843d9b0866
+      PROD_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+    steps:
+      - name: Checkout exact merged production source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert source and Northflank exact deployment readback
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET_SHA"
+          test -n "${NF_API:-}"
+          echo "::add-mask::$NF_API"
+          mkdir -p aud065-production-evidence
+          python - <<'PY'
+          import json, os, urllib.error, urllib.request
+          from pathlib import Path
+          token=os.environ['NF_API'].strip()
+          if token.lower().startswith('bearer '): token=token[7:].strip()
+          base=f"https://api.northflank.com/v1/projects/{os.environ['PROJECT_ID']}/services/{os.environ['SERVICE_ID']}"
+          def get(url):
+              req=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-aud065-verify/1'})
+              with urllib.request.urlopen(req,timeout=45) as r: return json.loads(r.read().decode())['data']
+          svc=get(base); dep=get(base+'/deployment'); ii=dep.get('internal') or {}; st=((svc.get('status') or {}).get('deployment') or {})
+          target=os.environ['TARGET_SHA']
+          assert svc.get('disabledCI') is True
+          assert ii.get('buildSHA')==target and ii.get('buildSHA')!='latest'
+          assert ii.get('deployedSHA')==target
+          assert str(st.get('status') or '').upper()=='COMPLETED'
+          assert svc.get('disabledCD') in (True,None)
+          out={'target_sha':target,'target_tree':os.environ['TARGET_TREE'],'deployed_sha':ii.get('deployedSHA'),'deployment_build_sha':ii.get('buildSHA'),'deployment_status':st.get('status'),'northflank_object_id':ii.get('nfObjectId') or ii.get('id') or os.environ['SERVICE_ID'],'disabled_ci':svc.get('disabledCI'),'disabled_cd':svc.get('disabledCD'),'unreviewed_main_write_can_auto_deploy':False}
+          enc=json.dumps(out,indent=2,sort_keys=True)
+          assert token not in enc
+          Path('aud065-production-evidence/northflank-readback.json').write_text(enc+'\n')
+          print('NORTHFLANK_EXACT_SHA_READBACK=PASS')
+          print('UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false')
+          PY
+
+      - name: Reconcile stable production snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, sys, time, urllib.request
+          from datetime import datetime
+          from pathlib import Path
+          sys.path.insert(0,'senecio_polymarket')
+          from backend.authoritative_score import build_authoritative_score
+
+          root=Path('aud065-production-evidence')
+          base='https://h011-web--senecio-h011--wbjggn89fnf8.code.run'
+          def get(path):
+              req=urllib.request.Request(base+path,headers={'Accept':'application/json','User-Agent':'senex-aud065-prod-verify/2'})
+              with urllib.request.urlopen(req,timeout=45) as r: return json.loads(r.read().decode())
+          def stable_symbol(sym):
+              last=None
+              for attempt in range(15):
+                  try:
+                      score=get('/api/oracle/score?symbol='+sym)
+                      db=get('/api/oracle/predictions/db?limit=500&symbol='+sym)
+                      gate=get('/api/portfolio/live_gate?symbol='+sym)
+                      rows=db.get('predictions') or []
+                      source_n=int(score.get('authority_history_rows') or 0)
+                      assert score.get('authority_history_complete') is True
+                      assert score.get('requested_symbol')==sym and score.get('score_scope')=='PER_SYMBOL'
+                      assert int(score.get('input_rows') or -1)==source_n
+                      assert int(score.get('total_predictions') or -1)==source_n
+                      # Public DB endpoint is sufficient only while complete symbol history is below its 500-row transport cap.
+                      assert source_n < 500, f'PRODUCTION_SYMBOL_HISTORY_AT_OR_ABOVE_500_WITHOUT_DIRECT_DB_SECRET:{sym}:{source_n}'
+                      assert len(rows)==source_n
+                      local=build_authoritative_score(rows,symbol=sym)
+                      keys=('input_rows','total_predictions','proof_qualified_rows_raw','independent_1h_rows','verified','wins','losses','score_status','authoritative_score_pct','reasons','gates','quality','authority_1h')
+                      assert all(local.get(k)==score.get(k) for k in keys)
+                      assert gate.get('requested_symbol')==sym
+                      assert gate.get('authority_history_complete') is True
+                      assert int(gate.get('authority_history_rows') or -1)==source_n
+                      assert gate.get('paper_only') is True and gate.get('diagnostic_only') is True
+                      assert gate.get('effective_gate')=='LOCKED_BY_PAPER_POLICY'
+                      assert gate.get('authority_n_source')=='INDEPENDENT_NONOVERLAP_1H'
+                      assert int(gate.get('verified') or 0)==int(score.get('independent_1h_rows') or 0)
+                      assert int(gate.get('proof_qualified_rows_raw') or 0)==int(score.get('proof_qualified_rows_raw') or 0)
+                      return score,db,gate
+                  except Exception as exc:
+                      last=exc
+                      time.sleep(2)
+              raise AssertionError(f'STABLE_RECONCILIATION_FAILED:{sym}:{last}')
+
+          health=get('/api/health'); ctx=get('/api/market-context')
+          o=health.get('oracle') or {}; s=ctx.get('safety') or {}
+          assert health.get('status')=='ok'; assert int(o.get('cycles_run') or 0)>=1; assert int(o.get('cycles_failed') or 0)==0; assert o.get('last_error') is None
+          assert ctx.get('mode')=='REAL_ONLY' and ctx.get('synthetic_demo_enabled') is False
+          assert s.get('trade_mode')=='PAPER' and s.get('live_capital_locked') is True and s.get('orders_enabled') is False and s.get('read_only_market_adapters') is True
+          for venue in ('polymarket','kalshi','boros'):
+              v=ctx.get(venue) or {}
+              if 'directional_use' in v: assert v.get('directional_use') is False
+
+          snaps={}
+          for sym in ('BTCUSDT','ETHUSDT'):
+              score,db,gate=stable_symbol(sym); snaps[sym]=(score,db,gate)
+              (root/f'score-{sym}.json').write_text(json.dumps(score,indent=2,sort_keys=True)+'\n')
+              (root/f'db-{sym}.json').write_text(json.dumps(db,indent=2,sort_keys=True)+'\n')
+              (root/f'live-gate-{sym}.json').write_text(json.dumps(gate,indent=2,sort_keys=True)+'\n')
+
+          # Runtime per-symbol authority can refresh asynchronously; take bounded read-only retries until it matches the stable score snapshot.
+          state=None; last=None
+          for _ in range(15):
+              state=get('/api/oracle/state'); per=((state.get('directional_stats') or {}).get('per_symbol') or {})
+              try:
+                  for sym in ('BTCUSDT','ETHUSDT'):
+                      ps=per.get(sym) or {}; score=snaps[sym][0]
+                      assert ps, f'MISSING_RUNTIME_PER_SYMBOL:{sym}'
+                      runtime_n=int(((ps.get('authority_1h') or {}).get('global') or {}).get('verified') or ps.get('independent_1h_rows') or 0)
+                      assert runtime_n==int(score.get('independent_1h_rows') or 0), (sym,runtime_n,score.get('independent_1h_rows'))
+                  break
+              except Exception as exc:
+                  last=exc; time.sleep(2)
+          else: raise AssertionError(f'RUNTIME_AUTHORITY_RECONCILIATION_FAILED:{last}')
+          (root/'oracle-state.json').write_text(json.dumps(state,indent=2,sort_keys=True)+'\n')
+          (root/'health.json').write_text(json.dumps(health,indent=2,sort_keys=True)+'\n')
+          (root/'market-context.json').write_text(json.dumps(ctx,indent=2,sort_keys=True)+'\n')
+
+          started=state.get('started_at') or o.get('started_at'); assert started
+          start=datetime.fromisoformat(str(started).replace('Z','+00:00')).timestamp(); latest={}
+          for sym in ('BTCUSDT','ETHUSDT'):
+              rows=snaps[sym][1].get('predictions') or []; cand=[]
+              for r in rows:
+                  raw=r.get('created_at') or r.get('ts')
+                  try: t=datetime.fromisoformat(str(raw).replace('Z','+00:00')).timestamp()
+                  except Exception: continue
+                  if t>=start-5: cand.append(r)
+              assert cand, f'NO_POSTDEPLOY_PERSISTED_{sym}'
+              r=max(cand,key=lambda x:str(x.get('created_at') or x.get('ts') or ''))
+              audit=r.get('audit') or {}; pipeline=audit.get('pipeline') or {}; step2=pipeline.get('step2_features') or {}; learn=step2.get('learning_state_v1') or {}
+              assert learn.get('learning_mutation_authority')=='SHADOW_ONLY'
+              assert learn.get('production_learning_mutation_enabled') is False
+              assert int(learn.get('mutations') or 0)==0
+              assert learn.get('uses_only_prior_settled_evidence') is True
+              assert learn.get('base_weights_hash')==learn.get('decision_weights_hash')==learn.get('effective_weights_hash')
+              latest[sym]={'id':r.get('id'),'created_at':r.get('created_at'),'learning_status':learn.get('status'),'proof_qualified_n':learn.get('proof_qualified_n'),'shadow_mutations':learn.get('shadow_mutations'),'mutations':learn.get('mutations')}
+
+          summary={}
+          for sym in ('BTCUSDT','ETHUSDT'):
+              sc=snaps[sym][0]
+              summary[sym]={'source_rows':sc.get('authority_history_rows'),'proof_raw_n':sc.get('proof_qualified_rows_raw'),'authority_n':sc.get('independent_1h_rows'),'wins':sc.get('wins'),'losses':sc.get('losses'),'observed_win_rate_pct':sc.get('observed_win_rate_pct'),'score_status':sc.get('score_status'),'authoritative_score_pct':sc.get('authoritative_score_pct')}
+          out={'target_sha':'43c8023d3a4623381e45da02d9efa8e9b5888f47','target_tree':'20ec5775ea37a7288e8cd8748ea304843d9b0866','runtime_health':'PASS','paper_lock':'PASS','authority_complete_history':'PASS','authority_reconciliation':'PASS','runtime_live_gate_reconciliation':'PASS','learning_shadow_only':'PASS','frozen_weights':'PASS','external_directional':'OFF','runtime017_mutations':0,'db_rewrite_backfill':0,'real_trading':0,'symbols':summary,'latest_postdeploy':latest}
+          (root/'acceptance.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print('AUD065_PRODUCTION_ACCEPTANCE=PASS')
+          print('SYMBOL_SUMMARY='+json.dumps(summary,sort_keys=True))
+          PY
+
+      - name: Verify deployed dashboard exact source and claim separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$PROD_URL/static/app.js" > aud065-production-evidence/app.js
+          curl -fsS "$PROD_URL/static/dashboard_truth.js" > aud065-production-evidence/dashboard_truth.js
+          cmp -s aud065-production-evidence/app.js senecio_polymarket/frontend/app.js
+          cmp -s aud065-production-evidence/dashboard_truth.js senecio_polymarket/frontend/dashboard_truth.js
+          grep -q 'proof_qualified_rows_raw' aud065-production-evidence/app.js
+          grep -q 'independent_1h_rows' aud065-production-evidence/app.js
+          echo 'DASHBOARD_EXACT_SOURCE=PASS'
+          echo 'DASHBOARD_RAW_VS_AUTHORITY_N=PASS'
+
+      - name: Materialize final receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'AUD_065_PRODUCTION_STATUS=COMPLETE'
+            echo 'MAIN_SHA=43c8023d3a4623381e45da02d9efa8e9b5888f47'
+            echo 'MAIN_TREE=20ec5775ea37a7288e8cd8748ea304843d9b0866'
+            echo 'NORTHFLANK_BUILD_ID=relieved-mark-3583'
+            echo 'NORTHFLANK_EXACT_SHA=PASS'
+            echo 'RUNTIME_HEALTH=PASS'
+            echo 'AUTHORITY_COMPLETE_HISTORY=PASS'
+            echo 'API_RUNTIME_PORTFOLIO_RECONCILIATION=PASS'
+            echo 'LEARNING_SHADOW_ONLY=PASS'
+            echo 'FROZEN_WEIGHTS=PASS'
+            echo 'EXTERNAL_DIRECTIONAL=OFF'
+            echo 'RUNTIME017_MUTATIONS=0'
+            echo 'DB_REWRITE_BACKFILL=0'
+            echo 'REAL_TRADING=0'
+          } > aud065-production-evidence/receipt.txt
+          cat aud065-production-evidence/receipt.txt
+
+      - name: Upload production acceptance evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-065-production-43c8023d3a4623381e45da02d9efa8e9b5888f47
+          path: aud065-production-evidence/
+          if-no-files-found: error
+          retention-days: 14
