@@ -1,0 +1,282 @@
+name: AUD-065 Owner Merge Deploy Acceptance
+
+on:
+  push:
+    branches:
+      - ops/aud-065-owner-merge-deploy
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NF_API: ${{ secrets.NORTHFLANK_API_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      PROJECT_ID: seneciobot
+      SERVICE_ID: senecio-h011
+      TEAM_ID: simondalmassos-team
+      TARGET_SHA: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+      TARGET_TREE: 20ec5775ea37a7288e8cd8748ea304843d9b0866
+      TARGET_BRANCH: main
+      PROD_URL: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+    steps:
+      - name: Checkout exact merged main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert merge identity and hard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$TARGET_TREE"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^1)" = "7af4b3bbc8cbfc839c981ac2ab2b5b4f06ecf690"
+          test "$(git rev-parse HEAD^2)" = "c953b0bb388afaa9009641ca39fb8fba36f2e359"
+          git diff --quiet HEAD^1..HEAD -- senecio_polymarket/backend/authoritative_score.py
+          git diff --quiet HEAD^1..HEAD -- senecio_polymarket/oracle_runtime/institutional_core.py
+          git diff --quiet HEAD^1..HEAD -- senecio_polymarket/oracle_runtime/institutional_core_real.py
+          git diff --quiet HEAD^1..HEAD -- senecio_polymarket/backend/settlement_proof.py
+          if git diff --name-only HEAD^1..HEAD | grep -Eiq 'runtime017|runtime_017|017_capacity|senex-017'; then exit 1; fi
+          echo 'MERGE_IDENTITY=PASS'
+          echo 'RUNTIME017_MUTATIONS=0'
+          echo 'TUNING_MUTATIONS=0'
+
+      - name: Explicit Northflank exact-SHA build and deploy
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NF_API:-}"
+          echo "::add-mask::$NF_API"
+          mkdir -p aud065-prod-evidence
+          python - <<'PY'
+          from __future__ import annotations
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          API='https://api.northflank.com/v1'
+          token=os.environ['NF_API'].strip()
+          if token.lower().startswith('bearer '): token=token[7:].strip()
+          if len(token)>=2 and token[0]==token[-1] and token[0] in "\"'": token=token[1:-1].strip()
+          if not token: raise RuntimeError('REPOSITORY_NORTHFLANK_SECRET_EMPTY')
+          project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']; team=os.environ['TEAM_ID']
+          target=os.environ['TARGET_SHA']; tree=os.environ['TARGET_TREE']; branch=os.environ['TARGET_BRANCH']
+          ledger=[]
+          def call(method,path,payload=None,query=None):
+              url=API+path+(('?'+urllib.parse.urlencode(query)) if query else '')
+              data=None if payload is None else json.dumps(payload).encode()
+              headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-aud065-owner/1'}
+              if data is not None: headers['Content-Type']='application/json'
+              req=urllib.request.Request(url,data=data,headers=headers,method=method)
+              try:
+                  with urllib.request.urlopen(req,timeout=45) as r: status=r.status; text=r.read().decode(errors='replace')
+              except urllib.error.HTTPError as e: status=e.code; text=e.read().decode(errors='replace')
+              try: body=json.loads(text) if text else {}
+              except Exception: body={}
+              ledger.append({'method':method,'path':path,'status':status})
+              print(f'NF_REQUEST method={method} path={path} status={status}',flush=True)
+              return status, body if isinstance(body,dict) else {}
+          def data(status,body,name,accepted=(200,)):
+              if status not in accepted:
+                  err=body.get('error') if isinstance(body.get('error'),dict) else {}
+                  print(f'{name}_ERROR code={str(err.get("code") or body.get("code"))[:100]} message={str(err.get("message") or body.get("message"))[:220]}',flush=True)
+                  raise RuntimeError(f'{name}_HTTP_{status}')
+              d=body.get('data'); return d if isinstance(d,dict) else {}
+
+          prefix=None; svc=None
+          for p in (f'/projects/{urllib.parse.quote(project)}', f'/teams/{urllib.parse.quote(team)}/projects/{urllib.parse.quote(project)}'):
+              s,b=call('GET',f'{p}/services/{service}')
+              if s==200: prefix=p; svc=data(s,b,'GET_SERVICE'); break
+          if not prefix or svc is None: raise RuntimeError('NORTHFLANK_AUTH_FAILED')
+          if svc.get('serviceType')!='combined': raise RuntimeError('UNEXPECTED_SERVICE_TYPE')
+          if svc.get('disabledCI') is not True: raise RuntimeError('AUTO_CI_NOT_CONTAINED_PREDEPLOY')
+          sp=f'{prefix}/services/{service}'
+          s,b=call('GET',f'{sp}/deployment'); dep=data(s,b,'GET_DEPLOYMENT')
+          ii=dep.get('internal') if isinstance(dep.get('internal'),dict) else {}
+          object_id=str(ii.get('nfObjectId') or ii.get('id') or service)
+          before={'disabled_ci':svc.get('disabledCI'),'disabled_cd':svc.get('disabledCD'),'build_sha':ii.get('buildSHA'),'deployed_sha':ii.get('deployedSHA')}
+          if before['build_sha']=='latest': raise RuntimeError('MOVING_REF_PRESENT_PREDEPLOY')
+          Path('aud065-prod-evidence/predeploy-containment.json').write_text(json.dumps(before,sort_keys=True,indent=2)+'\n')
+
+          s,b=call('POST',f'{sp}/build',{'sha':target}); build=data(s,b,'START_EXACT_BUILD',(200,201,202))
+          build_id=str(build.get('id') or '')
+          if build.get('sha') not in (None,target): raise RuntimeError('BUILD_START_WRONG_SHA')
+          if not build_id:
+              for _ in range(24):
+                  s,b=call('GET',f'{sp}/build',query={'per_page':100}); data(s,b,'LIST_BUILDS')
+                  d=b.get('data'); builds=d.get('builds') if isinstance(d,dict) else d
+                  if isinstance(builds,list):
+                      hit=next((x for x in builds if isinstance(x,dict) and x.get('sha')==target and x.get('id')),None)
+                      if hit: build_id=str(hit['id']); break
+                  time.sleep(5)
+          if not build_id: raise RuntimeError('EXACT_BUILD_ID_NOT_FOUND')
+          failures={'ABORTED','FAILURE','SUBMISSION_FAILURE','CRASHED','FAILED'}
+          build_status='UNKNOWN'; build_sha=None
+          for _ in range(100):
+              s,b=call('GET',f'{sp}/build/{urllib.parse.quote(build_id)}'); detail=data(s,b,'GET_BUILD')
+              build_status=str(detail.get('status') or 'UNKNOWN').upper(); build_sha=detail.get('sha')
+              print(f'BUILD_POLL id={build_id} status={build_status} sha={build_sha}',flush=True)
+              if build_sha not in (None,target): raise RuntimeError('BUILD_DETAIL_WRONG_SHA')
+              if build_status=='SUCCESS': break
+              if build_status in failures: raise RuntimeError(f'EXACT_BUILD_FAILED_{build_status}')
+              time.sleep(10)
+          if build_status!='SUCCESS' or build_sha!=target: raise RuntimeError('EXACT_BUILD_NOT_VERIFIED')
+
+          payload={'internal':{'id':object_id,'branch':branch,'buildSHA':target}}
+          s,b=call('POST',f'{sp}/deployment',payload); data(s,b,'DEPLOY_EXACT_SHA',(200,201,202))
+          deployed=None; deploy_status='UNKNOWN'; final_dep={}; final_svc={}
+          for _ in range(80):
+              s,b=call('GET',f'{sp}/deployment'); final_dep=data(s,b,'POLL_DEPLOYMENT')
+              fi=final_dep.get('internal') if isinstance(final_dep.get('internal'),dict) else {}
+              deployed=fi.get('deployedSHA')
+              s,b=call('GET',sp); final_svc=data(s,b,'POLL_SERVICE')
+              st=final_svc.get('status') if isinstance(final_svc.get('status'),dict) else {}; ds=st.get('deployment') if isinstance(st.get('deployment'),dict) else {}
+              deploy_status=str(ds.get('status') or 'UNKNOWN').upper()
+              print(f'DEPLOY_POLL status={deploy_status} deployed_sha={deployed}',flush=True)
+              if deployed==target and deploy_status=='COMPLETED': break
+              if deploy_status=='FAILED': raise RuntimeError('EXACT_DEPLOYMENT_FAILED')
+              time.sleep(10)
+          if deployed!=target or deploy_status!='COMPLETED': raise RuntimeError('EXACT_DEPLOYMENT_NOT_VERIFIED')
+          fi=final_dep.get('internal') if isinstance(final_dep.get('internal'),dict) else {}
+          if final_svc.get('disabledCI') is not True: raise RuntimeError('AUTO_CI_REENABLED')
+          if fi.get('buildSHA')!=target or fi.get('buildSHA')=='latest': raise RuntimeError('EXACT_PIN_LOST')
+          if final_svc.get('disabledCD') not in (True,None): raise RuntimeError('UNSAFE_CD_STATE')
+          receipt={'captured_at':datetime.now(timezone.utc).isoformat(),'target_sha':target,'target_tree':tree,'build_id':build_id,'build_status':build_status,'deployment_status':deploy_status,'deployed_sha':deployed,'deployment_build_sha':fi.get('buildSHA'),'northflank_object_id':str(fi.get('nfObjectId') or fi.get('id') or object_id),'disabled_ci':final_svc.get('disabledCI'),'disabled_cd':final_svc.get('disabledCD'),'unreviewed_main_write_can_auto_deploy':False,'request_ledger':ledger}
+          encoded=json.dumps(receipt,indent=2,sort_keys=True)
+          if token in encoded: raise RuntimeError('SECRET_LEAK_GATE')
+          Path('aud065-prod-evidence/northflank-deploy.json').write_text(encoded+'\n')
+          print('EXACT_BUILD_ID='+build_id)
+          print('EXACT_DEPLOYED_SHA='+target)
+          print('UNREVIEWED_MAIN_WRITE_CAN_AUTO_DEPLOY=false')
+          PY
+
+      - name: Wait for healthy restarted runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 100); do
+            if curl -fsS --max-time 15 "$PROD_URL/api/health" >/tmp/health.json; then
+              if jq -e '.status=="ok" and (.oracle.cycles_run|tonumber)>=1 and (.oracle.cycles_failed|tonumber)==0 and .oracle.last_error==null' /tmp/health.json >/dev/null 2>&1; then ok=1; break; fi
+            fi
+            echo "RUNTIME_POLL=$i"
+            sleep 5
+          done
+          test "$ok" = 1
+          cp /tmp/health.json aud065-prod-evidence/health.json
+          echo 'RUNTIME_HEALTH=PASS'
+
+      - name: Capture production API DB dashboard evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$PROD_URL/api/market-context" > aud065-prod-evidence/market-context.json
+          curl -fsS "$PROD_URL/api/oracle/state" > aud065-prod-evidence/oracle-state.json
+          curl -fsS "$PROD_URL/api/oracle/score?symbol=BTCUSDT" > aud065-prod-evidence/score-btc.json
+          curl -fsS "$PROD_URL/api/oracle/score?symbol=ETHUSDT" > aud065-prod-evidence/score-eth.json
+          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=BTCUSDT" > aud065-prod-evidence/db-btc.json
+          curl -fsS "$PROD_URL/api/oracle/predictions/db?limit=500&symbol=ETHUSDT" > aud065-prod-evidence/db-eth.json
+          curl -fsS "$PROD_URL/api/portfolio/live_gate?symbol=BTCUSDT" > aud065-prod-evidence/live-gate-btc.json
+          curl -fsS "$PROD_URL/api/portfolio/live_gate?symbol=ETHUSDT" > aud065-prod-evidence/live-gate-eth.json
+          curl -fsS "$PROD_URL/" > aud065-prod-evidence/dashboard.html
+          curl -fsS "$PROD_URL/static/app.js" > aud065-prod-evidence/app.js
+          curl -fsS "$PROD_URL/static/dashboard_truth.js" > aud065-prod-evidence/dashboard_truth.js
+
+      - name: Verify complete authority reconciliation and safety
+        working-directory: .
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          if [ -n "${SUPABASE_KEY:-}" ]; then echo "::add-mask::$SUPABASE_KEY"; fi
+          python - <<'PY'
+          import asyncio, json, os, sys
+          from datetime import datetime
+          from pathlib import Path
+          sys.path.insert(0,'senecio_polymarket')
+          from backend.authoritative_score import build_authoritative_score
+          from backend.settlement_proof import is_proof_qualified
+          E=Path('aud065-prod-evidence'); load=lambda n: json.loads((E/n).read_text())
+          h=load('health.json'); ctx=load('market-context.json'); state=load('oracle-state.json')
+          scores={'BTCUSDT':load('score-btc.json'),'ETHUSDT':load('score-eth.json')}
+          db={'BTCUSDT':load('db-btc.json'),'ETHUSDT':load('db-eth.json')}
+          gates={'BTCUSDT':load('live-gate-btc.json'),'ETHUSDT':load('live-gate-eth.json')}
+          o=h.get('oracle') or {}; assert h.get('status')=='ok'; assert int(o.get('cycles_run') or 0)>=1; assert int(o.get('cycles_failed') or 0)==0; assert o.get('last_error') is None
+          s=ctx.get('safety') or {}; assert ctx.get('mode')=='REAL_ONLY'; assert ctx.get('synthetic_demo_enabled') is False; assert s.get('trade_mode')=='PAPER'; assert s.get('live_capital_locked') is True; assert s.get('orders_enabled') is False; assert s.get('read_only_market_adapters') is True
+          for venue in ('polymarket','kalshi','boros'):
+              v=ctx.get(venue) or {}
+              if 'directional_use' in v: assert v.get('directional_use') is False
+
+          direct_rows={}
+          if os.environ.get('SUPABASE_URL') and os.environ.get('SUPABASE_KEY'):
+              from backend import supabase_client
+              async def get_all():
+                  return {sym: await supabase_client.fetch_authority_history(symbol=sym) for sym in ('BTCUSDT','ETHUSDT')}
+              direct_rows=asyncio.run(get_all())
+
+          summary={}
+          for sym in ('BTCUSDT','ETHUSDT'):
+              score=scores[sym]; bounded=db[sym]; public_rows=bounded.get('predictions') or []
+              assert score.get('requested_symbol')==sym; assert score.get('score_scope')=='PER_SYMBOL'; assert score.get('authority_history_complete') is True
+              source_n=int(score.get('authority_history_rows') or 0); assert int(score.get('input_rows') or -1)==source_n; assert int(score.get('total_predictions') or -1)==source_n
+              if sym in direct_rows:
+                  rows=direct_rows[sym]; assert len(rows)==source_n
+              else:
+                  assert len(public_rows)<500, f'DIRECT_DB_REQUIRED_{sym}_AT_OR_ABOVE_500'
+                  assert len(public_rows)==source_n
+                  rows=public_rows
+              local=build_authoritative_score(rows,symbol=sym)
+              for key in ('input_rows','total_predictions','proof_qualified_rows_raw','independent_1h_rows','verified','wins','losses','score_status','authoritative_score_pct','reasons','gates','quality','authority_1h'):
+                  assert local.get(key)==score.get(key), (sym,key,local.get(key),score.get(key))
+              assert (score.get('authority_1h') or {}).get('n_source')=='INDEPENDENT_NONOVERLAP_1H'
+              assert int(score.get('independent_1h_rows') or 0)<=int(score.get('proof_qualified_rows_raw') or 0)
+              if score.get('score_status')!='CALIBRATED': assert score.get('authoritative_score_pct') is None
+              gate=gates[sym]; assert gate.get('requested_symbol')==sym; assert gate.get('authority_history_complete') is True; assert int(gate.get('authority_history_rows') or -1)==source_n; assert gate.get('paper_only') is True; assert gate.get('diagnostic_only') is True; assert gate.get('effective_gate')=='LOCKED_BY_PAPER_POLICY'; assert gate.get('authority_n_source')=='INDEPENDENT_NONOVERLAP_1H'; assert int(gate.get('verified') or 0)==int(score.get('independent_1h_rows') or 0); assert int(gate.get('proof_qualified_rows_raw') or 0)==int(score.get('proof_qualified_rows_raw') or 0)
+              summary[sym]={'source_rows':source_n,'proof_raw_n':score.get('proof_qualified_rows_raw'),'authority_n':score.get('independent_1h_rows'),'wins':score.get('wins'),'losses':score.get('losses'),'observed_win_rate_pct':score.get('observed_win_rate_pct'),'score_status':score.get('score_status'),'authoritative_score_pct':score.get('authoritative_score_pct'),'direct_supabase_reconciled':sym in direct_rows}
+
+          per=((state.get('directional_stats') or {}).get('per_symbol') or {})
+          for sym in ('BTCUSDT','ETHUSDT'):
+              ps=per.get(sym) or {}; sc=scores[sym]
+              if ps:
+                  assert int(((ps.get('authority_1h') or {}).get('global') or {}).get('verified') or ps.get('independent_1h_rows') or 0)==int(sc.get('independent_1h_rows') or 0)
+
+          started=state.get('started_at') or o.get('started_at'); assert started; start=datetime.fromisoformat(str(started).replace('Z','+00:00')).timestamp()
+          latest={}
+          for sym in ('BTCUSDT','ETHUSDT'):
+              rows=(direct_rows.get(sym) or db[sym].get('predictions') or [])
+              cand=[]
+              for r in rows:
+                  raw=r.get('created_at') or r.get('ts')
+                  try: t=datetime.fromisoformat(str(raw).replace('Z','+00:00')).timestamp()
+                  except Exception: continue
+                  if t>=start-5: cand.append(r)
+              assert cand, f'NO_POSTDEPLOY_PERSISTED_{sym}'
+              r=max(cand,key=lambda x:str(x.get('created_at') or x.get('ts') or ''))
+              a=r.get('audit') or {}; p=a.get('pipeline') or {}; st=p.get('step2_features') or {}; l=st.get('learning_state_v1') or {}
+              assert l.get('learning_mutation_authority')=='SHADOW_ONLY'; assert l.get('production_learning_mutation_enabled') is False; assert int(l.get('mutations') or 0)==0; assert l.get('uses_only_prior_settled_evidence') is True; assert l.get('base_weights_hash')==l.get('decision_weights_hash')==l.get('effective_weights_hash')
+              latest[sym]={'id':r.get('id'),'created_at':r.get('created_at'),'learning_status':l.get('status'),'proof_qualified_n':l.get('proof_qualified_n'),'shadow_mutations':l.get('shadow_mutations'),'mutations':l.get('mutations')}
+
+          app=(E/'app.js').read_text(); assert "getJSON('/api/market-context')" in app; assert "getJSON('/api/oracle/score?symbol=BTCUSDT')" in app
+          assert (E/'app.js').read_bytes()==Path('senecio_polymarket/frontend/app.js').read_bytes(); assert (E/'dashboard_truth.js').read_bytes()==Path('senecio_polymarket/frontend/dashboard_truth.js').read_bytes()
+          out={'target_sha':os.environ['TARGET_SHA'],'target_tree':os.environ['TARGET_TREE'],'runtime_health':'PASS','paper_lock':'PASS','authority_complete_history':'PASS','authority_reconciliation':'PASS','runtime_live_gate_reconciliation':'PASS','learning_shadow_only':'PASS','frozen_weights':'PASS','external_directional':'OFF','runtime017_mutations':0,'db_rewrite_backfill':0,'real_trading':0,'symbols':summary,'latest_postdeploy':latest}
+          Path('aud065-prod-evidence/acceptance.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print('AUD065_PRODUCTION_ACCEPTANCE=PASS')
+          print(json.dumps(summary,sort_keys=True))
+          PY
+
+      - name: Upload exact production acceptance evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-065-production-${{ env.TARGET_SHA }}
+          path: aud065-prod-evidence/
+          if-no-files-found: error
+          retention-days: 14
