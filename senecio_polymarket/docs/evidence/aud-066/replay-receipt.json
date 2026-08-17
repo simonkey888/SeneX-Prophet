@@ -1,0 +1,234 @@
+{
+  "BASE_SHA": "43c8023d3a4623381e45da02d9efa8e9b5888f47",
+  "BASE_TREE": "20ec5775ea37a7288e8cd8748ea304843d9b0866",
+  "CODE_HASH": "bd9a3762f267ece36c57a892ba3b631f8f29b3b0075e5dd4eea15cac6d2161d9",
+  "CONFIDENCE_INTERVALS": {
+    "B": {
+      "brier_delta_block_bootstrap_95": [
+        -0.002243665188803312,
+        0.0025517541954785394
+      ],
+      "log_loss_delta_block_bootstrap_95": [
+        -0.004573566938434803,
+        0.005144669717380368
+      ]
+    },
+    "C": {
+      "brier_delta_block_bootstrap_95": [
+        -0.002578419282210115,
+        0.0026713452220098466
+      ],
+      "log_loss_delta_block_bootstrap_95": [
+        -0.005260359120655145,
+        0.005067643324950688
+      ]
+    }
+  },
+  "COST_USD": 0,
+  "DATASET_OR_MANIFEST_HASH": "a052eed154145ba1462192902b48d2c23f346949636f0967090aca3e04e1d511",
+  "DELTA_METRICS": {
+    "B": {
+      "brier_by_block": [
+        -1.4605400320888418e-05,
+        -0.002243665188803312,
+        0.0025517541954785394
+      ],
+      "brier_delta_block_bootstrap_95": [
+        -0.002243665188803312,
+        0.0025517541954785394
+      ],
+      "log_loss_by_block": [
+        4.800999630849567e-06,
+        -0.004573566938434803,
+        0.005144669717380368
+      ],
+      "log_loss_delta_block_bootstrap_95": [
+        -0.004573566938434803,
+        0.005144669717380368
+      ],
+      "mean_brier_delta": 9.782786878477963e-05,
+      "mean_log_loss_delta": 0.0001919679261921381
+    },
+    "C": {
+      "brier_by_block": [
+        0.0011003290366311536,
+        -0.002578419282210115,
+        0.0026713452220098466
+      ],
+      "brier_delta_block_bootstrap_95": [
+        -0.002578419282210115,
+        0.0026713452220098466
+      ],
+      "log_loss_by_block": [
+        0.0022858704450618994,
+        -0.005260359120655145,
+        0.005067643324950688
+      ],
+      "log_loss_delta_block_bootstrap_95": [
+        -0.005260359120655145,
+        0.005067643324950688
+      ],
+      "mean_brier_delta": 0.0003977516588102951,
+      "mean_log_loss_delta": 0.0006977182164524809
+    }
+  },
+  "EXCLUDED_SAMPLE_COUNTS_AND_REASONS": {
+    "LIQ_ROWS_BAD_TIMESTAMP_OR_SCHEMA": 0
+  },
+  "FEATURE_SPEC_HASH": "1ecdd66a97fca429efe6cd28d8f6e4a5da9ceb832926f5d13d4ab2e024248a36",
+  "FILES_CHANGED": [
+    ".github/workflows/aud-066-research.yml",
+    ".github/workflows/aud-066-verify.yml",
+    "senecio_polymarket/backend/research/aud066_analysis.py",
+    "senecio_polymarket/backend/research/aud066_liquidation.py",
+    "senecio_polymarket/docs/evidence/aud-066/feature-spec.md",
+    "senecio_polymarket/docs/evidence/aud-066/leakage-audit.md",
+    "senecio_polymarket/docs/evidence/aud-066/security-review.md",
+    "senecio_polymarket/docs/evidence/aud-066/source-matrix.md",
+    "senecio_polymarket/scripts/aud066_research.py",
+    "senecio_polymarket/tests/test_aud_066.py"
+  ],
+  "FINAL_TEST_WINDOW": [
+    "2025-04-01",
+    "2025-07-01",
+    "2025-10-01"
+  ],
+  "LEAKAGE_AUDIT": "PASS",
+  "NORTHFLANK_MUTATION": 0,
+  "POINT_IN_TIME_AUDIT": "PASS",
+  "PRIMARY_METRICS_BASELINE": {
+    "accuracy": 0.5333333333333333,
+    "balanced_accuracy": 0.5342237409269449,
+    "brier": 0.24926140755996137,
+    "calibration_intercept": 0.00037158343938485894,
+    "calibration_slope": 1.2076389505246403,
+    "ece_10": 0.030456852906550022,
+    "log_loss": 0.6916721523135622
+  },
+  "PRIMARY_METRICS_CANDIDATE": {
+    "accuracy": 0.5309941520467837,
+    "balanced_accuracy": 0.5323319849577122,
+    "brier": 0.24935923542874616,
+    "calibration_intercept": -0.0008354196591714944,
+    "calibration_slope": 0.8188294931120569,
+    "ece_10": 0.054792804767612974,
+    "log_loss": 0.6918641202397543
+  },
+  "PRODUCTION_MUTATION": "NO",
+  "RAW_OR_NORMALIZED_PROVENANCE_HASHES": [
+    "944d10d83ec82764c8c6f53f5ba648a7274128c2932dace44b21e7ffdb13e270",
+    "90608dbc4d91ff8feb272c0cd0f6db7019fba9c5accdc9fa1769fd16a9df7a4d",
+    "01f212b2a4e1d5d512dbc78ae20c203e0a3710ea41a244078ae9f97e941f0453",
+    "548e7f2e7acc73c29c48649f6d8d59039f9702072541ee9592c1fa95df7c9b83",
+    "4e32b740036e9890155f9a650c548fc4e0414ab59ba1257134a95444abb19508",
+    "d9bd62f9f26ed88bae440368173fcad2d37e74e41971d6241e68bd7d5a074227",
+    "1dd01ff36eff46ef039cbcaba96040d887c741d6e7f68e78a0969f893ab63424",
+    "5a1ec0e013ac2f5c514d5eb03f968086b29ff22c72c7be2c9ecab367bedb69fe",
+    "1fdee2c6db9ac7aaf3b663ef39e25ad9504b610df8d169622f371e6ea68c125b",
+    "b8adf863d60a607bfa4316dbbc551eb3bb4d072f137d1cb48df6f2fdf69b8a68",
+    "19d5fdf6a8284a2b236f15cbb9d4d31df457cb894529f2338914e2a09ee76b17",
+    "18c9c282f995b77b8897d6f328b671c39c23f22a8a0bbd388d30ceea3105a74a",
+    "2e6dec0db883d7240a1e4a2fa32e22b4a884aa96f8a5948bdd37ef029fba48ba",
+    "29411d8cce19faf7ae7d35c895f859246ec22a7da833470e9e45ab7a1b6406bc",
+    "0a110d25da18311eec1c50f2009183215e6584d678bfb8f66e0b02124e55e42d",
+    "79eb615c406ccc9ab0649e6abc3f003f4502ee729bb173b9b9855839db598bb2",
+    "8387c9d605f986bb6bde754735f5f9c2440ec76908f0d143af1b9282cefe981a",
+    "bc0c632b31ba5d6f1486e4e2ff88e508fb75ddf80137b4f0752a8af54529124d",
+    "1573e6463a22dccb005039bce3ba3cce2ef57541ec41f93b9140e2d8c3488cc9",
+    "c78050347155bede3912ef8d8c020c5c695c97ac210239c5c360f04d538c48be",
+    "c6d5704d9ea9f8c770f478e7122629591fdfbf02b6311aed6fdf30482563cb82",
+    "cdface04d6345d3203bb98c0f5ab6e9fedea905f63a54c413692105ad7a41088",
+    "de4a62760609c6fd5ac59302e9895863ca4e8e4681868624552375e6ae0f6fa8",
+    "0544094188237108feecfeecc23e4130d0056e07f0c93aa307d4f6dddf7f574f",
+    "58f06d337fae55be7fa1019ca4f62383ea2381bf69bc7a7e58497d96e34a0d0c",
+    "6f55f511d0a9a15fa0f44c24b79fd319e461c0516ea01c82582559ca16637739",
+    "3df826c09dbf7a1a29065a2757b3a7a529c15debf224bad5302e248b1eb384e6",
+    "e436f523890fc0857f66df7cbc131b5c852f8245ab13951eb5bc453657626119",
+    "7b59454dbc5f8eac0b88d093b73adb016a7a4493940399a5ecd14d29d2cb3ec4",
+    "2b5c36a144eebae67b08a844794fe0443b10d649aba999a94ef981612a0d6f08",
+    "a9bc8c06b2926d77262033aeddedad82353f972a6e8dee4f438fa626f231f039",
+    "e07e545e0f780ffa5e53a93afddb6effa18c82df56eed8d89d0fa9a9fddbbc32",
+    "99132fafe2f92430c22cc5dd55120495db29a421b33e39651e2efcbae942f549",
+    "dee988fc250b1f9663074bb49fb2cfb6d4408de8704c6d9616456b4304b600c5",
+    "1582666e4b211bfc85776a381f8ffb1d57732e4e8d10d7ee6f6e79d66cf085c9",
+    "f6e906f3d6c8f0f8ebe21c0f6c3bfe8eb8eadf258964906547404ea15cd5ff4a",
+    "dfe2b6571c76db2c2881503ca158659bc1ab0c59200fd63ca82cf71f94fd1fe8",
+    "723302d20d4b7f5d45a666f952b3656e0f54548e0eb123f59d293925b4e130ea",
+    "4576fb8171e5c25a9948394ab399b8dd673aee207d8a6ad2140543027a408547",
+    "ed0244056a8dcae9c9bc3b264a029d8a5f89802112554498c1aca4cc98265320",
+    "c57087ff8ff7c9a65d368f5506ff313bdb77c6a48edb65dbbf483d81ce924ba6",
+    "897e3a3f0c2b52628bfaab8cb68b2eeaf7575df8a3dc421e62f2b97de1ad8287",
+    "86a429ac60ff2e2b86ed8ad5bd66765d6c9181d90716433dc93bdaaca830770b",
+    "f3d001b7fe9492089bb2dd7d7ab78fce7734326b9973a65ebf6adf5883f08e44",
+    "f7701a685163e92b8fd76fe68aba42d4908e4a42211092c9071b0ead786d44c7",
+    "b6e743898e4bf23c429e269b595a172506552acf2d90c8d06c4f1ad455db9deb",
+    "e7e293d85671a7cb6bf651be878613729b60f611f32ad05a370070b4f630d3e9",
+    "ca7bbcda50921fab94b43000316ec7bd54162189c1f8696880d2f25db16f6541"
+  ],
+  "REAL_TRADING": 0,
+  "RESEARCH_HEAD_SHA": "5c688dd76ead1f0d1e94c88de5dc83a7905794ec",
+  "RESEARCH_HEAD_TREE": "a5301b3841275181af4aa8b1955b5c95c995c5ae",
+  "RUNTIME017_MUTATIONS": 0,
+  "SAMPLE_COUNTS": {
+    "blocks": [
+      {
+        "test_n": 285,
+        "train_n": 2280,
+        "validation_n": 285
+      },
+      {
+        "test_n": 285,
+        "train_n": 2565,
+        "validation_n": 285
+      },
+      {
+        "test_n": 285,
+        "train_n": 2850,
+        "validation_n": 285
+      }
+    ],
+    "total": 3420
+  },
+  "SECURITY_AUDIT": "PASS",
+  "SUPABASE_WRITE": 0,
+  "TRAIN_WINDOWS": [
+    [
+      "2023-01-01",
+      "2023-04-01",
+      "2023-07-01",
+      "2023-10-01",
+      "2024-01-01",
+      "2024-04-01",
+      "2024-07-01",
+      "2024-10-01"
+    ],
+    [
+      "2023-01-01",
+      "2023-04-01",
+      "2023-07-01",
+      "2023-10-01",
+      "2024-01-01",
+      "2024-04-01",
+      "2024-07-01",
+      "2024-10-01",
+      "2025-01-01"
+    ],
+    [
+      "2023-01-01",
+      "2023-04-01",
+      "2023-07-01",
+      "2023-10-01",
+      "2024-01-01",
+      "2024-04-01",
+      "2024-07-01",
+      "2024-10-01",
+      "2025-01-01",
+      "2025-04-01"
+    ]
+  ],
+  "VALIDATION_WINDOWS": [
+    "2025-01-01",
+    "2025-04-01",
+    "2025-07-01"
+  ]
+}
