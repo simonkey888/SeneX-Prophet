@@ -2,9 +2,18 @@
   "api_key_required": false,
   "base_sha": "43c8023d3a4623381e45da02d9efa8e9b5888f47",
   "base_tree": "20ec5775ea37a7288e8cd8748ea304843d9b0866",
+  "baseline_parity": "NOT_ACHIEVABLE_AT_ZERO_COST",
+  "baseline_parity_missing_inputs": [
+    "FULL_L2_ORDERBOOK_DEPTH_WITHIN_0_5_PERCENT_REQUIRED_BY_BASE_CONNECTOR_NOT_PRESENT_IN_TARDIS_QUOTES_TOP_OF_BOOK_DATA",
+    "CONTIGUOUS_PRECEDING_24H_OPEN_INTEREST_HISTORY_REQUIRED_FOR_EXACT_OI_CHANGE_24H_PCT_NOT_PRESENT_IN_DISJOINT_FIRST_OF_MONTH_DAY_SAMPLES",
+    "EXACT_PRODUCTION_INGEST_CYCLE_SEQUENCE_REQUIRED_FOR_STATEFUL_EMA5_BIDASK_BUFFER_NOT_REPRODUCIBLE_FROM_5M_DECISION_SNAPSHOTS_WITHOUT_ASSUMPTION",
+    "FULL_PRODUCTION_REGIME_SUPPRESSION_STATE_AND_ITS_CAUSAL_INPUT_HISTORY_NOT_CAPTURED_BY_THE_AUD066_PUBLIC_SAMPLE_CONTRACT"
+  ],
   "cost_usd": 0,
   "date_stats": [
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2023-01-01",
       "excluded": {},
       "liquidations_accepted": 81,
@@ -16,6 +25,8 @@
       "trades": 594298
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2023-04-01",
       "excluded": {},
       "liquidations_accepted": 512,
@@ -27,6 +38,8 @@
       "trades": 2401480
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2023-07-01",
       "excluded": {},
       "liquidations_accepted": 242,
@@ -38,6 +51,8 @@
       "trades": 1590686
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2023-10-01",
       "excluded": {},
       "liquidations_accepted": 553,
@@ -49,6 +64,8 @@
       "trades": 2312753
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2024-01-01",
       "excluded": {},
       "liquidations_accepted": 1206,
@@ -60,6 +77,8 @@
       "trades": 2197331
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2024-04-01",
       "excluded": {},
       "liquidations_accepted": 1557,
@@ -71,6 +90,8 @@
       "trades": 3855192
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2024-07-01",
       "excluded": {},
       "liquidations_accepted": 854,
@@ -82,6 +103,8 @@
       "trades": 2206156
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2024-10-01",
       "excluded": {},
       "liquidations_accepted": 2124,
@@ -93,6 +116,8 @@
       "trades": 5090124
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2025-01-01",
       "excluded": {},
       "liquidations_accepted": 625,
@@ -104,6 +129,8 @@
       "trades": 1804360
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2025-04-01",
       "excluded": {},
       "liquidations_accepted": 1123,
@@ -115,6 +142,8 @@
       "trades": 3204984
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2025-07-01",
       "excluded": {},
       "liquidations_accepted": 962,
@@ -126,6 +155,8 @@
       "trades": 2043731
     },
     {
+      "clock_minus_1m_samples": 285,
+      "clock_plus_1m_samples": 285,
       "date": "2025-10-01",
       "excluded": {},
       "liquidations_accepted": 1133,
@@ -155,7 +186,9 @@
     "LIQ_ROWS_BAD_TIMESTAMP_OR_SCHEMA": 0
   },
   "label_rule": "BTC price at t+5m strictly after decision; never used in feature construction",
-  "order": "AUD-066",
+  "no_value_equivalence_criterion": "NOT_PREDECLARED_IN_PARENT_ORDER",
+  "order": "AUD-066-R1",
+  "parent_order": "AUD-066",
   "point_in_time_clock": "local_timestamp(receipt time)",
   "provenance": [
     {

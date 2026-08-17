@@ -1,8 +1,17 @@
 {
+  "BASELINE_PARITY": "NOT_ACHIEVABLE_AT_ZERO_COST",
+  "BASELINE_PARITY_AUDIT_HASH": "7f191194f303a0b1a94047b33c4e9ef7084db763c1f588ca2fab0687127e5c37",
+  "BASELINE_PARITY_MISSING_INPUTS": [
+    "FULL_L2_ORDERBOOK_DEPTH_WITHIN_0_5_PERCENT_REQUIRED_BY_BASE_CONNECTOR_NOT_PRESENT_IN_TARDIS_QUOTES_TOP_OF_BOOK_DATA",
+    "CONTIGUOUS_PRECEDING_24H_OPEN_INTEREST_HISTORY_REQUIRED_FOR_EXACT_OI_CHANGE_24H_PCT_NOT_PRESENT_IN_DISJOINT_FIRST_OF_MONTH_DAY_SAMPLES",
+    "EXACT_PRODUCTION_INGEST_CYCLE_SEQUENCE_REQUIRED_FOR_STATEFUL_EMA5_BIDASK_BUFFER_NOT_REPRODUCIBLE_FROM_5M_DECISION_SNAPSHOTS_WITHOUT_ASSUMPTION",
+    "FULL_PRODUCTION_REGIME_SUPPRESSION_STATE_AND_ITS_CAUSAL_INPUT_HISTORY_NOT_CAPTURED_BY_THE_AUD066_PUBLIC_SAMPLE_CONTRACT"
+  ],
   "BASE_SHA": "43c8023d3a4623381e45da02d9efa8e9b5888f47",
   "BASE_TREE": "20ec5775ea37a7288e8cd8748ea304843d9b0866",
-  "CODE_HASH": "bd9a3762f267ece36c57a892ba3b631f8f29b3b0075e5dd4eea15cac6d2161d9",
-  "CONFIDENCE_INTERVALS": {
+  "BASE_WEIGHT_TUNING": 0,
+  "CODE_HASH": "421ea1c57f1a92118689601158f4481bd2d10df4632656e3910553e187c83cd6",
+  "CONFIDENCE_INTERVALS_PROXY_ONLY": {
     "B": {
       "brier_delta_block_bootstrap_95": [
         -0.002243665188803312,
@@ -25,8 +34,8 @@
     }
   },
   "COST_USD": 0,
-  "DATASET_OR_MANIFEST_HASH": "a052eed154145ba1462192902b48d2c23f346949636f0967090aca3e04e1d511",
-  "DELTA_METRICS": {
+  "DATASET_OR_MANIFEST_HASH": "493e72fec3118a5913f955b69a4fde5630009e856745b1e648ec141ef5796274",
+  "DELTA_METRICS_PROXY_ONLY": {
     "B": {
       "brier_by_block": [
         -1.4605400320888418e-05,
@@ -72,19 +81,30 @@
       "mean_log_loss_delta": 0.0006977182164524809
     }
   },
+  "DEPLOY": "NO",
   "EXCLUDED_SAMPLE_COUNTS_AND_REASONS": {
     "LIQ_ROWS_BAD_TIMESTAMP_OR_SCHEMA": 0
   },
+  "EXTERNAL_DIRECTIONAL_ACTIVATION": 0,
   "FEATURE_SPEC_HASH": "1ecdd66a97fca429efe6cd28d8f6e4a5da9ceb832926f5d13d4ab2e024248a36",
   "FILES_CHANGED": [
     ".github/workflows/aud-066-research.yml",
     ".github/workflows/aud-066-verify.yml",
     "senecio_polymarket/backend/research/aud066_analysis.py",
     "senecio_polymarket/backend/research/aud066_liquidation.py",
+    "senecio_polymarket/backend/research/aud066_r1_analysis.py",
+    "senecio_polymarket/docs/evidence/aud-066/ablation-results.csv",
+    "senecio_polymarket/docs/evidence/aud-066/baseline-parity-audit.md",
+    "senecio_polymarket/docs/evidence/aud-066/data-manifest.json",
     "senecio_polymarket/docs/evidence/aud-066/feature-spec.md",
     "senecio_polymarket/docs/evidence/aud-066/leakage-audit.md",
+    "senecio_polymarket/docs/evidence/aud-066/oos-results.json",
+    "senecio_polymarket/docs/evidence/aud-066/replay-receipt.json",
+    "senecio_polymarket/docs/evidence/aud-066/robustness-contract.md",
     "senecio_polymarket/docs/evidence/aud-066/security-review.md",
     "senecio_polymarket/docs/evidence/aud-066/source-matrix.md",
+    "senecio_polymarket/docs/evidence/aud-066/verdict.md",
+    "senecio_polymarket/scripts/aud066_r1_research.py",
     "senecio_polymarket/scripts/aud066_research.py",
     "senecio_polymarket/tests/test_aud_066.py"
   ],
@@ -94,9 +114,17 @@
     "2025-10-01"
   ],
   "LEAKAGE_AUDIT": "PASS",
+  "MATERIALIZATION_PARENT_SHA": "08a335497209a0bb0b02608b39d831cd3eb788c9",
+  "MATERIALIZATION_PARENT_TREE": "c7207af234137bb0ff9ab7062676b8cd70a1e8b0",
+  "MERGE": "NO",
+  "NET_NEW_VALUE": "INCONCLUSIVE",
   "NORTHFLANK_MUTATION": 0,
+  "NO_VALUE_EQUIVALENCE_CRITERION": "NOT_PREDECLARED_IN_PARENT_ORDER",
+  "ORDER": "AUD-066-R1",
+  "PARENT_ORDER": "AUD-066",
   "POINT_IN_TIME_AUDIT": "PASS",
-  "PRIMARY_METRICS_BASELINE": {
+  "PRODUCTION_MUTATION": "NO",
+  "PROXY_PRIMARY_METRICS_A": {
     "accuracy": 0.5333333333333333,
     "balanced_accuracy": 0.5342237409269449,
     "brier": 0.24926140755996137,
@@ -105,7 +133,7 @@
     "ece_10": 0.030456852906550022,
     "log_loss": 0.6916721523135622
   },
-  "PRIMARY_METRICS_CANDIDATE": {
+  "PROXY_PRIMARY_METRICS_B": {
     "accuracy": 0.5309941520467837,
     "balanced_accuracy": 0.5323319849577122,
     "brier": 0.24935923542874616,
@@ -114,7 +142,15 @@
     "ece_10": 0.054792804767612974,
     "log_loss": 0.6918641202397543
   },
-  "PRODUCTION_MUTATION": "NO",
+  "PROXY_PRIMARY_METRICS_C": {
+    "accuracy": 0.5274853801169591,
+    "balanced_accuracy": 0.5285141974506149,
+    "brier": 0.24965915921877166,
+    "calibration_intercept": -0.003518660920103958,
+    "calibration_slope": 0.8045619373686471,
+    "ece_10": 0.05215913505223438,
+    "log_loss": 0.6923698705300145
+  },
   "RAW_OR_NORMALIZED_PROVENANCE_HASHES": [
     "944d10d83ec82764c8c6f53f5ba648a7274128c2932dace44b21e7ffdb13e270",
     "90608dbc4d91ff8feb272c0cd0f6db7019fba9c5accdc9fa1769fd16a9df7a4d",
@@ -165,9 +201,12 @@
     "e7e293d85671a7cb6bf651be878613729b60f611f32ad05a370070b4f630d3e9",
     "ca7bbcda50921fab94b43000316ec7bd54162189c1f8696880d2f25db16f6541"
   ],
+  "REALIZED_LIQUIDATION_VALUE": "INCONCLUSIVE",
   "REAL_TRADING": 0,
-  "RESEARCH_HEAD_SHA": "5c688dd76ead1f0d1e94c88de5dc83a7905794ec",
-  "RESEARCH_HEAD_TREE": "a5301b3841275181af4aa8b1955b5c95c995c5ae",
+  "RESTART": "NO",
+  "ROBUSTNESS_CONTRACT_HASH": "26d73bebc39599ea661467304b26332e5e78a148c7117b8b04e00e61dc00ea5f",
+  "ROBUSTNESS_MATRIX": "FRAGILE",
+  "ROBUSTNESS_MATRIX_HASH": "785ff168bffbeba05850534f00a5cb5576d191e78021092e571f4d181114eb59",
   "RUNTIME017_MUTATIONS": 0,
   "SAMPLE_COUNTS": {
     "blocks": [
@@ -191,6 +230,7 @@
   },
   "SECURITY_AUDIT": "PASS",
   "SUPABASE_WRITE": 0,
+  "THRESHOLD_TUNING": 0,
   "TRAIN_WINDOWS": [
     [
       "2023-01-01",

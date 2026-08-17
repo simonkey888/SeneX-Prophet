@@ -1,4 +1,5 @@
 {
+  "baseline_parity": "NOT_ACHIEVABLE_AT_ZERO_COST",
   "best_realized_arm": "B",
   "better_blocks": {
     "B": 1,
@@ -317,7 +318,16 @@
     }
   },
   "mean_improvement_pass": false,
-  "realized_value": "NO",
+  "net_new_value": "INCONCLUSIVE",
+  "proxy_baseline_only": true,
+  "proxy_realized_value_before_r1_correction": "NO",
+  "r1_inference_contract": {
+    "NET_NEW_VALUE": "INCONCLUSIVE",
+    "REALIZED_LIQUIDATION_VALUE": "INCONCLUSIVE",
+    "no_value_equivalence_criterion": "NOT_PREDECLARED_IN_PARENT_ORDER",
+    "reason": "CURRENT_SENEX_BASELINE_PARITY_NOT_PROVEN"
+  },
+  "realized_value": "INCONCLUSIVE",
   "status": "COMPLETE",
   "summary": {
     "A": {
