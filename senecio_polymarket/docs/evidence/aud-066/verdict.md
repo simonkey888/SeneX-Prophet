@@ -16,3 +16,5 @@ Terminal question: `DOES_F_LIQUIDATION_PRESSURE_V1_ADD_INCREMENTAL_POINT_IN_TIME
 - H5 effect survives >1 independent chronological block: **FAIL**
 
 A result is not upgraded on raw win rate. Proper scoring rules and block robustness govern. Tardis Binance force-order capture is an observable public-stream proxy with receipt timestamps, not a claim of complete venue liquidation ground truth. No production integration occurs in AUD-066.
+
+Exact-head verification trigger only; no semantic result changed.
