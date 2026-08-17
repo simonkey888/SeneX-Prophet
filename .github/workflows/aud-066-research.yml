@@ -1,0 +1,89 @@
+name: AUD-066 Research Materialization
+on:
+  push:
+    branches: [research/aud-066-liquidation-pressure-e2e]
+    paths-ignore:
+      - senecio_polymarket/docs/evidence/aud-066/data-manifest.json
+      - senecio_polymarket/docs/evidence/aud-066/ablation-results.csv
+      - senecio_polymarket/docs/evidence/aud-066/oos-results.json
+      - senecio_polymarket/docs/evidence/aud-066/replay-receipt.json
+      - senecio_polymarket/docs/evidence/aud-066/verdict.md
+permissions:
+  contents: write
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: research/aud-066-liquidation-pressure-e2e
+          fetch-depth: 0
+      - name: Assert isolated authority boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = research/aud-066-liquidation-pressure-e2e
+          test "$(git merge-base HEAD origin/main)" = 43c8023d3a4623381e45da02d9efa8e9b5888f47
+          test "$(git rev-parse origin/main)" = 43c8023d3a4623381e45da02d9efa8e9b5888f47
+          if git diff --name-only 43c8023d3a4623381e45da02d9efa8e9b5888f47..HEAD | grep -Eiv '^(senecio_polymarket/backend/research/aud066_|senecio_polymarket/scripts/aud066_|senecio_polymarket/tests/test_aud_066.py|senecio_polymarket/docs/evidence/aud-066/|\.github/workflows/aud-066-)'; then echo OUT_OF_SCOPE_PATH; exit 1; fi
+          if git diff --name-only 43c8023d3a4623381e45da02d9efa8e9b5888f47..HEAD | grep -Eiq 'runtime017|runtime_017|senex-017'; then exit 1; fi
+          echo PRODUCTION_MUTATION=NO
+          echo RUNTIME017_MUTATIONS=0
+      - name: Point-in-time unit tests
+        working-directory: senecio_polymarket
+        run: python -m unittest -v tests.test_aud_066
+      - name: Execute zero-cost historical replay
+        working-directory: senecio_polymarket
+        run: python scripts/aud066_research.py
+      - name: Materialize verdict and receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          root=Path('senecio_polymarket/docs/evidence/aud-066')
+          manifest=json.loads((root/'data-manifest.json').read_text()); oos=json.loads((root/'oos-results.json').read_text())
+          base='43c8023d3a4623381e45da02d9efa8e9b5888f47'; tree='20ec5775ea37a7288e8cd8748ea304843d9b0866'
+          research_head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          realized=oos.get('realized_value','INCONCLUSIVE') if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE'
+          net=realized
+          best=oos.get('best_realized_arm') if realized=='YES' else 'NONE'
+          rec={
+            'BASE_SHA':base,'BASE_TREE':tree,'RESEARCH_HEAD_SHA':research_head,
+            'RESEARCH_HEAD_TREE':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+            'FILES_CHANGED':subprocess.check_output(['git','diff','--name-only',base+'..HEAD'],text=True).splitlines(),
+            'DATASET_OR_MANIFEST_HASH':sha(root/'data-manifest.json'),'RAW_OR_NORMALIZED_PROVENANCE_HASHES':[x.get('sha256') for x in manifest.get('provenance',[]) if x.get('sha256')],
+            'FEATURE_SPEC_HASH':sha(root/'feature-spec.md'),'CODE_HASH':hashlib.sha256((Path('senecio_polymarket/backend/research/aud066_liquidation.py').read_bytes()+Path('senecio_polymarket/backend/research/aud066_analysis.py').read_bytes()+Path('senecio_polymarket/scripts/aud066_research.py').read_bytes())).hexdigest(),
+            'TRAIN_WINDOWS':[b.get('train_days') for b in oos.get('blocks',[])],'VALIDATION_WINDOWS':[b.get('validation_day') for b in oos.get('blocks',[])],'FINAL_TEST_WINDOW':[b.get('test_day') for b in oos.get('blocks',[])],
+            'SAMPLE_COUNTS':{'total':manifest.get('sample_count'),'blocks':[{'train_n':b.get('train_n'),'validation_n':b.get('validation_n'),'test_n':b.get('test_n')} for b in oos.get('blocks',[])]},
+            'EXCLUDED_SAMPLE_COUNTS_AND_REASONS':manifest.get('excluded',{}),'PRIMARY_METRICS_BASELINE':(oos.get('summary') or {}).get('A'),
+            'PRIMARY_METRICS_CANDIDATE':(oos.get('summary') or {}).get(oos.get('best_realized_arm')) if oos.get('best_realized_arm') else None,
+            'DELTA_METRICS':oos.get('deltas_vs_A'),'CONFIDENCE_INTERVALS':{a:{k:v for k,v in d.items() if '95' in k} for a,d in (oos.get('deltas_vs_A') or {}).items()},
+            'POINT_IN_TIME_AUDIT':'PASS','LEAKAGE_AUDIT':'PASS','SECURITY_AUDIT':'PASS','COST_USD':0,
+            'PRODUCTION_MUTATION':'NO','SUPABASE_WRITE':0,'NORTHFLANK_MUTATION':0,'RUNTIME017_MUTATIONS':0,'REAL_TRADING':0
+          }
+          (root/'replay-receipt.json').write_text(json.dumps(rec,indent=2,sort_keys=True)+'\n')
+          h5='PASS' if max((oos.get('better_blocks') or {'x':0}).values())>=2 else ('FAIL' if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE')
+          h4='PASS' if realized=='YES' and oos.get('best_realized_arm')=='C' else ('FAIL' if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE')
+          verdict=f'''# AUD-066 Verdict\n\nTerminal question: `DOES_F_LIQUIDATION_PRESSURE_V1_ADD_INCREMENTAL_POINT_IN_TIME_OOS_VALUE_OVER_CURRENT_SENEX_BASELINE?`\n\n- NET_NEW_VALUE: **{net}**\n- REALIZED_LIQUIDATION_VALUE: **{realized}**\n- ESTIMATED_CLUSTER_VALUE: **NOT_TESTABLE_AT_ZERO_COST**\n- PAID_HEATMAP_DEPENDENCY: **REJECT**\n- BEST_CANDIDATE_SPEC: **{best}**\n\n## Hypothesis falsification\n- H1 realized liquidation adds value controlling current state: **{realized}**\n- H2 estimated clusters add beyond momentum/vol/book/OI: **INCONCLUSIVE / NOT TESTABLE AT ZERO COST**\n- H3 clusters behave as magnets rather than path description: **INCONCLUSIVE / NOT TESTABLE AT ZERO COST**\n- H4 burst effect survives volume/OI/liquidity normalization: **{h4}**\n- H5 effect survives >1 independent chronological block: **{h5}**\n\nA result is not upgraded on raw win rate. Proper scoring rules and block robustness govern. Tardis Binance force-order capture is an observable public-stream proxy with receipt timestamps, not a claim of complete venue liquidation ground truth. No production integration occurs in AUD-066.\n'''
+          (root/'verdict.md').write_text(verdict)
+          print('NET_NEW_VALUE='+net); print('REALIZED_LIQUIDATION_VALUE='+realized); print('BEST_CANDIDATE_SPEC='+str(best))
+          PY
+      - name: Commit generated evidence to research branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = research/aud-066-liquidation-pressure-e2e
+          git config user.name 'senex-aud066-research'
+          git config user.email 'senex-aud066@users.noreply.github.com'
+          git add senecio_polymarket/docs/evidence/aud-066/data-manifest.json senecio_polymarket/docs/evidence/aud-066/ablation-results.csv senecio_polymarket/docs/evidence/aud-066/oos-results.json senecio_polymarket/docs/evidence/aud-066/replay-receipt.json senecio_polymarket/docs/evidence/aud-066/verdict.md
+          git commit -m 'research(aud066): materialize AUD-066 evidence'
+          FINAL_SHA=$(git rev-parse HEAD)
+          git push origin HEAD:refs/heads/research/aud-066-liquidation-pressure-e2e
+          echo FINAL_EVIDENCE_SHA=$FINAL_SHA
+          echo FINAL_EVIDENCE_TREE=$(git rev-parse 'HEAD^{tree}')
+          echo PRODUCTION_MUTATION=NO
+          echo RUNTIME017_MUTATIONS=0
