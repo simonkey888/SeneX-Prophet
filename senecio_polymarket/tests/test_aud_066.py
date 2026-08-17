@@ -2,6 +2,8 @@ import sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'backend'/'research'))
 from aud066_liquidation import timestamp_gate,normalize_liquidation,feature_at,make_samples,canonical_hash
+from aud066_r1_analysis import terminal_inference,_orientation
+
 class Aud066PointInTimeTests(unittest.TestCase):
  def test_unknown_timestamp_fails_closed(self):
   self.assertIsNone(timestamp_gate({'timestamp':'1'})); self.assertIsNone(timestamp_gate({'local_timestamp':'1'}))
@@ -25,4 +27,26 @@ class Aud066PointInTimeTests(unittest.TestCase):
   r=samples[0]; h=canonical_hash(r['features']); r['y']=1-r['y']; self.assertEqual(h,canonical_hash(r['features']))
  def test_estimated_clusters_not_present_in_realized_feature_builder(self):
   f=feature_at((100+1)*60_000_000-1,self._mins(),[]); self.assertTrue(f); self.assertFalse(any('cluster' in k for k in f))
+
+class Aud066R1InferenceTests(unittest.TestCase):
+ def test_parity_failure_forces_inconclusive_even_if_proxy_says_no(self):
+  proxy={'status':'COMPLETE','realized_value':'NO','mean_improvement_pass':False,'ci_excludes_zero_pass':False}
+  out=terminal_inference(proxy,'NOT_ACHIEVABLE_AT_ZERO_COST')
+  self.assertEqual(out['REALIZED_LIQUIDATION_VALUE'],'INCONCLUSIVE')
+  self.assertEqual(out['NET_NEW_VALUE'],'INCONCLUSIVE')
+  self.assertEqual(out['reason'],'CURRENT_SENEX_BASELINE_PARITY_NOT_PROVEN')
+ def test_crossing_zero_without_predeclared_equivalence_is_inconclusive(self):
+  proxy={'status':'COMPLETE','mean_improvement_pass':False,'ci_excludes_zero_pass':False}
+  out=terminal_inference(proxy,'PASS')
+  self.assertEqual(out['REALIZED_LIQUIDATION_VALUE'],'INCONCLUSIVE')
+  self.assertEqual(out['no_value_equivalence_criterion'],'NOT_PREDECLARED_IN_PARENT_ORDER')
+ def test_strict_positive_gate_can_only_emit_yes_with_parity(self):
+  proxy={'status':'COMPLETE','mean_improvement_pass':True,'ci_excludes_zero_pass':True}
+  self.assertEqual(terminal_inference(proxy,'PASS')['REALIZED_LIQUIDATION_VALUE'],'YES')
+  self.assertEqual(terminal_inference(proxy,'NOT_ACHIEVABLE_AT_ZERO_COST')['REALIZED_LIQUIDATION_VALUE'],'INCONCLUSIVE')
+ def test_orientation_contract(self):
+  self.assertEqual(_orientation(-.01,-.02),'IMPROVEMENT')
+  self.assertEqual(_orientation(.01,.02),'DEGRADATION')
+  self.assertEqual(_orientation(-.01,.02),'MIXED')
+
 if __name__=='__main__':unittest.main()

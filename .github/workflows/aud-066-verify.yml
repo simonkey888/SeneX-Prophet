@@ -6,16 +6,16 @@ permissions:
   contents: read
 jobs:
   verify:
-    if: contains(github.event.head_commit.message, 'materialize AUD-066 evidence')
+    if: contains(github.event.head_commit.message, 'materialize AUD-066-R1 evidence')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Exact-head scope and tests
+      - name: Exact-head R1 scope and tests
         shell: bash
         run: |
           set -euo pipefail
@@ -28,25 +28,33 @@ jobs:
           if git diff --name-only 43c8023d3a4623381e45da02d9efa8e9b5888f47..HEAD | grep -Eiq 'runtime017|runtime_017|senex-017'; then exit 1; fi
           cd senecio_polymarket
           python -m unittest -v tests.test_aud_066
-      - name: Evidence contract
+      - name: R1 evidence contract
         shell: bash
         run: |
           set -euo pipefail
           R=senecio_polymarket/docs/evidence/aud-066
-          for f in source-matrix.md data-manifest.json feature-spec.md leakage-audit.md security-review.md ablation-results.csv oos-results.json replay-receipt.json verdict.md; do test -s "$R/$f"; done
-          jq -e '.base_sha=="43c8023d3a4623381e45da02d9efa8e9b5888f47" and .base_tree=="20ec5775ea37a7288e8cd8748ea304843d9b0866" and .cost_usd==0 and .point_in_time_clock=="local_timestamp(receipt time)"' "$R/data-manifest.json" >/dev/null
-          jq -e '.POINT_IN_TIME_AUDIT=="PASS" and .LEAKAGE_AUDIT=="PASS" and .SECURITY_AUDIT=="PASS" and .COST_USD==0 and .PRODUCTION_MUTATION=="NO" and .SUPABASE_WRITE==0 and .NORTHFLANK_MUTATION==0 and .RUNTIME017_MUTATIONS==0 and .REAL_TRADING==0' "$R/replay-receipt.json" >/dev/null
+          for f in source-matrix.md data-manifest.json feature-spec.md leakage-audit.md security-review.md baseline-parity-audit.md robustness-contract.md robustness-matrix.json ablation-results.csv oos-results.json replay-receipt.json verdict.md; do test -s "$R/$f"; done
+          jq -e '.order=="AUD-066-R1" and .base_sha=="43c8023d3a4623381e45da02d9efa8e9b5888f47" and .base_tree=="20ec5775ea37a7288e8cd8748ea304843d9b0866" and .cost_usd==0 and .point_in_time_clock=="local_timestamp(receipt time)" and .baseline_parity=="NOT_ACHIEVABLE_AT_ZERO_COST" and .no_value_equivalence_criterion=="NOT_PREDECLARED_IN_PARENT_ORDER"' "$R/data-manifest.json" >/dev/null
+          jq -e '.r1_inference_contract.REALIZED_LIQUIDATION_VALUE=="INCONCLUSIVE" and .r1_inference_contract.NET_NEW_VALUE=="INCONCLUSIVE" and .baseline_parity=="NOT_ACHIEVABLE_AT_ZERO_COST" and .proxy_baseline_only==true' "$R/oos-results.json" >/dev/null
+          jq -e '.status=="PASS" or .status=="FRAGILE" or .status=="PARTIAL_NOT_TESTABLE"' "$R/robustness-matrix.json" >/dev/null
+          jq -e '.BASELINE_PARITY=="NOT_ACHIEVABLE_AT_ZERO_COST" and .REALIZED_LIQUIDATION_VALUE=="INCONCLUSIVE" and .NET_NEW_VALUE=="INCONCLUSIVE" and (.ROBUSTNESS_MATRIX=="PASS" or .ROBUSTNESS_MATRIX=="FRAGILE" or .ROBUSTNESS_MATRIX=="PARTIAL_NOT_TESTABLE") and .POINT_IN_TIME_AUDIT=="PASS" and .LEAKAGE_AUDIT=="PASS" and .SECURITY_AUDIT=="PASS" and .COST_USD==0 and .PRODUCTION_MUTATION=="NO" and .SUPABASE_WRITE==0 and .NORTHFLANK_MUTATION==0 and .RUNTIME017_MUTATIONS==0 and .THRESHOLD_TUNING==0 and .BASE_WEIGHT_TUNING==0 and .EXTERNAL_DIRECTIONAL_ACTIVATION==0 and .REAL_TRADING==0 and .MERGE=="NO" and .DEPLOY=="NO" and .RESTART=="NO"' "$R/replay-receipt.json" >/dev/null
+          grep -q 'BASELINE_PARITY: \*\*NOT_ACHIEVABLE_AT_ZERO_COST\*\*' "$R/verdict.md"
+          grep -q 'NET_NEW_VALUE: \*\*INCONCLUSIVE\*\*' "$R/verdict.md"
+          grep -q 'REALIZED_LIQUIDATION_VALUE: \*\*INCONCLUSIVE\*\*' "$R/verdict.md"
           grep -q 'ESTIMATED_CLUSTER_VALUE: \*\*NOT_TESTABLE_AT_ZERO_COST\*\*' "$R/verdict.md"
           grep -q 'PAID_HEATMAP_DEPENDENCY: \*\*REJECT\*\*' "$R/verdict.md"
+          echo BASELINE_PARITY=NOT_ACHIEVABLE_AT_ZERO_COST
+          echo REALIZED_LIQUIDATION_VALUE=INCONCLUSIVE
+          echo NET_NEW_VALUE=INCONCLUSIVE
           echo POINT_IN_TIME_AUDIT=PASS
           echo LEAKAGE_AUDIT=PASS
           echo SECURITY_AUDIT=PASS
           echo PRODUCTION_MUTATION=NO
           echo RUNTIME017_MUTATIONS=0
-      - name: Upload exact-head evidence
+      - name: Upload exact-head R1 evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-066-${{ github.sha }}
+          name: aud-066-r1-${{ github.sha }}
           path: senecio_polymarket/docs/evidence/aud-066/
           if-no-files-found: error
           retention-days: 14

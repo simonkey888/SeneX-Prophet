@@ -6,6 +6,7 @@ on:
       - senecio_polymarket/docs/evidence/aud-066/data-manifest.json
       - senecio_polymarket/docs/evidence/aud-066/ablation-results.csv
       - senecio_polymarket/docs/evidence/aud-066/oos-results.json
+      - senecio_polymarket/docs/evidence/aud-066/robustness-matrix.json
       - senecio_polymarket/docs/evidence/aud-066/replay-receipt.json
       - senecio_polymarket/docs/evidence/aud-066/verdict.md
 permissions:
@@ -19,24 +20,27 @@ jobs:
         with:
           ref: research/aud-066-liquidation-pressure-e2e
           fetch-depth: 0
-      - name: Assert isolated authority boundary
+      - name: Assert isolated R1 authority boundary
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = research/aud-066-liquidation-pressure-e2e
           test "$(git merge-base HEAD origin/main)" = 43c8023d3a4623381e45da02d9efa8e9b5888f47
           test "$(git rev-parse origin/main)" = 43c8023d3a4623381e45da02d9efa8e9b5888f47
+          test "$(git rev-parse origin/main^{tree})" = 20ec5775ea37a7288e8cd8748ea304843d9b0866
           if git diff --name-only 43c8023d3a4623381e45da02d9efa8e9b5888f47..HEAD | grep -Eiv '^(senecio_polymarket/backend/research/aud066_|senecio_polymarket/scripts/aud066_|senecio_polymarket/tests/test_aud_066.py|senecio_polymarket/docs/evidence/aud-066/|\.github/workflows/aud-066-)'; then echo OUT_OF_SCOPE_PATH; exit 1; fi
           if git diff --name-only 43c8023d3a4623381e45da02d9efa8e9b5888f47..HEAD | grep -Eiq 'runtime017|runtime_017|senex-017'; then exit 1; fi
           echo PRODUCTION_MUTATION=NO
+          echo SUPABASE_WRITE=0
+          echo NORTHFLANK_MUTATION=0
           echo RUNTIME017_MUTATIONS=0
-      - name: Point-in-time unit tests
+      - name: Point-in-time and R1 inference unit tests
         working-directory: senecio_polymarket
         run: python -m unittest -v tests.test_aud_066
-      - name: Execute zero-cost historical replay
+      - name: Execute zero-cost R1 replay and mandatory robustness matrix
         working-directory: senecio_polymarket
-        run: python scripts/aud066_research.py
-      - name: Materialize verdict and receipt
+        run: python scripts/aud066_r1_research.py
+      - name: Materialize corrected R1 verdict and receipt
         shell: bash
         run: |
           set -euo pipefail
@@ -44,43 +48,76 @@ jobs:
           import hashlib,json,subprocess
           from pathlib import Path
           root=Path('senecio_polymarket/docs/evidence/aud-066')
-          manifest=json.loads((root/'data-manifest.json').read_text()); oos=json.loads((root/'oos-results.json').read_text())
+          manifest=json.loads((root/'data-manifest.json').read_text())
+          oos=json.loads((root/'oos-results.json').read_text())
+          robust=json.loads((root/'robustness-matrix.json').read_text())
           base='43c8023d3a4623381e45da02d9efa8e9b5888f47'; tree='20ec5775ea37a7288e8cd8748ea304843d9b0866'
           research_head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
           def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
-          realized=oos.get('realized_value','INCONCLUSIVE') if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE'
-          net=realized
-          best=oos.get('best_realized_arm') if realized=='YES' else 'NONE'
+          inf=oos['r1_inference_contract']
+          realized=inf['REALIZED_LIQUIDATION_VALUE']; net=inf['NET_NEW_VALUE']
+          baseline_parity=manifest['baseline_parity']; robustness=robust['status']
+          best=oos.get('best_realized_arm') if realized=='YES' and baseline_parity=='PASS' else 'NONE'
+          code_paths=[
+            'senecio_polymarket/backend/research/aud066_liquidation.py',
+            'senecio_polymarket/backend/research/aud066_analysis.py',
+            'senecio_polymarket/backend/research/aud066_r1_analysis.py',
+            'senecio_polymarket/scripts/aud066_r1_research.py',
+          ]
+          h=hashlib.sha256()
+          for p in code_paths: h.update(Path(p).read_bytes())
           rec={
-            'BASE_SHA':base,'BASE_TREE':tree,'RESEARCH_HEAD_SHA':research_head,
-            'RESEARCH_HEAD_TREE':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
+            'ORDER':'AUD-066-R1','PARENT_ORDER':'AUD-066','BASE_SHA':base,'BASE_TREE':tree,
+            'MATERIALIZATION_PARENT_SHA':research_head,
+            'MATERIALIZATION_PARENT_TREE':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),
             'FILES_CHANGED':subprocess.check_output(['git','diff','--name-only',base+'..HEAD'],text=True).splitlines(),
-            'DATASET_OR_MANIFEST_HASH':sha(root/'data-manifest.json'),'RAW_OR_NORMALIZED_PROVENANCE_HASHES':[x.get('sha256') for x in manifest.get('provenance',[]) if x.get('sha256')],
-            'FEATURE_SPEC_HASH':sha(root/'feature-spec.md'),'CODE_HASH':hashlib.sha256((Path('senecio_polymarket/backend/research/aud066_liquidation.py').read_bytes()+Path('senecio_polymarket/backend/research/aud066_analysis.py').read_bytes()+Path('senecio_polymarket/scripts/aud066_research.py').read_bytes())).hexdigest(),
-            'TRAIN_WINDOWS':[b.get('train_days') for b in oos.get('blocks',[])],'VALIDATION_WINDOWS':[b.get('validation_day') for b in oos.get('blocks',[])],'FINAL_TEST_WINDOW':[b.get('test_day') for b in oos.get('blocks',[])],
+            'DATASET_OR_MANIFEST_HASH':sha(root/'data-manifest.json'),
+            'RAW_OR_NORMALIZED_PROVENANCE_HASHES':[x.get('sha256') for x in manifest.get('provenance',[]) if x.get('sha256')],
+            'FEATURE_SPEC_HASH':sha(root/'feature-spec.md'),'BASELINE_PARITY_AUDIT_HASH':sha(root/'baseline-parity-audit.md'),
+            'ROBUSTNESS_CONTRACT_HASH':sha(root/'robustness-contract.md'),'ROBUSTNESS_MATRIX_HASH':sha(root/'robustness-matrix.json'),
+            'CODE_HASH':h.hexdigest(),'TRAIN_WINDOWS':[b.get('train_days') for b in oos.get('blocks',[])],
+            'VALIDATION_WINDOWS':[b.get('validation_day') for b in oos.get('blocks',[])],
+            'FINAL_TEST_WINDOW':[b.get('test_day') for b in oos.get('blocks',[])],
             'SAMPLE_COUNTS':{'total':manifest.get('sample_count'),'blocks':[{'train_n':b.get('train_n'),'validation_n':b.get('validation_n'),'test_n':b.get('test_n')} for b in oos.get('blocks',[])]},
-            'EXCLUDED_SAMPLE_COUNTS_AND_REASONS':manifest.get('excluded',{}),'PRIMARY_METRICS_BASELINE':(oos.get('summary') or {}).get('A'),
-            'PRIMARY_METRICS_CANDIDATE':(oos.get('summary') or {}).get(oos.get('best_realized_arm')) if oos.get('best_realized_arm') else None,
-            'DELTA_METRICS':oos.get('deltas_vs_A'),'CONFIDENCE_INTERVALS':{a:{k:v for k,v in d.items() if '95' in k} for a,d in (oos.get('deltas_vs_A') or {}).items()},
+            'EXCLUDED_SAMPLE_COUNTS_AND_REASONS':manifest.get('excluded',{}),
+            'PROXY_PRIMARY_METRICS_A':(oos.get('summary') or {}).get('A'),
+            'PROXY_PRIMARY_METRICS_B':(oos.get('summary') or {}).get('B'),
+            'PROXY_PRIMARY_METRICS_C':(oos.get('summary') or {}).get('C'),
+            'DELTA_METRICS_PROXY_ONLY':oos.get('deltas_vs_A'),
+            'CONFIDENCE_INTERVALS_PROXY_ONLY':{a:{k:v for k,v in d.items() if '95' in k} for a,d in (oos.get('deltas_vs_A') or {}).items()},
+            'BASELINE_PARITY':baseline_parity,
+            'BASELINE_PARITY_MISSING_INPUTS':manifest.get('baseline_parity_missing_inputs',[]),
+            'NO_VALUE_EQUIVALENCE_CRITERION':manifest.get('no_value_equivalence_criterion'),
+            'REALIZED_LIQUIDATION_VALUE':realized,'NET_NEW_VALUE':net,'ROBUSTNESS_MATRIX':robustness,
             'POINT_IN_TIME_AUDIT':'PASS','LEAKAGE_AUDIT':'PASS','SECURITY_AUDIT':'PASS','COST_USD':0,
-            'PRODUCTION_MUTATION':'NO','SUPABASE_WRITE':0,'NORTHFLANK_MUTATION':0,'RUNTIME017_MUTATIONS':0,'REAL_TRADING':0
+            'PRODUCTION_MUTATION':'NO','SUPABASE_WRITE':0,'NORTHFLANK_MUTATION':0,'RUNTIME017_MUTATIONS':0,
+            'THRESHOLD_TUNING':0,'BASE_WEIGHT_TUNING':0,'EXTERNAL_DIRECTIONAL_ACTIVATION':0,'REAL_TRADING':0,
+            'MERGE':'NO','DEPLOY':'NO','RESTART':'NO'
           }
           (root/'replay-receipt.json').write_text(json.dumps(rec,indent=2,sort_keys=True)+'\n')
-          h5='PASS' if max((oos.get('better_blocks') or {'x':0}).values())>=2 else ('FAIL' if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE')
-          h4='PASS' if realized=='YES' and oos.get('best_realized_arm')=='C' else ('FAIL' if oos.get('status')=='COMPLETE' else 'INCONCLUSIVE')
-          verdict=f'''# AUD-066 Verdict\n\nTerminal question: `DOES_F_LIQUIDATION_PRESSURE_V1_ADD_INCREMENTAL_POINT_IN_TIME_OOS_VALUE_OVER_CURRENT_SENEX_BASELINE?`\n\n- NET_NEW_VALUE: **{net}**\n- REALIZED_LIQUIDATION_VALUE: **{realized}**\n- ESTIMATED_CLUSTER_VALUE: **NOT_TESTABLE_AT_ZERO_COST**\n- PAID_HEATMAP_DEPENDENCY: **REJECT**\n- BEST_CANDIDATE_SPEC: **{best}**\n\n## Hypothesis falsification\n- H1 realized liquidation adds value controlling current state: **{realized}**\n- H2 estimated clusters add beyond momentum/vol/book/OI: **INCONCLUSIVE / NOT TESTABLE AT ZERO COST**\n- H3 clusters behave as magnets rather than path description: **INCONCLUSIVE / NOT TESTABLE AT ZERO COST**\n- H4 burst effect survives volume/OI/liquidity normalization: **{h4}**\n- H5 effect survives >1 independent chronological block: **{h5}**\n\nA result is not upgraded on raw win rate. Proper scoring rules and block robustness govern. Tardis Binance force-order capture is an observable public-stream proxy with receipt timestamps, not a claim of complete venue liquidation ground truth. No production integration occurs in AUD-066.\n'''
+          proxy_before=oos.get('proxy_realized_value_before_r1_correction','UNKNOWN')
+          verdict=f'''# AUD-066-R1 Corrected Verdict\n\nTerminal question: `DOES_F_LIQUIDATION_PRESSURE_V1_ADD_INCREMENTAL_POINT_IN_TIME_OOS_VALUE_OVER_CURRENT_SENEX_BASELINE?`\n\n- BASELINE_PARITY: **{baseline_parity}**\n- NET_NEW_VALUE: **{net}**\n- REALIZED_LIQUIDATION_VALUE: **{realized}**\n- ROBUSTNESS_MATRIX: **{robustness}**\n- ESTIMATED_CLUSTER_VALUE: **NOT_TESTABLE_AT_ZERO_COST**\n- PAID_HEATMAP_DEPENDENCY: **REJECT**\n- BEST_CANDIDATE_SPEC: **{best}**\n- PRODUCTION_INTEGRATION_RECOMMENDED_FOR_SEPARATE_ORDER: **NO**\n\n## R1 correction\n\nArm A is a research proxy, not an exact replay of current SENEX. The exact parity inputs missing under the frozen $0 dataset contract are enumerated in `baseline-parity-audit.md` and `data-manifest.json`. Therefore the proxy result cannot support a terminal SENEX-level `NO`.\n\nThe parent proxy experiment previously mapped its non-positive result to `{proxy_before}`. R1 corrects the inference contract: no equivalence/no-value margin was predeclared before terminal blocks were observed, and the reported proper-score confidence intervals cross zero. Absence of proof of improvement is therefore **not** proof of no incremental value.\n\nThe mandatory robustness families are materialized in `robustness-matrix.json` under predeclared train-only thresholds. Any robustness finding remains proxy-only unless baseline parity is independently proven.\n\n## Preserved findings\n\n- Estimated liquidation clusters remain semantically distinct from realized force-order flow and are not testable under the present $0 source gate.\n- Paid heatmap dependency remains rejected for this order.\n- Production integration remains not recommended because sufficient positive evidence is absent; this is not a zero-value claim.\n\nNo production integration, merge, deploy, restart, tuning, Supabase write, Northflank mutation, external directional activation, real trading, or RUNTIME017 mutation occurs in AUD-066-R1.\n'''
           (root/'verdict.md').write_text(verdict)
-          print('NET_NEW_VALUE='+net); print('REALIZED_LIQUIDATION_VALUE='+realized); print('BEST_CANDIDATE_SPEC='+str(best))
+          print('BASELINE_PARITY='+baseline_parity)
+          print('REALIZED_LIQUIDATION_VALUE='+realized)
+          print('NET_NEW_VALUE='+net)
+          print('ROBUSTNESS_MATRIX='+robustness)
           PY
-      - name: Commit generated evidence to research branch only
+      - name: Commit regenerated R1 evidence to same research branch only
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = research/aud-066-liquidation-pressure-e2e
-          git config user.name 'senex-aud066-research'
-          git config user.email 'senex-aud066@users.noreply.github.com'
-          git add senecio_polymarket/docs/evidence/aud-066/data-manifest.json senecio_polymarket/docs/evidence/aud-066/ablation-results.csv senecio_polymarket/docs/evidence/aud-066/oos-results.json senecio_polymarket/docs/evidence/aud-066/replay-receipt.json senecio_polymarket/docs/evidence/aud-066/verdict.md
-          git commit -m 'research(aud066): materialize AUD-066 evidence'
+          git config user.name 'senex-aud066-r1-research'
+          git config user.email 'senex-aud066-r1@users.noreply.github.com'
+          git add \
+            senecio_polymarket/docs/evidence/aud-066/data-manifest.json \
+            senecio_polymarket/docs/evidence/aud-066/ablation-results.csv \
+            senecio_polymarket/docs/evidence/aud-066/oos-results.json \
+            senecio_polymarket/docs/evidence/aud-066/robustness-matrix.json \
+            senecio_polymarket/docs/evidence/aud-066/replay-receipt.json \
+            senecio_polymarket/docs/evidence/aud-066/verdict.md
+          git commit -m 'research(aud066-r1): materialize AUD-066-R1 evidence'
           FINAL_SHA=$(git rev-parse HEAD)
           git push origin HEAD:refs/heads/research/aud-066-liquidation-pressure-e2e
           echo FINAL_EVIDENCE_SHA=$FINAL_SHA
