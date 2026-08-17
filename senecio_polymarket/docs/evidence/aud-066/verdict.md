@@ -17,7 +17,7 @@ Arm A is a research proxy, not an exact replay of current SENEX. The exact parit
 
 The parent proxy experiment previously mapped its non-positive result to `NO`. R1 corrects the inference contract: no equivalence/no-value margin was predeclared before terminal blocks were observed, and the reported proper-score confidence intervals cross zero. Absence of proof of improvement is therefore **not** proof of no incremental value.
 
-The mandatory robustness families are materialized in `robustness-matrix.json` under predeclared train-only thresholds. Any robustness finding remains proxy-only unless baseline parity is independently proven.
+The mandatory robustness families are materialized in `robustness-matrix.json` under predeclared train-only thresholds. The proxy experiment is `FRAGILE`: Arm B flips from aggregate proper-score degradation to improvement under the +1 minute clock-alignment perturbation and under train-only p01/p99 winsorization. Several wide-spread/low-depth regime cells are additionally `NOT_TESTABLE` because their terminal n is below the predeclared minimum. Any robustness finding remains proxy-only unless baseline parity is independently proven.
 
 ## Preserved findings
 
@@ -26,3 +26,5 @@ The mandatory robustness families are materialized in `robustness-matrix.json` u
 - Production integration remains not recommended because sufficient positive evidence is absent; this is not a zero-value claim.
 
 No production integration, merge, deploy, restart, tuning, Supabase write, Northflank mutation, external directional activation, real trading, or RUNTIME017 mutation occurs in AUD-066-R1.
+
+Exact-head closure note: this evidence-only commit exists solely to trigger user-authored final exact-head verification after the workflow-generated materialization commit; it changes no statistical result or scope.
