@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """AUD-066 zero-cost historical replay over Tardis first-of-month sample CSVs."""
 from __future__ import annotations
-import csv,gzip,hashlib,json,tempfile,urllib.request,urllib.error
+import csv,gzip,hashlib,json,sys,tempfile,urllib.request,urllib.error
 from pathlib import Path
-from backend.research.aud066_liquidation import normalize_liquidation,build_minute_market,make_samples,canonical_hash
-from backend.research.aud066_analysis import walk_forward_extended
+RESEARCH_DIR=Path(__file__).resolve().parents[1]/'backend'/'research'; sys.path.insert(0,str(RESEARCH_DIR))
+from aud066_liquidation import normalize_liquidation,build_minute_market,make_samples,canonical_hash
+from aud066_analysis import walk_forward_extended
 BASE_SHA='43c8023d3a4623381e45da02d9efa8e9b5888f47'; BASE_TREE='20ec5775ea37a7288e8cd8748ea304843d9b0866'
 DATES=['2023-01-01','2023-04-01','2023-07-01','2023-10-01','2024-01-01','2024-04-01','2024-07-01','2024-10-01','2025-01-01','2025-04-01','2025-07-01','2025-10-01']
-MAX_BYTES=180_000_000; ROOT=Path('senecio_polymarket/docs/evidence/aud-066'); DATASETS=('trades','quotes','derivative_ticker','liquidations')
+MAX_BYTES=180_000_000; ROOT=Path(__file__).resolve().parents[1]/'docs'/'evidence'/'aud-066'; DATASETS=('trades','quotes','derivative_ticker','liquidations')
 def url(dtype,date):
  y,m,d=date.split('-'); s='PERPETUALS' if dtype=='liquidations' else 'BTCUSDT'; return f'https://datasets.tardis.dev/v1/binance-futures/{dtype}/{y}/{m}/{d}/{s}.csv.gz'
 def download_bounded(u,path):
@@ -28,8 +29,7 @@ def download_bounded(u,path):
  except (urllib.error.HTTPError,urllib.error.URLError,TimeoutError,RuntimeError) as e:
   path.unlink(missing_ok=True); return {'url':u,'bytes':total,'sha256':None,'status':'ERROR','error':type(e).__name__+':'+str(e)[:240]}
 def rows(path):
- with gzip.open(path,'rt',encoding='utf-8',newline='') as f:
-  yield from csv.DictReader(f)
+ with gzip.open(path,'rt',encoding='utf-8',newline='') as f: yield from csv.DictReader(f)
 def main():
  ROOT.mkdir(parents=True,exist_ok=True); all_samples=[]; provenance=[]; excluded={}; date_stats=[]
  with tempfile.TemporaryDirectory(prefix='aud066-') as td:
