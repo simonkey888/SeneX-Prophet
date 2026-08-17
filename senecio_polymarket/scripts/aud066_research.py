@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AUD-066 zero-cost historical replay over Tardis first-of-month sample CSVs."""
+"""AUD-066 zero-cost historical replay over Tardis first-of-month samples; streaming/stdlib only."""
 from __future__ import annotations
 import csv,gzip,hashlib,json,sys,tempfile,urllib.request,urllib.error
 from pathlib import Path
@@ -30,6 +30,9 @@ def download_bounded(u,path):
   path.unlink(missing_ok=True); return {'url':u,'bytes':total,'sha256':None,'status':'ERROR','error':type(e).__name__+':'+str(e)[:240]}
 def rows(path):
  with gzip.open(path,'rt',encoding='utf-8',newline='') as f: yield from csv.DictReader(f)
+def filtered(path,counter,key):
+ for r in rows(path):
+  if str(r.get('symbol') or '').upper()=='BTCUSDT': counter[key]+=1; yield r
 def main():
  ROOT.mkdir(parents=True,exist_ok=True); all_samples=[]; provenance=[]; excluded={}; date_stats=[]
  with tempfile.TemporaryDirectory(prefix='aud066-') as td:
@@ -43,18 +46,18 @@ def main():
    provenance.extend(manifests)
    if failed:
     excluded['DATASET_DOWNLOAD_OR_AVAILABILITY_FAILURE']=excluded.get('DATASET_DOWNLOAD_OR_AVAILABILITY_FAILURE',0)+1; date_stats.append({'date':date,'status':'EXCLUDED_SOURCE_FAILURE','manifests':manifests}); continue
-   liqs=[]; bad=0
+   liqs=[]; bad=0; liq_seen=0
    for r in rows(files['liquidations']):
     if str(r.get('symbol') or '').upper()!='BTCUSDT': continue
-    x=normalize_liquidation(r)
+    liq_seen+=1; x=normalize_liquidation(r)
     if x is None: bad+=1
     else: liqs.append(x)
-   liqs.sort(key=lambda x:x['known_at_us'])
-   trades=[r for r in rows(files['trades']) if str(r.get('symbol') or '').upper()=='BTCUSDT']; quotes=[r for r in rows(files['quotes']) if str(r.get('symbol') or '').upper()=='BTCUSDT']; tickers=[r for r in rows(files['derivative_ticker']) if str(r.get('symbol') or '').upper()=='BTCUSDT']
-   mins=build_minute_market(trades,quotes,tickers); samples,exc=make_samples(date,mins,liqs); all_samples.extend(samples)
+   liqs.sort(key=lambda x:x['known_at_us']); counts={'trades':0,'quotes':0,'derivative_ticker':0}
+   mins=build_minute_market(filtered(files['trades'],counts,'trades'),filtered(files['quotes'],counts,'quotes'),filtered(files['derivative_ticker'],counts,'derivative_ticker'))
+   samples,exc=make_samples(date,mins,liqs); all_samples.extend(samples)
    for k,v in exc.items(): excluded[k]=excluded.get(k,0)+v
    excluded['LIQ_ROWS_BAD_TIMESTAMP_OR_SCHEMA']=excluded.get('LIQ_ROWS_BAD_TIMESTAMP_OR_SCHEMA',0)+bad
-   date_stats.append({'date':date,'status':'USED','liquidations':len(liqs),'trades':len(trades),'quotes':len(quotes),'ticker_rows':len(tickers),'samples':len(samples),'excluded':exc})
+   date_stats.append({'date':date,'status':'USED','liquidations_seen':liq_seen,'liquidations_accepted':len(liqs),'trades':counts['trades'],'quotes':counts['quotes'],'ticker_rows':counts['derivative_ticker'],'samples':len(samples),'excluded':exc})
  result=walk_forward_extended(all_samples)
  manifest={'order':'AUD-066','base_sha':BASE_SHA,'base_tree':BASE_TREE,'source':'Tardis normalized first-of-month sample datasets exported from exchange real-time feeds','zero_cost':True,'api_key_required':False,'dates_requested':DATES,'date_stats':date_stats,'sample_count':len(all_samples),'excluded':excluded,'provenance':provenance,'provenance_hash':canonical_hash([{k:v for k,v in r.items() if k!='error'} for r in provenance]),'point_in_time_clock':'local_timestamp(receipt time)','label_rule':'BTC price at t+5m strictly after decision; never used in feature construction','cost_usd':0}
  (ROOT/'data-manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n'); (ROOT/'oos-results.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
