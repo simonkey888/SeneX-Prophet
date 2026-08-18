@@ -64,21 +64,28 @@ class WorkerCase(unittest.TestCase):
         out=self.exec_job(job); self.assertEqual(out["status"],"SUCCEEDED"); self.assertEqual(out["side_effects"]["child_processes"],0)
     def test_cancellation_is_terminal_without_target_effect(self):
         job=make_job(cancelled=True); out=self.exec_job(job); self.assertEqual(out["status"],"CANCELLED"); self.assertEqual(out["artifacts"],[])
-    def test_symlink_and_hardlink_escape_fail_closed(self):
+    def test_symlink_and_hardlink_escape_fail_closed_terminal(self):
         outside=self.root/"outside.json"; outside.write_text("{}")
         (self.target/"input/data.json").unlink(); (self.target/"input/data.json").symlink_to(outside)
-        with self.assertRaises(JobRejected): self.exec_job(make_job())
+        out=self.exec_job(make_job()); self.assertEqual(out["status"],"FAILED"); self.assertIn("symlink",out["task_result"]["error"])
         (self.target/"input/data.json").unlink(); os.link(outside,self.target/"input/data.json")
         job=make_job(); job["job_id"]="hardlink"; job["fixed_job_scope_hash"]=compute_scope_hash(job)
-        with self.assertRaises(JobRejected): self.exec_job(job)
-    def test_outside_write_and_network_shell_resource_requests_denied(self):
+        out=self.exec_job(job); self.assertEqual(out["status"],"FAILED"); self.assertIn("hardlink",out["task_result"]["error"])
+    def test_outside_write_is_terminal_failed_and_duplicate_idempotent(self):
         source=self.target/"input/source.py"; source.write_text("x=1\n")
         base={"operation":"bounded_python_pipeline_repair","input":"input/source.py","replacements":[],"static_checks":[]}
-        job=make_job(**base,patch_output="../escape.py"); job["required_capabilities"]=["bounded_python_pipeline_repair"]; job["fixed_job_scope_hash"]=compute_scope_hash(job)
-        with self.assertRaises(JobRejected): self.exec_job(job)
-        for key in ("allow_network","shell_command","docker_socket","ssh_agent","secret_access","live_trading"):
+        job=make_job(**base,patch_output="../escape.py"); job["required_capabilities"]=["bounded_python_pipeline_repair"]; job["job_id"]="outside-write"; job["fixed_job_scope_hash"]=compute_scope_hash(job)
+        first=self.exec_job(job); second=self.exec_job(job)
+        self.assertEqual(first,second); self.assertEqual(first["status"],"FAILED"); self.assertEqual(first["artifacts"],[]); self.assertIn("path escape",first["task_result"]["error"])
+    def test_network_shell_hooks_and_privileged_resources_denied_pre_ack(self):
+        for key in ("allow_network","network_allowlist","shell_command","startup_hook","docker_socket","ssh_agent","secret_access","live_trading","wallet","payment"):
             job=make_job(**{key:True}); job["job_id"]="deny-"+key; job["fixed_job_scope_hash"]=compute_scope_hash(job)
             with self.assertRaises(JobRejected): self.exec_job(job)
+            self.assertEqual(list(self.state.glob("*.json")),[])
+    def test_dotenv_outside_allowed_paths_cannot_be_read(self):
+        secret="DOTENV_SECRET_AUD067_61a9"; (self.target/".env").write_text("TOKEN="+secret+"\n")
+        job=make_job(inputs=[".env"]); job["job_id"]="dotenv"; job["fixed_job_scope_hash"]=compute_scope_hash(job)
+        out=self.exec_job(job); self.assertEqual(out["status"],"FAILED"); self.assertNotIn(secret,json.dumps(out)); self.assertEqual(out["side_effects"]["network_requests"],0)
     def test_untrusted_python_is_parsed_not_executed_and_cannot_steal_env(self):
         secret="AUD067_NEVER_EXFILTRATE_9f1c"; os.environ["ATM_WORKER_TEST_SECRET"]=secret
         marker=self.root/"pwned"; src=f'import os\nvalue=os.getenv("ATM_WORKER_TEST_SECRET")\nopen({str(marker)!r},"w").write(value)\n'
