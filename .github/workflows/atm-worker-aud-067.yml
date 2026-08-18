@@ -32,19 +32,23 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Setup Python 3.11
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.11'
-      - name: Assert AUD-067 scope and immutable base
+      - name: Assert AUD-067 exact head, scope and immutable base
         shell: bash
         run: |
           set -euo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          test "$SOURCE_SHA" = "${{ github.event.pull_request.head.sha || github.sha }}"
           test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
           test "$(git rev-parse "$BASE_SHA^{tree}")" = 20ec5775ea37a7288e8cd8748ea304843d9b0866
           bad="$(git diff --name-only "$BASE_SHA..HEAD" | grep -Ev '^(senecio_polymarket/atm_worker/|senecio_polymarket/tests/test_atm_worker_|senecio_polymarket/scripts/atm_worker_|senecio_polymarket/docs/evidence/aud-067/|\.github/workflows/atm-worker-)' || true)"
           test -z "$bad" || { echo "$bad"; exit 1; }
           ! git diff --name-only "$BASE_SHA..HEAD" | grep -Eiq 'runtime017|runtime_017|senex-017'
+          echo "AUD067_EXACT_HEAD=$SOURCE_SHA"
           echo PRODUCTION_MUTATION=0
           echo SUPABASE_MUTATION=0
           echo NORTHFLANK_MUTATION=0
@@ -61,19 +65,25 @@ jobs:
       - name: Materialize ATM-style shadow evidence
         working-directory: senecio_polymarket
         run: |
+          set -euo pipefail
           rm -rf docs/evidence/aud-067/generated
-          python scripts/atm_worker_materialize.py --out docs/evidence/aud-067/generated --source-sha "$GITHUB_SHA"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          export SOURCE_SHA
+          python scripts/atm_worker_materialize.py --out docs/evidence/aud-067/generated --source-sha "$SOURCE_SHA"
           python - <<'PY'
           import json, os
           from pathlib import Path
           p=Path('docs/evidence/aud-067/generated')
           r=json.loads((p/'aud-067-receipt.json').read_text())
-          assert r['SOURCE_SHA']==os.environ['GITHUB_SHA']
+          assert r['SOURCE_SHA']==os.environ['SOURCE_SHA']
           assert r['PRODUCTION_MUTATION']==0 and r['RUNTIME017_MUTATIONS']==0
+          assert r['SUPABASE_MUTATION']==0 and r['NORTHFLANK_MUTATION']==0
+          assert r['THRESHOLD_WEIGHT_TUNING']==0 and r['REAL_TRADING']==0
           assert r['OUTGOING_SPEND_USD']==0
           can=json.loads((p/'shadow-can-handle.json').read_text())
           other=json.loads((p/'shadow-needs-other-worker.json').read_text())
           assert can['classification']=='CAN_HANDLE' and can['completion']['status']=='SUCCEEDED'
+          assert can['completion']['source_sha']==os.environ['SOURCE_SHA']
           assert other['classification']=='NEEDS_OTHER_WORKER'
           print('AUD067_E2E_SHADOW=PASS')
           print('READY_FOR_ATM_INTEGRATION=NOT_CLAIMED_RESERVED_FOR_INDEPENDENT_AUD')
@@ -81,7 +91,7 @@ jobs:
       - name: Upload exact-head AUD-067 evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-067-${{ github.sha }}
+          name: aud-067-${{ github.event.pull_request.head.sha || github.sha }}
           path: senecio_polymarket/docs/evidence/aud-067/generated/
           if-no-files-found: error
           retention-days: 14
