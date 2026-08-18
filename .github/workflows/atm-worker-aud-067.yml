@@ -1,0 +1,87 @@
+name: ATM Worker AUD-067 Exact Head
+
+on:
+  push:
+    branches: [worker/order-wr-003-senex-readiness]
+    paths:
+      - 'senecio_polymarket/atm_worker/**'
+      - 'senecio_polymarket/tests/test_atm_worker_**'
+      - 'senecio_polymarket/scripts/atm_worker_*'
+      - 'senecio_polymarket/docs/evidence/aud-067/**'
+      - '.github/workflows/atm-worker-*'
+  pull_request:
+    paths:
+      - 'senecio_polymarket/atm_worker/**'
+      - 'senecio_polymarket/tests/test_atm_worker_**'
+      - 'senecio_polymarket/scripts/atm_worker_*'
+      - 'senecio_polymarket/docs/evidence/aud-067/**'
+      - '.github/workflows/atm-worker-*'
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+
+jobs:
+  exact-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact worker head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Assert AUD-067 scope and immutable base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA^{tree}")" = 20ec5775ea37a7288e8cd8748ea304843d9b0866
+          bad="$(git diff --name-only "$BASE_SHA..HEAD" | grep -Ev '^(senecio_polymarket/atm_worker/|senecio_polymarket/tests/test_atm_worker_|senecio_polymarket/scripts/atm_worker_|senecio_polymarket/docs/evidence/aud-067/|\.github/workflows/atm-worker-)' || true)"
+          test -z "$bad" || { echo "$bad"; exit 1; }
+          ! git diff --name-only "$BASE_SHA..HEAD" | grep -Eiq 'runtime017|runtime_017|senex-017'
+          echo PRODUCTION_MUTATION=0
+          echo SUPABASE_MUTATION=0
+          echo NORTHFLANK_MUTATION=0
+          echo RUNTIME017_MUTATIONS=0
+          echo THRESHOLD_WEIGHT_TUNING=0
+          echo REAL_TRADING=0
+          echo OUTGOING_SPEND_USD=0
+      - name: Worker unit / state-machine / red-team tests
+        working-directory: senecio_polymarket
+        run: python -m unittest -v tests.test_atm_worker_aud067
+      - name: Compile worker-only Python
+        working-directory: senecio_polymarket
+        run: python -m compileall -q atm_worker scripts/atm_worker_materialize.py tests/test_atm_worker_aud067.py
+      - name: Materialize ATM-style shadow evidence
+        working-directory: senecio_polymarket
+        run: |
+          rm -rf docs/evidence/aud-067/generated
+          python scripts/atm_worker_materialize.py --out docs/evidence/aud-067/generated --source-sha "$GITHUB_SHA"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path('docs/evidence/aud-067/generated')
+          r=json.loads((p/'aud-067-receipt.json').read_text())
+          assert r['SOURCE_SHA']==os.environ['GITHUB_SHA']
+          assert r['PRODUCTION_MUTATION']==0 and r['RUNTIME017_MUTATIONS']==0
+          assert r['OUTGOING_SPEND_USD']==0
+          can=json.loads((p/'shadow-can-handle.json').read_text())
+          other=json.loads((p/'shadow-needs-other-worker.json').read_text())
+          assert can['classification']=='CAN_HANDLE' and can['completion']['status']=='SUCCEEDED'
+          assert other['classification']=='NEEDS_OTHER_WORKER'
+          print('AUD067_E2E_SHADOW=PASS')
+          print('READY_FOR_ATM_INTEGRATION=NOT_CLAIMED_RESERVED_FOR_INDEPENDENT_AUD')
+          PY
+      - name: Upload exact-head AUD-067 evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-067-${{ github.sha }}
+          path: senecio_polymarket/docs/evidence/aud-067/generated/
+          if-no-files-found: error
+          retention-days: 14
