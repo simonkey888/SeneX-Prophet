@@ -1,4 +1,7 @@
-from .atm_worker_aud067_common import *
+try:
+    from .atm_worker_aud067_common import *
+except ImportError:
+    from atm_worker_aud067_common import *
 
 
 class WorkerR1Part2(WorkerBase):
@@ -72,7 +75,7 @@ class WorkerR1Part2(WorkerBase):
         rows=[{"x":1},{"x":2},{"x":100},{"x":101}]; (self.target/"input/data.json").write_text(json.dumps(rows))
         j=self.job(operation="robustness_regime_stress",caps=["robustness_regime_stress"],input="input/data.json",value_field="x",train_end_index=2,clock_shift_effect=0)
         j["job_id"]="stress"; self.rebind(j,["input/data.json"])
-        out=self.exec(j)["task_result"]; self.assertEqual(out["train_only_median"],2); self.assertEqual(out["train_end_index"],2)
+        out=self.exec(j)["task_result"]; self.assertEqual(out["status"],"PASS"); self.assertEqual(out["train_only_median"],2); self.assertEqual(out["train_end_index"],2)
         j=self.job(operation="robustness_regime_stress",caps=["robustness_regime_stress"],input="input/data.json",value_field="x")
         j["job_id"]="nostrain"; self.rebind(j,["input/data.json"])
         self.assertEqual(self.exec(j)["status"],"FAILED")

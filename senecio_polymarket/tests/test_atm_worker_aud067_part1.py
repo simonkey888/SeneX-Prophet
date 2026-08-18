@@ -1,4 +1,7 @@
-from .atm_worker_aud067_common import *
+try:
+    from .atm_worker_aud067_common import *
+except ImportError:
+    from atm_worker_aud067_common import *
 
 
 class WorkerR1Part1(WorkerBase):
