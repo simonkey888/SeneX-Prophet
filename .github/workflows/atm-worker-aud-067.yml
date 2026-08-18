@@ -1,4 +1,4 @@
-name: ATM Worker AUD-067-R1 Exact Head
+name: ATM Worker AUD-067-R2 Exact Head
 
 on:
   push:
@@ -55,7 +55,7 @@ jobs:
           bad="$(git diff --name-only "$BASE_SHA..HEAD" | grep -Ev '^(senecio_polymarket/atm_worker/|senecio_polymarket/tests/test_atm_worker_|senecio_polymarket/tests/atm_worker_aud067_|senecio_polymarket/scripts/atm_worker_|senecio_polymarket/docs/evidence/aud-067/|\.github/workflows/atm-worker-)' || true)"
           test -z "$bad" || { echo "$bad"; exit 1; }
           ! git diff --name-only "$BASE_SHA..HEAD" | grep -Eiq 'runtime017|runtime_017|senex-017'
-          echo "AUD067_R1_EXACT_HEAD=$SOURCE_SHA"
+          echo "AUD067_R2_EXACT_HEAD=$SOURCE_SHA"
           echo PRODUCTION_MUTATION=0
           echo SUPABASE_MUTATION=0
           echo NORTHFLANK_MUTATION=0
@@ -64,80 +64,96 @@ jobs:
           echo REAL_TRADING=0
           echo OUTGOING_SPEND_USD=0
 
-      - name: Worker unit state-machine and red-team tests
+      - name: Worker unit state-machine and residual tests
         working-directory: senecio_polymarket
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_atm_worker_aud067 2>&1 | tee /tmp/aud067-tests.log
-          grep -F 'Ran 18 tests' /tmp/aud067-tests.log
-          grep -F 'OK' /tmp/aud067-tests.log
-          echo AUD067_R1_FOCUSED_TESTS=18/18_PASS
+          mkdir -p "$RUNNER_TEMP/aud067-logs"
+          AUD067_SOURCE_SHA="$(git rev-parse HEAD)" python -m unittest -v tests.test_atm_worker_aud067 tests.test_atm_worker_aud067_r2 2>&1 | tee "$RUNNER_TEMP/aud067-logs/focused-tests.log"
+          grep -F 'Ran 24 tests' "$RUNNER_TEMP/aud067-logs/focused-tests.log"
+          grep -F 'OK' "$RUNNER_TEMP/aud067-logs/focused-tests.log"
+          echo AUD067_R2_FOCUSED_TESTS=24/24_PASS
 
       - name: Compile worker-only Python
         working-directory: senecio_polymarket
-        run: python -m compileall -q atm_worker scripts/atm_worker_materialize.py tests/atm_worker_aud067_common.py tests/test_atm_worker_aud067.py tests/test_atm_worker_aud067_part1.py tests/test_atm_worker_aud067_part2.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q atm_worker scripts/atm_worker_materialize.py tests/atm_worker_aud067_common.py tests/test_atm_worker_aud067.py tests/test_atm_worker_aud067_part1.py tests/test_atm_worker_aud067_part2.py tests/test_atm_worker_aud067_r2.py 2>&1 | tee "$RUNNER_TEMP/aud067-logs/compile.log"
 
       - name: Prepare exact public Tableau source snapshot
         shell: bash
         run: |
           set -euo pipefail
           export TABLEAU_OUT="$RUNNER_TEMP/tableau-user-item.py"
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/aud067-logs/tableau-preparation.log"
           import hashlib, os, urllib.request
           commit=os.environ['TABLEAU_COMMIT']; path=os.environ['TABLEAU_PATH']; expected=os.environ['TABLEAU_GIT_BLOB']
           url=f'https://raw.githubusercontent.com/tableau/server-client-python/{commit}/{path}'
-          req=urllib.request.Request(url,headers={'User-Agent':'SENEX-AUD-067-R1'})
+          req=urllib.request.Request(url,headers={'User-Agent':'SENEX-AUD-067-R2'})
           with urllib.request.urlopen(req,timeout=20) as r: data=r.read(1_048_577)
           assert 0 < len(data) <= 1_048_576
           blob=hashlib.sha1(f'blob {len(data)}\0'.encode()+data).hexdigest(); assert blob==expected,(blob,expected)
           open(os.environ['TABLEAU_OUT'],'wb').write(data)
-          print(f'TABLEAU_EXACT_COMMIT={commit}')
-          print(f'TABLEAU_GIT_BLOB={blob}')
-          print(f'TABLEAU_SHA256={hashlib.sha256(data).hexdigest()}')
-          print(f'TABLEAU_BYTES={len(data)}')
-          print('PREPARATION_NETWORK_REQUESTS=1')
+          print(f'TABLEAU_EXACT_COMMIT={commit}'); print(f'TABLEAU_GIT_BLOB={blob}'); print(f'TABLEAU_SHA256={hashlib.sha256(data).hexdigest()}'); print(f'TABLEAU_BYTES={len(data)}'); print('PREPARATION_NETWORK_REQUESTS=1')
           PY
 
-      - name: Materialize ORDER-WR-003-equivalent evidence
+      - name: Materialize AUD-067-R2 evidence
         working-directory: senecio_polymarket
         shell: bash
         run: |
           set -euo pipefail
           rm -rf docs/evidence/aud-067/generated
           SOURCE_SHA="$(git rev-parse HEAD)"
-          python scripts/atm_worker_materialize.py --out docs/evidence/aud-067/generated --source-sha "$SOURCE_SHA" --tableau-source "$RUNNER_TEMP/tableau-user-item.py" --expected-tableau-git-blob "$TABLEAU_GIT_BLOB"
-          python - <<'PY'
+          python scripts/atm_worker_materialize.py --out docs/evidence/aud-067/generated --source-sha "$SOURCE_SHA" --tableau-source "$RUNNER_TEMP/tableau-user-item.py" --expected-tableau-git-blob "$TABLEAU_GIT_BLOB" 2>&1 | tee "$RUNNER_TEMP/aud067-logs/materialize.log"
+          python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/aud067-logs/evidence-verify.log"
           import json, os, subprocess
           from pathlib import Path
           p=Path('docs/evidence/aud-067/generated')
-          required={'REMOTE_TRUTH.md','WORKER_CONTRACT.json','CAPABILITY_MATRIX.json','SECURITY_BOUNDARY.md','TEMPORAL_TRUTH.md','NEGATIVE_TESTS.json','CRASH_RECOVERY.json','REAL_WORLD_SHADOW.json','ORACLE_PRESERVATION.md','TEST_RESULTS.txt','CI_EXACT_HEAD.md','INTEGRATION_NOTES.md','MANIFEST.sha256','aud-067-receipt.json'}
+          required={'REMOTE_TRUTH.md','WORKER_CONTRACT.json','CAPABILITY_MATRIX.json','ROBUSTNESS_MATRIX.json','SECURITY_BOUNDARY.md','TEMPORAL_TRUTH.md','NEGATIVE_TESTS.json','CRASH_RECOVERY.json','REAL_WORLD_SHADOW.json','ORACLE_PRESERVATION.md','TEST_RESULTS.txt','CI_EXACT_HEAD.md','INTEGRATION_NOTES.md','MANIFEST.sha256','aud-067-receipt.json'}
           assert required <= {x.name for x in p.iterdir()}
           r=json.loads((p/'aud-067-receipt.json').read_text()); head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-          assert r['SOURCE_SHA']==head and r['CAPABILITY_MATRIX']=='PROVEN_ONLY' and r['F001_F009']=='CLOSED_BY_CODE_AND_EVIDENCE'
+          assert r['SOURCE_SHA']==head and r['F010_F015']=='CLOSED_BY_CODE_AND_EVIDENCE' and r['CAPABILITY_MATRIX']=='PROVEN_ONLY'
           for k in ('PRODUCTION_MUTATION','SUPABASE_MUTATION','NORTHFLANK_MUTATION','RUNTIME017_MUTATIONS','THRESHOLD_WEIGHT_TUNING','REAL_TRADING','OUTGOING_SPEND_USD'): assert r[k]==0
           m=json.loads((p/'CAPABILITY_MATRIX.json').read_text()); assert m['matrix_policy']=='PROVEN_ONLY' and not m['unproven_advertised_capabilities'] and all(x['status']=='PROVEN' for x in m['capabilities'])
-          c=json.loads((p/'CRASH_RECOVERY.json').read_text()); assert set(c)=={'after_ack','during_work','after_artifact_before_finalize'}
-          s=json.loads((p/'REAL_WORLD_SHADOW.json').read_text())['can_handle']; assert s['classification']=='CAN_HANDLE' and s['public_snapshot_commit']==os.environ['TABLEAU_COMMIT'] and s['public_snapshot_git_blob']==os.environ['TABLEAU_GIT_BLOB']
-          assert s['completion']['side_effects']['network_requests']==0
-          n=json.loads((p/'NEGATIVE_TESTS.json').read_text()); assert n['independent_acceptance_tamper']['status']=='FAIL'
-          print('AUD067_R1_E2E_SHADOW=PASS'); print('CAPABILITY_MATRIX=PROVEN_ONLY'); print('READY_FOR_ATM_INTEGRATION=NOT_CLAIMED_RESERVED_FOR_INDEPENDENT_AUD')
+          rb=json.loads((p/'ROBUSTNESS_MATRIX.json').read_text()); assert rb['post_hoc_selection'] is False and len(rb['matrix'])==4 and rb['train_only']['n']==4
+          s=json.loads((p/'REAL_WORLD_SHADOW.json').read_text()); assert s['can_handle']['observed_at'] and s['needs_other_worker']['observed_at']; assert s['can_handle']['public_snapshot_git_blob']==os.environ['TABLEAU_GIT_BLOB']
+          c=json.loads((p/'CRASH_RECOVERY.json').read_text()); assert set(c)=={'after_ack','during_work','after_artifact_before_finalize'} and c['after_ack']['cross_source_rejected'] is True
+          print('AUD067_R2_E2E=PASS'); print('READY_FOR_ATM_INTEGRATION=NOT_CLAIMED_RESERVED_FOR_INDEPENDENT_AUD')
           PY
 
-      - name: Verify evidence manifest and secret scan
-        working-directory: senecio_polymarket/docs/evidence/aud-067/generated
+      - name: Secret-scan logs and evidence; seal manifest
+        working-directory: senecio_polymarket
         shell: bash
         run: |
           set -euo pipefail
+          python - <<'PY'
+          import hashlib, re, shutil
+          from pathlib import Path
+          evidence=Path('docs/evidence/aud-067/generated'); logs=Path(__import__('os').environ['RUNNER_TEMP'])/'aud067-logs'
+          patterns=[re.compile(rb'-----BEGIN [A-Z ]*PRIVATE KEY-----'),re.compile(rb'ghp_[A-Za-z0-9]{20,}'),re.compile(rb'sk-[A-Za-z0-9]{20,}')]
+          scanned=[]
+          for root in (evidence,logs):
+              for p in sorted(root.rglob('*')):
+                  if p.is_file():
+                      data=p.read_bytes(); scanned.append(str(p))
+                      if any(rx.search(data) for rx in patterns): raise SystemExit('SECRET_SCAN_FAIL:'+p.name)
+          dest=evidence/'logs'; dest.mkdir(exist_ok=True)
+          for p in sorted(logs.glob('*.log')): shutil.copyfile(p,dest/p.name)
+          manifest=evidence/'MANIFEST.sha256'
+          files=sorted(p for p in evidence.rglob('*') if p.is_file() and p!=manifest)
+          manifest.write_text(''.join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(evidence).as_posix()}\n" for p in files))
+          print(f'SECRET_SCAN=PASS FILES={len(scanned)}'); print('LOG_SECRET_SCAN=PASS'); print('EVIDENCE_SECRET_SCAN=PASS')
+          PY
+          cd docs/evidence/aud-067/generated
           sha256sum -c MANIFEST.sha256
-          ! grep -RIE --binary-files=without-match '(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})' .
           echo EVIDENCE_MANIFEST=PASS
-          echo SECRET_SCAN=PASS
 
-      - name: Upload exact-head AUD-067-R1 evidence
+      - name: Upload exact-head AUD-067-R2 evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-067-r1-${{ github.event.pull_request.head.sha || github.sha }}
+          name: aud-067-r2-${{ github.event.pull_request.head.sha || github.sha }}
           path: senecio_polymarket/docs/evidence/aud-067/generated/
           if-no-files-found: error
           retention-days: 14

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import ast, hashlib, json, math, os, tempfile
+import hashlib, json, math, os, re, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 WORKER_ID="senex-prophet"
-WORKER_VERSION="aud067.r1"
+WORKER_VERSION="aud067.r2"
 PROTOCOL_VERSION="atm-worker.v1"
+ACCEPTANCE_CRITERIA_VERSION="atm-acceptance.v1"
 CAPABILITIES=("deterministic_data_replay","causal_cutoff_validation","provenance_hash_validation","statistical_evaluation","robustness_regime_stress","bounded_python_pipeline_repair")
 PROHIBITIONS=("production_mutation","supabase_write","northflank_mutation","runtime017_mutation","threshold_or_weight_tuning","live_trading","wallet_or_payment","ambient_secret_access","docker_socket_access","ssh_agent_access","implicit_hook_execution","unapproved_network","outgoing_spend","external_acceptance_authority","economic_truth_authority")
 MAX_FILE_BYTES=1_048_576; MAX_TOTAL_BYTES=4_194_304; MAX_JSON_ROWS=10_000; MAX_DEPTH=24; MAX_LIST=20_000; MAX_DICT=2_000; MAX_STRING=262_144
+MAX_ROBUSTNESS_REGIMES=8; MAX_ROBUSTNESS_PERTURBATIONS=8
 TERMINAL={"SUCCEEDED","FAILED","CANCELLED"}
 REQUIRED={"protocol_version","job_id","canonical_opportunity_id","worker_id","work_lease_id","attempt","scope_hash","target_repository_or_dataset","target_base_sha_or_snapshot","target_snapshot_manifest","allowed_paths","required_capabilities","structured_requirements","frozen_acceptance_criteria","expected_deliverable","deterministic_checks","data_provenance","as_of","cutoff","max_spend_usd","lease_state","lease_expires_at","job_deadline","workspace_id"}
 
@@ -25,6 +27,11 @@ def sha256_bytes(b:bytes)->str: return hashlib.sha256(b).hexdigest()
 def git_blob_sha(b:bytes)->str: return hashlib.sha1(f"blob {len(b)}\0".encode()+b).hexdigest()
 def compute_scope_hash(job:dict[str,Any])->str: return sha256_bytes(canon({k:job[k] for k in sorted(REQUIRED-{"scope_hash"}) if k in job}))
 
+def validate_source_sha(source_sha:Any)->str:
+    s=str(source_sha)
+    if not re.fullmatch(r"[0-9a-f]{40}",s): raise JobRejected("invalid exact worker source_sha")
+    return s
+
 def parse_time(v:Any,field:str)->datetime:
     try:
         s=str(v); s=s[:-1]+"+00:00" if s.endswith("Z") else s; d=datetime.fromisoformat(s)
@@ -36,6 +43,19 @@ def safe_rel(v:Any)->Path:
     q=Path(str(v))
     if q.is_absolute() or ".." in q.parts or str(q) in {"","."}: raise JobRejected("unsafe relative path")
     return q
+
+def validate_acceptance_criteria(criteria:Any)->None:
+    if not isinstance(criteria,list) or not criteria or len(criteria)>32: raise JobRejected("frozen_acceptance_criteria must be non-empty bounded list")
+    for c in criteria:
+        if not isinstance(c,dict): raise JobRejected("malformed acceptance criterion")
+        typ=c.get("type"); version=c.get("schema_version")
+        if version!=ACCEPTANCE_CRITERIA_VERSION: raise JobRejected("unsupported acceptance criterion schema")
+        if typ=="zero_spend": allowed={"schema_version","type"}
+        elif typ=="static_check":
+            allowed={"schema_version","type","name"}
+            if not isinstance(c.get("name"),str) or not c["name"].strip(): raise JobRejected("malformed static_check criterion")
+        else: raise JobRejected("unsupported acceptance criterion type")
+        if set(c)!=allowed: raise JobRejected("malformed acceptance criterion fields")
 
 def validate_job(job:dict[str,Any],now:datetime)->None:
     missing=sorted(REQUIRED-set(job))
@@ -59,6 +79,7 @@ def validate_job(job:dict[str,Any],now:datetime)->None:
     if not isinstance(job["target_snapshot_manifest"],dict) or not job["target_snapshot_manifest"].get("files"): raise JobRejected("target_snapshot_manifest required")
     prov=job["data_provenance"]
     if not isinstance(prov,dict) or not prov.get("source"): raise JobRejected("malformed data provenance")
+    validate_acceptance_criteria(job["frozen_acceptance_criteria"])
     req=job["structured_requirements"]
     if not isinstance(req,dict): raise JobRejected("structured_requirements must be object")
     forbidden={"network_allowlist","allow_network","shell_command","execute_target","startup_hook","docker_socket","ssh_agent","wallet","payment","live_trading","production_write","supabase_write","northflank_write","runtime017_write","secret_access"}
@@ -137,22 +158,22 @@ def verify_snapshot(job,root,ctl):
     if kind not in {"dataset","git_repo_subset"}: raise JobRejected("unsupported snapshot kind")
     if kind=="dataset" and m.get("snapshot_id")!=job["target_base_sha_or_snapshot"]: raise JobRejected("dataset snapshot id mismatch")
     if kind=="git_repo_subset" and m.get("base_commit_sha")!=job["target_base_sha_or_snapshot"]: raise JobRejected("repo base SHA mismatch")
-    files=m.get("files");
+    files=m.get("files")
     if not isinstance(files,list) or not files or len(files)>256: raise JobRejected("invalid snapshot file manifest")
     out=[]; total=0; seen=set()
     for e in files:
         ctl.check("snapshot_verify")
         if not isinstance(e,dict): raise JobRejected("invalid snapshot entry")
-        rel=str(e.get("path",""));
+        rel=str(e.get("path",""))
         if rel in seen: raise JobRejected("duplicate snapshot path")
         seen.add(rel)
         try: p=check_path(root,rel,job["allowed_paths"])
-        except WorkerInputError as e: raise JobRejected(str(e)) from e
+        except WorkerInputError as x: raise JobRejected(str(x)) from x
         if not p.is_file(): raise JobRejected("snapshot file missing")
         size=p.stat().st_size; total+=size
         if size>MAX_FILE_BYTES or total>MAX_TOTAL_BYTES: raise JobRejected("snapshot byte limit exceeded")
-        data=p.read_bytes()
-        if len(data)!=size or e.get("bytes")!=size or e.get("sha256")!=sha256_bytes(data): raise JobRejected("snapshot bytes mismatch")
+        with p.open("rb") as f: data=f.read(MAX_FILE_BYTES+1)
+        if len(data)!=size or len(data)>MAX_FILE_BYTES or e.get("bytes")!=size or e.get("sha256")!=sha256_bytes(data): raise JobRejected("snapshot bytes mismatch")
         row={"path":rel,"bytes":size,"sha256":sha256_bytes(data)}
         if kind=="git_repo_subset":
             blob=git_blob_sha(data)
