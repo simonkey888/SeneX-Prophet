@@ -3,6 +3,13 @@ name: AUD-065-BP1 Real Boundary 501
 on:
   push:
     branches: [audit/aud-065-boundary-501-r1]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/aud-065-boundary-501.yml'
+      - 'tools/audit/aud065_boundary_501.py'
+      - 'tests/audit/test_aud065_boundary_501.py'
+      - 'docs/evidence/aud-065-boundary-501/**'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +31,7 @@ jobs:
       - name: Checkout exact audit head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -37,7 +44,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          EXPECTED="${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
           test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
           test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
           bad="$(git diff --name-only "$BASE_SHA...HEAD" | grep -Ev '^(\.github/workflows/aud-065-boundary-501\.yml|tools/audit/aud065_boundary_501\.py|tests/audit/test_aud065_boundary_501\.py|docs/evidence/aud-065-boundary-501/)' || true)"
@@ -83,7 +91,8 @@ jobs:
           rm -rf docs/evidence/aud-065-boundary-501/generated
           mkdir -p docs/evidence/aud-065-boundary-501/generated
           export AUD065_TEST_RESULT="14/14 unittest PASS; 12-contract self-test PASS; executed before production reads"
-          python tools/audit/aud065_boundary_501.py --out docs/evidence/aud-065-boundary-501/generated --source-sha "$GITHUB_SHA" 2>&1 | tee "$RUNNER_TEMP/aud065bp1/real-proof.log"
+          SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          python tools/audit/aud065_boundary_501.py --out docs/evidence/aud-065-boundary-501/generated --source-sha "$SOURCE_SHA" 2>&1 | tee "$RUNNER_TEMP/aud065bp1/real-proof.log"
 
       - name: Secret-scan logs and evidence then reseal manifest
         shell: bash
@@ -109,7 +118,7 @@ jobs:
       - name: Upload exact-head evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: aud-065-bp1-${{ github.sha }}
+          name: aud-065-bp1-${{ github.event.pull_request.head.sha || github.sha }}
           path: docs/evidence/aud-065-boundary-501/generated/
           if-no-files-found: error
           retention-days: 14
