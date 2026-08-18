@@ -111,16 +111,19 @@ def _atomic_json(path: Path, obj: Any) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(data)
-            fh.flush(); os.fsync(fh.fileno())
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, path)
     finally:
-        if os.path.exists(tmp): os.unlink(tmp)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 def _append_event(path: Path, event: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event, sort_keys=True) + "\n")
-        fh.flush(); os.fsync(fh.fileno())
+        fh.flush()
+        os.fsync(fh.fileno())
 
 def _check_under(root: Path, rel: str, allowed: list[str], for_write: bool = False) -> Path:
     q = Path(rel)
@@ -136,9 +139,11 @@ def _check_under(root: Path, rel: str, allowed: list[str], for_write: bool = Fal
             raise JobRejected("symlink escape denied")
     p = root / q
     if p.exists():
-        if p.is_symlink(): raise JobRejected("symlink denied")
+        if p.is_symlink():
+            raise JobRejected("symlink denied")
         try:
-            if p.stat().st_nlink > 1: raise JobRejected("hardlink denied")
+            if p.stat().st_nlink > 1:
+                raise JobRejected("hardlink denied")
         except FileNotFoundError:
             raise JobRejected("unstable path")
     try:
@@ -149,7 +154,8 @@ def _check_under(root: Path, rel: str, allowed: list[str], for_write: bool = Fal
 
 def _read_bytes(root: Path, rel: str, allowed: list[str]) -> bytes:
     p = _check_under(root, rel, allowed)
-    if not p.is_file(): raise JobRejected("input is not regular file")
+    if not p.is_file():
+        raise JobRejected("input is not regular file")
     return p.read_bytes()
 
 def _write_bytes(root: Path, rel: str, allowed: list[str], data: bytes) -> dict[str, Any]:
@@ -159,11 +165,15 @@ def _write_bytes(root: Path, rel: str, allowed: list[str], data: bytes) -> dict[
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", dir=str(p.parent))
     try:
         with os.fdopen(fd, "wb") as fh:
-            fh.write(data); fh.flush(); os.fsync(fh.fileno())
-        if p.exists() and p.stat().st_nlink > 1: raise JobRejected("hardlink target denied")
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if p.exists() and p.stat().st_nlink > 1:
+            raise JobRejected("hardlink target denied")
         os.replace(tmp, p)
     finally:
-        if os.path.exists(tmp): os.unlink(tmp)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return {"path": rel, "sha256": sha256_bytes(data), "bytes": len(data)}
 
 def _mean(xs: list[float]) -> float:
@@ -181,7 +191,8 @@ def _op(job: dict[str, Any], root: Path) -> dict[str, Any]:
         return {"operation": op, "files": rows, "status": "PASS"}
     if op == "deterministic_data_replay":
         data = json.loads(_read_bytes(root, req["input"], allowed))
-        if not isinstance(data, list): raise JobRejected("replay input must be list")
+        if not isinstance(data, list):
+            raise JobRejected("replay input must be list")
         keys = req.get("sort_keys", ["ts", "id"])
         rows = sorted(data, key=lambda r: tuple(str(r.get(k, "")) for k in keys))
         return {"operation": op, "row_count": len(rows), "replay_sha256": sha256_bytes(_canon(rows)), "rows": rows}
@@ -191,9 +202,11 @@ def _op(job: dict[str, Any], root: Path) -> dict[str, Any]:
         for i, row in enumerate(data):
             decision = float(row["decision_ts"])
             for k in req.get("feature_time_fields", []):
-                if float(row[k]) > decision: violations.append({"row": i, "field": k, "kind": "future_feature"})
+                if float(row[k]) > decision:
+                    violations.append({"row": i, "field": k, "kind": "future_feature"})
             for k in req.get("label_time_fields", []):
-                if float(row[k]) <= decision: violations.append({"row": i, "field": k, "kind": "nonfuture_label"})
+                if float(row[k]) <= decision:
+                    violations.append({"row": i, "field": k, "kind": "nonfuture_label"})
         return {"operation": op, "status": "PASS" if not violations else "FAIL", "violations": violations}
     if op == "statistical_evaluation":
         rows = json.loads(_read_bytes(root, req["input"], allowed))
@@ -202,16 +215,20 @@ def _op(job: dict[str, Any], root: Path) -> dict[str, Any]:
         if len(ds) < 2:
             lo = hi = m
         else:
-            var = sum((x-m)**2 for x in ds)/(len(ds)-1); se = math.sqrt(var/len(ds)); lo=m-1.96*se; hi=m+1.96*se
+            var = sum((x-m)**2 for x in ds)/(len(ds)-1)
+            se = math.sqrt(var/len(ds))
+            lo = m-1.96*se
+            hi = m+1.96*se
         verdict = "IMPROVEMENT" if hi < 0 else "DEGRADATION" if lo > 0 else "INCONCLUSIVE"
         return {"operation": op, "n": len(ds), "mean_delta": m, "ci95": [lo, hi], "orientation": verdict}
     if op == "robustness_regime_stress":
         rows = json.loads(_read_bytes(root, req["input"], allowed))
-        field = req["value_field"]; vals=[float(r[field]) for r in rows]
-        median=sorted(vals)[len(vals)//2] if vals else math.nan
-        regimes={"LOW":[v for v in vals if v<=median],"HIGH":[v for v in vals if v>median]}
-        missing=[v for i,v in enumerate(vals) if i % 10 != 0]
-        shifted=[v + float(req.get("clock_shift_effect",0.0)) for v in vals]
+        field = req["value_field"]
+        vals = [float(r[field]) for r in rows]
+        median = sorted(vals)[len(vals)//2] if vals else math.nan
+        regimes = {"LOW":[v for v in vals if v<=median], "HIGH":[v for v in vals if v>median]}
+        missing = [v for i,v in enumerate(vals) if i % 10 != 0]
+        shifted = [v + float(req.get("clock_shift_effect",0.0)) for v in vals]
         return {"operation":op,"status":"PASS","train_only_median":median,"regimes":{k:{"n":len(v),"mean":_mean(v)} for k,v in regimes.items()},"stresses":{"drop_10pct":{"n":len(missing),"mean":_mean(missing)},"clock_shift":{"n":len(shifted),"mean":_mean(shifted)}}}
     if op in {"bounded_python_pipeline_repair", "regression_case_generation"}:
         source = _read_bytes(root, req["input"], allowed).decode("utf-8")
@@ -228,11 +245,15 @@ def _op(job: dict[str, Any], root: Path) -> dict[str, Any]:
         ast.parse(patched)
         checks=[]
         for check in req.get("static_checks", []):
-            if "contains" in check: ok = check["contains"] in patched
-            elif "not_contains" in check: ok = check["not_contains"] not in patched
-            else: raise JobRejected("unsupported static check")
+            if "contains" in check:
+                ok = check["contains"] in patched
+            elif "not_contains" in check:
+                ok = check["not_contains"] not in patched
+            else:
+                raise JobRejected("unsupported static check")
             checks.append({"name":check.get("name","static"),"pass":ok})
-        if not all(x["pass"] for x in checks): raise JobRejected("frozen acceptance static check failed")
+        if not all(x["pass"] for x in checks):
+            raise JobRejected("frozen acceptance static check failed")
         patch_rel=req.get("patch_output","artifacts/repair.py")
         artifact=_write_bytes(root,patch_rel,allowed,patched.encode())
         return {"operation":op,"source_sha256":sha256_bytes(source.encode()),"patched_sha256":sha256_bytes(patched.encode()),"applied":applied,"checks":checks,"artifact":artifact,"target_execution":0}
@@ -240,31 +261,57 @@ def _op(job: dict[str, Any], root: Path) -> dict[str, Any]:
 
 def run_job(job: dict[str, Any], state_root: str | Path, target_root: str | Path, source_sha: str, now: datetime | None = None) -> dict[str, Any]:
     validate_job(job, now=now)
-    state_root=Path(state_root); target_root=Path(target_root)
-    key=_state_key(job); sp=state_root/(key+".json"); ep=state_root/(key+".events.jsonl")
+    state_root=Path(state_root)
+    target_root=Path(target_root)
+    key=_state_key(job)
+    sp=state_root/(key+".json")
+    ep=state_root/(key+".events.jsonl")
     scope=job["fixed_job_scope_hash"]
     state=json.loads(sp.read_text()) if sp.exists() else None
     if state:
-        if state.get("fixed_job_scope_hash") != scope: raise JobRejected("tuple reused with different scope")
-        if state.get("status") in TERMINAL: return state["completion"]
+        if state.get("fixed_job_scope_hash") != scope:
+            raise JobRejected("tuple reused with different scope")
+        if state.get("status") in TERMINAL:
+            return state["completion"]
     else:
         started=datetime.now(timezone.utc).isoformat()
         state={"status":"ACKED","fixed_job_scope_hash":scope,"started_at":started,"progress_count":0,"crash_flags":{}}
-        _atomic_json(sp,state); _append_event(ep,{"event":"ACK","scope":scope,"at":started})
+        _atomic_json(sp,state)
+        _append_event(ep,{"event":"ACK","scope":scope,"at":started})
     sim=job["structured_requirements"].get("simulate_crash_at")
     if sim=="after_ack" and not state["crash_flags"].get("after_ack"):
-        state["crash_flags"]["after_ack"]=True; _atomic_json(sp,state); raise CrashInjected("after_ack")
-    state["status"]="RUNNING"; state["progress_count"]+=1; _atomic_json(sp,state)
+        state["crash_flags"]["after_ack"]=True
+        _atomic_json(sp,state)
+        raise CrashInjected("after_ack")
+    state["status"]="RUNNING"
+    state["progress_count"]+=1
+    _atomic_json(sp,state)
     _append_event(ep,{"event":"PROGRESS","step":"STARTED","n":state["progress_count"]})
     if job["structured_requirements"].get("cancelled"):
-        result={"cancel_reason":"requested before target operation"}; status="CANCELLED"; artifacts=[]; tests=[]
+        result={"cancel_reason":"requested before target operation"}
+        status="CANCELLED"
+        artifacts=[]
+        tests=[]
     else:
         if sim=="during_work" and not state["crash_flags"].get("during_work"):
-            state["crash_flags"]["during_work"]=True; _atomic_json(sp,state); _append_event(ep,{"event":"PROGRESS","step":"PRE_OPERATION"}); raise CrashInjected("during_work")
-        result=_op(job,target_root); status="SUCCEEDED"; artifacts=[]
-        if isinstance(result.get("artifact"),dict): artifacts=[result["artifact"]]
-        tests=[{"name":"frozen_acceptance","status":"PASS"}]
-    state["progress_count"]+=1; _append_event(ep,{"event":"PROGRESS","step":"FINALIZING","n":state["progress_count"]})
+            state["crash_flags"]["during_work"]=True
+            _atomic_json(sp,state)
+            _append_event(ep,{"event":"PROGRESS","step":"PRE_OPERATION"})
+            raise CrashInjected("during_work")
+        try:
+            result=_op(job,target_root)
+            status="SUCCEEDED"
+            artifacts=[]
+            if isinstance(result.get("artifact"),dict):
+                artifacts=[result["artifact"]]
+            tests=[{"name":"frozen_acceptance","status":"PASS"}]
+        except JobRejected as exc:
+            result={"error_type":"JobRejected","error":str(exc)}
+            status="FAILED"
+            artifacts=[]
+            tests=[{"name":"frozen_acceptance","status":"FAIL"}]
+    state["progress_count"]+=1
+    _append_event(ep,{"event":"PROGRESS","step":"FINALIZING","n":state["progress_count"]})
     finished=datetime.now(timezone.utc).isoformat()
     completion={
         "job_id":job["job_id"],"lease_id":job["lease_id"],"attempt":job["attempt"],
@@ -275,5 +322,8 @@ def run_job(job: dict[str, Any], state_root: str | Path, target_root: str | Path
         "side_effects":{"production_mutations":0,"supabase_writes":0,"northflank_mutations":0,"runtime017_mutations":0,"threshold_weight_tuning":0,"real_trading":0,"wallet_or_payment":0,"outgoing_spend_usd":0,"network_requests":0,"child_processes":0},
         "started_at":state["started_at"],"finished_at":finished,"fixed_job_scope_hash":scope,
     }
-    state["status"]=status; state["completion"]=completion; _atomic_json(sp,state); _append_event(ep,{"event":"TERMINAL","status":status,"at":finished})
+    state["status"]=status
+    state["completion"]=completion
+    _atomic_json(sp,state)
+    _append_event(ep,{"event":"TERMINAL","status":status,"at":finished})
     return completion
