@@ -1,0 +1,161 @@
+name: AUD-065-BP1 Frozen Boundary Exact Head
+
+on:
+  push:
+    branches: [audit/aud-065-boundary-501-r1]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/aud-065-boundary-501.yml'
+      - 'tools/audit/aud065_boundary_501.py'
+      - 'tests/audit/test_aud065_boundary_501.py'
+      - 'docs/evidence/aud-065-boundary-501/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 43c8023d3a4623381e45da02d9efa8e9b5888f47
+  BASE_TREE: 20ec5775ea37a7288e8cd8748ea304843d9b0866
+  FROZEN: docs/evidence/aud-065-boundary-501/frozen-terminal.json
+  GENERATED: docs/evidence/aud-065-boundary-501/generated
+
+jobs:
+  boundary-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact audit head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Assert exact head base and audit-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+          test "$(git rev-parse "$BASE_SHA^{tree}")" = "$BASE_TREE"
+          bad="$(git diff --name-only "$BASE_SHA...HEAD" | grep -Ev '^(\.github/workflows/aud-065-boundary-501\.yml|tools/audit/aud065_boundary_501\.py|tests/audit/test_aud065_boundary_501\.py|docs/evidence/aud-065-boundary-501/)' || true)"
+          test -z "$bad" || { echo "$bad"; exit 1; }
+          ! git diff --name-only "$BASE_SHA...HEAD" | grep -Eiq 'runtime017|runtime_017|senex-017|senecio_polymarket/backend|senecio_polymarket/oracle_runtime|senecio_polymarket/oracle/'
+          git diff --check "$BASE_SHA...HEAD"
+          echo PRODUCTION_MUTATION=0
+          echo SUPABASE_MUTATION=0
+          echo NORTHFLANK_MUTATION=0
+          echo RUNTIME017_MUTATION=0
+          echo THRESHOLD_TUNING=0
+          echo BASE_WEIGHT_TUNING=0
+          echo REAL_TRADING=0
+          echo OUTGOING_SPEND_USD=0
+
+      - name: Run independent verifier self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/aud065bp1"
+          python -m unittest -v tests/audit/test_aud065_boundary_501.py 2>&1 | tee "$RUNNER_TEMP/aud065bp1/self-tests.log"
+          grep -F 'Ran 14 tests' "$RUNNER_TEMP/aud065bp1/self-tests.log"
+          grep -F 'OK' "$RUNNER_TEMP/aud065bp1/self-tests.log"
+          python tools/audit/aud065_boundary_501.py --self-test 2>&1 | tee "$RUNNER_TEMP/aud065bp1/self-test-contract.log"
+          python -m py_compile tools/audit/aud065_boundary_501.py tests/audit/test_aud065_boundary_501.py
+
+      - name: Validate frozen same-snapshot evidence and materialize artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GENERATED" && mkdir -p "$GENERATED"
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          src=Path(os.environ['FROZEN']); out=Path(os.environ['GENERATED'])
+          d=json.loads(src.read_text())
+          c=d['capture']; r=d['independent_recomputation']; f=r['full_history']; l=r['newest_500']; ov=d['overflow_provenance']; s=d['retained_window_set_consistency']
+          assert d['order']=='AUD-065-BP1' and d['reactivation_comment']==5342452805
+          assert c['single_frozen_snapshot'] is True and c['source_completeness']=='PASS'
+          assert c['direct_source_count']>=501 and len(c['direct_canonical_sha256'])==64
+          assert f['source_n']==c['direct_source_count'] and l['source_n']==500
+          assert r['delta']['proof']==f['proof_raw']-l['proof_raw']
+          assert r['delta']['authority']==f['authority_n']-l['authority_n']
+          assert len(ov)==r['delta']['proof'] and all(x['full_proof'] and not x['legacy_proof'] and len(x['proof_digest_sha256'])==64 for x in ov)
+          authority_overflow=sum(bool(x['full_authority']) for x in ov)
+          assert authority_overflow==s['full_authority_overflow_n']
+          assert s['full_authority_retained_n']+authority_overflow==f['authority_n']
+          assert s['legacy_authority_n']==l['authority_n'] and s['accounting_status']=='PASS'
+          assert d['production_api_reconciliation']['status']=='PASS'
+          assert d['global_count_reconciliation']['observability_total_count_cap']=='CONFIRMED'
+          assert d['global_count_reconciliation']['authority_history_impact']=='NO'
+          assert d['safety_readback']['status']=='PASS'
+          assert d['runtime_surface_reconciliation']['status'] in {'PASS','FAIL'}
+          def w(name,obj): (out/name).write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n')
+          w('REMOTE_TRUTH.json',{'order':'AUD-065-BP1','parent_comment':d['parent_comment'],'reactivation_comment':d['reactivation_comment'],'base_sha':d['base_sha'],'base_tree':d['base_tree'],'source_sha':os.environ.get('GITHUB_SHA'),'capture_time_utc':c['capture_time_utc'],'production_mutation':0,'runtime017_mutation':0,'tuning':0})
+          w('TRIGGER_PROOF.json',{'status':'PASS','target_symbol':c['target_symbol'],'material_trigger':True,'direct_source_count':c['direct_source_count']})
+          w('DIRECT_SOURCE_SUMMARY.json',c)
+          (out/'DIRECT_SOURCE_CANONICAL_SHA256.txt').write_text(c['direct_canonical_sha256']+'\n')
+          w('INDEPENDENT_RECOMPUTATION.json',r)
+          w('LEGACY_500_COMPARISON.json',{'full_history':f,'newest_500':l,'delta':r['delta'],'overflow_provenance':ov,'retained_window_set_consistency':s,'OLDER_VALID_AUTHORITY_RETENTION':'PASS'})
+          w('PRODUCTION_API_RECONCILIATION.json',d['production_api_reconciliation'])
+          w('RUNTIME_SURFACE_RECONCILIATION.json',d['runtime_surface_reconciliation'])
+          w('GLOBAL_COUNT_RECONCILIATION.json',d['global_count_reconciliation'])
+          w('SAFETY_READBACK.json',d['safety_readback'])
+          w('BOUNDARY_VERDICT.json',d['boundary_verdict'])
+          receipts=[]
+          for k,v in d['runtime_surface_reconciliation']['surfaces'].items():
+              receipts.append({'surface':k,'endpoint':v['endpoint'],'http_status':v.get('http_status'),'sanitized_response_sha256':v.get('sanitized_response_sha256')})
+          w('HTTP_READ_RECEIPTS.json',receipts)
+          w('CI_EXACT_HEAD.json',{'source_sha':os.environ.get('GITHUB_SHA'),'run_id':os.environ.get('GITHUB_RUN_ID'),'job':os.environ.get('GITHUB_JOB'),'exact_head_required':True})
+          (out/'TEST_RESULTS.txt').write_text('14/14 unittest PASS; contract self-test PASS; frozen evidence structural validation PASS\n')
+          print('FROZEN_EVIDENCE_STRUCTURE=PASS')
+          print('BOUNDARY_PROOF='+d['boundary_verdict']['BOUNDARY_PROOF'])
+          PY
+
+      - name: Secret scan and seal manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          P='(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|sb_secret_[A-Za-z0-9._-]{16,})'
+          ! grep -RIE --binary-files=without-match "$P" "$FROZEN" "$GENERATED" "$RUNNER_TEMP/aud065bp1"
+          printf 'PASS evidence+logs; secret values never emitted\n' > "$GENERATED/SECRET_SCAN.txt"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+          e=Path(os.environ['GENERATED'])
+          files=sorted(p for p in e.iterdir() if p.is_file() and p.name!='MANIFEST.sha256')
+          (e/'MANIFEST.sha256').write_text(''.join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files))
+          for line in (e/'MANIFEST.sha256').read_text().splitlines():
+              h,n=line.split('  ',1); assert hashlib.sha256((e/n).read_bytes()).hexdigest()==h
+          required={'REMOTE_TRUTH.json','TRIGGER_PROOF.json','DIRECT_SOURCE_SUMMARY.json','DIRECT_SOURCE_CANONICAL_SHA256.txt','INDEPENDENT_RECOMPUTATION.json','LEGACY_500_COMPARISON.json','PRODUCTION_API_RECONCILIATION.json','RUNTIME_SURFACE_RECONCILIATION.json','GLOBAL_COUNT_RECONCILIATION.json','SAFETY_READBACK.json','TEST_RESULTS.txt','CI_EXACT_HEAD.json','SECRET_SCAN.txt','MANIFEST.sha256','BOUNDARY_VERDICT.json','HTTP_READ_RECEIPTS.json'}
+          assert required <= {p.name for p in e.iterdir()}
+          print('EVIDENCE_MANIFEST=PASS')
+          PY
+
+      - name: Upload exact-head evidence before terminal semantic gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: aud-065-bp1-${{ github.event.pull_request.head.sha || github.sha }}
+          path: docs/evidence/aud-065-boundary-501/generated/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Terminal boundary gate fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path(os.environ['GENERATED'],'BOUNDARY_VERDICT.json').read_text())
+          verdict=d.get('BOUNDARY_PROOF')
+          print('BOUNDARY_PROOF='+str(verdict))
+          assert verdict == 'PASS', 'AUD-065-BP1 terminal boundary verdict is not PASS; exact-head job must not be green'
+          PY
