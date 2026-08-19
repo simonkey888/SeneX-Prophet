@@ -1,0 +1,39 @@
+{
+  "authority_comment": 5346442886,
+  "capture_time_utc": "2026-08-19T19:08:07.970473+00:00",
+  "cohort_start_ts": "2026-08-19T18:44:53Z",
+  "source_class": "DIRECT_SUPABASE_READ_ONLY",
+  "source_table": "oracle_predictions",
+  "symbol": "BTCUSDT",
+  "rows": [
+    {
+      "id": 1246,
+      "ts": "2026-08-19T19:00:23.117851+00:00",
+      "symbol": "BTCUSDT",
+      "prediction": "FLAT",
+      "outcome": null,
+      "exchange_used": "okx",
+      "price_now": 68365.6,
+      "audit": {
+        "pipeline": {
+          "step2_features": {
+            "up_prob": 0.998007
+          }
+        },
+        "origin_price_v1": {
+          "version": "origin-price-v1",
+          "timestamp": "2026-08-19T19:00:23.117851+00:00",
+          "source": "okx",
+          "price": 68365.6
+        },
+        "outcomes_dual": null
+      }
+    }
+  ],
+  "data_minimization": "Only fields needed for AUD-068 cutoff/mapping/proof eligibility are retained.",
+  "production_mutation": 0,
+  "supabase_mutation": 0,
+  "runtime017_mutation": 0,
+  "tuning": 0,
+  "real_trading": 0
+}
