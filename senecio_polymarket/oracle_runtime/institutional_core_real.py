@@ -224,6 +224,38 @@ class SingleDecisionCore(LearningSingleDecisionCore):
         super().__init__(*args, **kwargs)
         self._senex_polymarket_context: dict[str, Any] = {}
 
+    def filter_risk(self, features: dict, risk_state: dict) -> dict:
+        """Preserve frozen risk math while making its two ruin semantics explicit."""
+        result = dict(super().filter_risk(features, risk_state))
+        state_ruin = result.get("ruin_prob")
+        result["state_ruin_probability"] = state_ruin
+        result["state_ruin_probability_semantics"] = (
+            "CORE_RISK_STATE_ESTIMATE_DRAWDOWN_VAR_LOSS_STREAK"
+        )
+        result["ruin_prob_semantics"] = "LEGACY_ALIAS_OF_STATE_RUIN_PROBABILITY"
+
+        survivability = getattr(self, "survivability", None)
+        if survivability is None:
+            result["survivability_ruin_probability"] = None
+            result["survivability_reason_probability"] = None
+            result["survivability_ruin_probability_semantics"] = "UNAVAILABLE_NO_SURVIVABILITY_MODULE"
+            return result
+
+        survival = survivability.compute_survival_probability(100)
+        surv_ruin = survival.get("ruin_prob")
+        result["survivability_ruin_probability"] = surv_ruin
+        result["survivability_reason_probability"] = surv_ruin
+        result["survivability_ruin_probability_semantics"] = (
+            "INSUFFICIENT_DATA_PRIOR" if survival.get("warning")
+            else "TRADE_HISTORY_SURVIVABILITY_ESTIMATE"
+        )
+        result["survivability_reason"] = (
+            f"survivability_ruin_probability={float(surv_ruin):.4f}; "
+            f"{result.get('surv_reason', 'unknown')}"
+            if surv_ruin is not None else str(result.get("surv_reason", "unknown"))
+        )
+        return result
+
     def _load_learning_for_symbol(self, symbol: str, decision_cutoff: Any | None = None) -> None:
         normalized = _learning._normalize_symbol(symbol)
         now = time.monotonic()

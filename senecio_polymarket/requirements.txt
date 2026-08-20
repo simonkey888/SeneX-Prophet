@@ -1,5 +1,4 @@
-# SENECIO ORACLE — Python deps (Northflank unified — ACT XIX)
-# cache-bust: 2026-06-24T21:45
+# SENEX ORDER-070 reproducible top-level runtime dependencies
 fastapi==0.128.0
 uvicorn[standard]==0.44.0
 pydantic==2.12.5
@@ -7,13 +6,9 @@ pydantic-settings==2.13.1
 sse-starlette==3.3.4
 websockets==16.0
 httpx==0.28.1
-# Oracle real (predict_only.py)
 ccxt==4.5.58
-numpy>=1.26,<2.0
-# ACT-XXVII research layer
-scipy>=1.11
-scikit-learn>=1.4
-prometheus_client>=0.20
-# Optional but recommended for SHAP-based explainability.
-# Module falls back to permutation importance if shap is absent.
-shap>=0.45
+numpy==1.26.4
+scipy==1.17.1
+scikit-learn==1.9.0
+prometheus_client==0.26.0
+shap==0.49.1

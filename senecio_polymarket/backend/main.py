@@ -282,9 +282,8 @@ def _get_coordinator():
         return None
 
 
-def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> dict:
-    """Build symbol authority, then evaluate diagnostically under PAPER lock."""
-    score = build_authoritative_score(rows, symbol=symbol)
+def _paper_locked_live_gate_from_score(coord, score: dict) -> dict:
+    """Evaluate one already-built authority score under the immutable PAPER lock."""
     status = coord.evaluate_live_gate(oracle_score=score)
     status.unlocked = False
     status.trade_mode = "PAPER"
@@ -312,6 +311,12 @@ def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> di
         "conditions_total": len(conditions),
     })
     return state
+
+
+def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> dict:
+    """Compatibility wrapper; public runtime builds score exactly once per snapshot."""
+    score = build_authoritative_score(rows, symbol=symbol)
+    return _paper_locked_live_gate_from_score(coord, score)
 
 
 def _normalize_authority_symbol(symbol: str) -> str:

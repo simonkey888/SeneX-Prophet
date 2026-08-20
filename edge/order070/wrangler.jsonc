@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "senex-order070-readonly-proof",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-20"
+}

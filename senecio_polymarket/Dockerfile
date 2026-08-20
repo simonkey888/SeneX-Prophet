@@ -9,8 +9,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY senecio_polymarket/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY senecio_polymarket/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
+
+ARG SENEX_SOURCE_COMMIT=unknown
+ARG SENEX_SOURCE_TREE=unknown
+ARG SENEX_IMAGE_DIGEST=unknown
+ARG SENEX_BUILD_DIGEST=unknown
+ENV SENEX_SOURCE_COMMIT=${SENEX_SOURCE_COMMIT}
+ENV SENEX_SOURCE_TREE=${SENEX_SOURCE_TREE}
+ENV SENEX_IMAGE_DIGEST=${SENEX_IMAGE_DIGEST}
+ENV SENEX_BUILD_DIGEST=${SENEX_BUILD_DIGEST}
+LABEL org.opencontainers.image.revision=${SENEX_SOURCE_COMMIT} \
+      org.senex.source-tree=${SENEX_SOURCE_TREE} \
+      org.senex.build-digest=${SENEX_BUILD_DIGEST}
 
 COPY senecio_polymarket/backend ./backend
 COPY senecio_polymarket/frontend ./frontend

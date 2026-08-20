@@ -12,12 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy ONLY senecio_polymarket requirements (NOT the root requirements.txt which is for V4)
-COPY senecio_polymarket/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY senecio_polymarket/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Copy backend + frontend + the production single-authority launcher
 COPY senecio_polymarket/backend ./backend
 COPY senecio_polymarket/frontend ./frontend
+COPY senecio_polymarket/oracle ./oracle
+COPY senecio_polymarket/oracle_runtime ./oracle_runtime
+RUN mv /app/oracle/predict_only.py /app/oracle/predict_only_base.py \
+    && cp /app/oracle_runtime/predict_only.py /app/oracle/predict_only.py
 COPY senecio_polymarket/start_single_authority.sh ./start_single_authority.sh
 RUN chmod +x /app/start_single_authority.sh
 
