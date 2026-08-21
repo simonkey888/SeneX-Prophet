@@ -2,7 +2,7 @@ import datetime,hashlib,json,os,time,urllib.error,urllib.request
 from pathlib import Path
 API='https://api.northflank.com/v1'; P='seneciobot'; S='senecio-h011'; BID='next-muscle-6785'
 TB='feat/order-070-runtime-truth-hardening'; TS='202f154a71915eb4b1e3cdf0e1eec8005760a028'; TT='f037c7621135305fd3ec5f37aa029dfc8a28aa4b'; BD='sha256:1806ad0bc71c45264695c1c8973a497a39f9903f867ece2d56fdbc12f44e4892'; ORIGIN='https://h011-web--senecio-h011--wbjggn89fnf8.code.run'
-TOKEN=os.environ['NORTHFLANK_API_TOKEN']; H={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-deploy/8'}; OUT=Path('order070-origin-evidence'); OUT.mkdir(exist_ok=True)
+TOKEN=os.environ['NORTHFLANK_API_TOKEN']; H={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-deploy/9'}; OUT=Path('order070-origin-evidence'); OUT.mkdir(exist_ok=True)
 rec={'order':'ORDER-070-R3','target_sha':TS,'target_tree':TT,'build_id':BID,'build_digest':BD,'secret_values_exported':False,'real_order_count':0,'real_capital_movement':0,'runtime017_mutation':0,'production_learning_mutations':0,'requests':[],'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
 def save():
  raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (OUT/'origin-deploy-receipt.json').write_bytes(raw); (OUT/'SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  origin-deploy-receipt.json\n')
@@ -22,7 +22,7 @@ def entry():
  x=call('GET',f'/projects/{P}/services?per_page=100',label='list_services'); a=x.get('services') if isinstance(x,dict) else x; return next(v for v in a if v.get('id')==S)
 def dep(label): return call('GET',f'/projects/{P}/services/{S}/deployment',label=label)
 def public(path):
- req=urllib.request.Request(ORIGIN+path,headers={'Accept':'application/json','Cache-Control':'no-cache','User-Agent':'senex-order070-live/8'},method='GET')
+ req=urllib.request.Request(ORIGIN+path,headers={'Accept':'application/json','Cache-Control':'no-cache','User-Agent':'senex-order070-live/9'},method='GET')
  try:
   with urllib.request.urlopen(req,timeout=40) as r: status=r.status; raw=r.read()
  except urllib.error.HTTPError as e: status=e.code; raw=e.read()
@@ -35,8 +35,8 @@ if not b.get('concluded') or not b.get('success') or b.get('sha')!=TS: raise Run
 e=entry(); d=dep('deployment_before'); ii=d.get('internal') or {}
 if e.get('disabledCI') is not True or e.get('disabledCD') is not True: raise RuntimeError('CI_CD_NOT_FROZEN')
 if ii.get('deployedSHA')!=TS:
- call('POST',f'/projects/{P}/services/{S}/deployment',{'internal':{'id':ii.get('id') or S,'branch':TB,'buildSHA':TS}},label='deploy_exact_build_sha')
- rec['deployment_request']='POST_BUILD_SHA_ONLY'; save()
+ call('POST',f'/projects/{P}/services/{S}/deployment',{'internal':{'buildSHA':TS}},label='deploy_exact_build_sha')
+ rec['deployment_request']='POST_ONLY_BUILD_SHA'; save()
 end=time.time()+1800; stable=None
 while time.time()<end:
  d=dep('deployment_poll'); e=entry(); ii=d.get('internal') or {}; st=((e.get('status') or {}).get('deployment') or {}).get('status')
