@@ -35,7 +35,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
           curl -fsSL "$BUNDLE_URL" -o /tmp/exact.tar.gz
-          top="$(tar -tzf /tmp/exact.tar.gz | head -1 | cut -d/ -f1)"
+          top="$(tar -tzf /tmp/exact.tar.gz | sed -n '1s#/.*##p')"
           test -n "$top"
           test "$(tar -xOzf /tmp/exact.tar.gz "$top/senecio_polymarket/Dockerfile" | sha256sum | awk '{print $1}')" = "$(sha256sum senecio_polymarket/Dockerfile | awk '{print $1}')"
       - name: Start and poll exact bundle build
