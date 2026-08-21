@@ -19,7 +19,7 @@ def call(method,path,payload=None,label=None):
  if not 200<=status<300: raise RuntimeError(f'{label or path}:HTTP_{status}:{safe}')
  return data(obj)
 def entry():
- x=call('GET',f'/projects/{P}/services?per_page=100','list_services'); a=x.get('services') if isinstance(x,dict) else x; return next(v for v in a if v.get('id')==S)
+ x=call('GET',f'/projects/{P}/services?per_page=100',label='list_services'); a=x.get('services') if isinstance(x,dict) else x; return next(v for v in a if v.get('id')==S)
 def svc(label): return call('GET',f'/projects/{P}/services/{S}',label=label)
 def dep(label): return call('GET',f'/projects/{P}/services/{S}/deployment',label=label)
 e0=entry(); s0=svc('service_before'); d0=dep('deployment_before'); vcs=s0.get('vcsData') or {}; ob=vcs.get('projectBranch')
