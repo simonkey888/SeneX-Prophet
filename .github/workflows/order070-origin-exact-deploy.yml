@@ -8,11 +8,31 @@ on:
 permissions:
   contents: read
   issues: write
+  statuses: write
+concurrency:
+  group: order070-origin-ops
+  cancel-in-progress: true
 jobs:
   deploy:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
+      - name: Publish run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          OPS_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +x
+          python - <<'PY'
+          import json,os,urllib.request
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['OPS_SHA']}"
+          payload={'state':'pending','context':'ORDER070/origin-runtime-bind','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-status/1'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('RUN_ID_STATUS_HTTP='+str(r.status))
+          PY
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ops/senex-zero-cost-audit-20260809
@@ -50,31 +70,26 @@ jobs:
           p=Path('order070-origin-evidence/oci-bind-receipt.json')
           d=json.loads(p.read_text()) if p.exists() else {}
           live=d.get('live') or {}; prov=(live.get('provenance') or {}).get('body') or {}; ready=(live.get('readyz') or {}).get('body') or {}; dep=d.get('deployment') or {}; envafter=d.get('runtime_env_after') or {}; oci=d.get('oci_identity') or {}
-          lines=[
-            '```text',
-            'ORDER070_RUNTIME_BIND_CHECKPOINT=YES',
-            f"OPS_RUN={os.environ['RUN_ID']}",
-            f"OPS_COMMIT={os.environ['OPS_SHA']}",
-            f"WORKFLOW_JOB_STATUS={os.environ['JOB_STATUS']}",
-            'CANDIDATE_HEAD=202f154a71915eb4b1e3cdf0e1eec8005760a028',
-            f"OCI_MANIFEST={oci.get('manifest_digest') or d.get('image_digest') or 'UNKNOWN'}",
-            f"OCI_MANIFEST_LOG_HITS={oci.get('manifest_log_hits','UNKNOWN')}",
-            f"RUNTIME_ENV_NON_TARGET_PRESERVED={envafter.get('non_target_environment_preserved','UNKNOWN')}",
-            f"DEPLOYED_SHA={dep.get('deployed_sha','UNKNOWN')}",
-            f"SOURCE_BRANCH={dep.get('source_branch','UNKNOWN')}",
-            f"DISABLED_CI={dep.get('disabled_ci','UNKNOWN')}",
-            f"DISABLED_CD={dep.get('disabled_cd','UNKNOWN')}",
-            f"HEALTHZ={(live.get('healthz') or {}).get('http','UNKNOWN')}",
-            f"READYZ={(live.get('readyz') or {}).get('http','UNKNOWN')}",
-            f"PROVENANCE_EXACT={prov.get('exact','UNKNOWN')}",
-            f"PROVENANCE_IMAGE_DIGEST={prov.get('image_digest','UNKNOWN')}",
-            f"READY_CHECKS={json.dumps(ready.get('checks') or {},sort_keys=True,separators=(',',':'))}",
-            f"SUPABASE_QUOTA_NOTICE_OBSERVED={str(bool(d.get('supabase_quota_notice_observed'))).upper()}",
-            f"SUPABASE_CAUSALITY_CLAIMED={str(bool(d.get('supabase_causality_claimed'))).upper()}",
-            f"ORIGIN_EXACT_READY={d.get('origin_exact_ready','UNKNOWN')}",
-            '```'
-          ]
-          body='\n'.join(lines)
-          req=urllib.request.Request('https://api.github.com/repos/simonkey888/SeneX-Prophet/issues/67/comments',data=json.dumps({'body':body}).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-checkpoint/1'},method='POST')
+          lines=['```text','ORDER070_RUNTIME_BIND_CHECKPOINT=YES',f"OPS_RUN={os.environ['RUN_ID']}",f"OPS_COMMIT={os.environ['OPS_SHA']}",f"WORKFLOW_JOB_STATUS={os.environ['JOB_STATUS']}",'CANDIDATE_HEAD=202f154a71915eb4b1e3cdf0e1eec8005760a028',f"OCI_MANIFEST={oci.get('manifest_digest') or d.get('image_digest') or 'UNKNOWN'}",f"OCI_MANIFEST_LOG_HITS={oci.get('manifest_log_hits','UNKNOWN')}",f"RUNTIME_ENV_NON_TARGET_PRESERVED={envafter.get('non_target_environment_preserved','UNKNOWN')}",f"DEPLOYED_SHA={dep.get('deployed_sha','UNKNOWN')}",f"SOURCE_BRANCH={dep.get('source_branch','UNKNOWN')}",f"DISABLED_CI={dep.get('disabled_ci','UNKNOWN')}",f"DISABLED_CD={dep.get('disabled_cd','UNKNOWN')}",f"HEALTHZ={(live.get('healthz') or {}).get('http','UNKNOWN')}",f"READYZ={(live.get('readyz') or {}).get('http','UNKNOWN')}",f"PROVENANCE_EXACT={prov.get('exact','UNKNOWN')}",f"PROVENANCE_IMAGE_DIGEST={prov.get('image_digest','UNKNOWN')}",f"READY_CHECKS={json.dumps(ready.get('checks') or {},sort_keys=True,separators=(',',':'))}",f"SUPABASE_QUOTA_NOTICE_OBSERVED={str(bool(d.get('supabase_quota_notice_observed'))).upper()}",f"SUPABASE_CAUSALITY_CLAIMED={str(bool(d.get('supabase_causality_claimed'))).upper()}",f"ORIGIN_EXACT_READY={d.get('origin_exact_ready','UNKNOWN')}",'```']
+          req=urllib.request.Request('https://api.github.com/repos/simonkey888/SeneX-Prophet/issues/67/comments',data=json.dumps({'body':'\n'.join(lines)}).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-checkpoint/1'},method='POST')
           with urllib.request.urlopen(req,timeout=30) as r: print('CHECKPOINT_COMMENT_HTTP='+str(r.status))
+          PY
+      - name: Publish final commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          OPS_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set +x
+          python - <<'PY'
+          import json,os,urllib.request
+          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['OPS_SHA']}"
+          payload={'state':state,'context':'ORDER070/origin-runtime-bind','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-status/1'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('FINAL_STATUS_HTTP='+str(r.status))
           PY
