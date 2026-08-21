@@ -1,4 +1,4 @@
-name: ORDER070 R5 Exact Origin Edge Finalize
+name: ORDER070 R5 Final Edge Reconciliation Seal
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
@@ -6,12 +6,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: order070-r5-finalize
+  group: order070-r5-final-edge-seal
   cancel-in-progress: false
 jobs:
   finalize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - name: Checkout exact candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Resume R5 from verified exact build and finish E2E
+      - name: Final edge proof reconciliation and seal
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
           CANDIDATE_DIR: candidate
@@ -37,13 +37,13 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r5_resume_after_build.py
+          python ops/.github/scripts/order070_r5_edge_reconcile_seal.py
           (cd order070-r5-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload final R5 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: order070-r5-final-483b389a83610992800181c0a21b5a337009f7b4
+          name: order070-r5-final-sealed-483b389a83610992800181c0a21b5a337009f7b4
           path: order070-r5-final-evidence/
           if-no-files-found: warn
           retention-days: 30
