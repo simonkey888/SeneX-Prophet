@@ -1,0 +1,157 @@
+name: ORDER070 Origin Exact Deploy
+
+on:
+  push:
+    branches:
+      - ops/senex-zero-cost-audit-20260809
+    paths:
+      - .github/workflows/order070-origin-exact-deploy.yml
+
+permissions:
+  contents: read
+
+env:
+  NF_API: https://api.northflank.com/v1
+  TEAM_ID: 6a32fd953f19ee4079ccf395
+  PROJECT_ID: seneciobot
+  SERVICE_ID: senecio-h011
+  TARGET_BRANCH: feat/order-070-runtime-truth-hardening
+  TARGET_SHA: 202f154a71915eb4b1e3cdf0e1eec8005760a028
+  TARGET_TREE: f037c7621135305fd3ec5f37aa029dfc8a28aa4b
+  BUILD_DIGEST: sha256:1806ad0bc71c45264695c1c8973a497a39f9903f867ece2d56fdbc12f44e4892
+  ORIGIN: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+
+jobs:
+  origin-exact-deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: northflank-readonly-audit
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert exact remote identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
+          test "$(git ls-remote origin refs/heads/${TARGET_BRANCH} | awk '{print $1}')" = "$TARGET_SHA"
+
+      - name: Deploy exact candidate with Northflank API key
+        shell: bash
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          mkdir -p order070-origin-evidence
+          python - <<'PY'
+          from __future__ import annotations
+          import datetime, hashlib, json, os, time, urllib.error, urllib.request
+          from pathlib import Path
+
+          API=os.environ['NF_API'].rstrip('/')
+          TOKEN=os.environ['NORTHFLANK_API_TOKEN']
+          TEAM=os.environ['TEAM_ID']; PROJECT=os.environ['PROJECT_ID']; SERVICE=os.environ['SERVICE_ID']
+          BRANCH=os.environ['TARGET_BRANCH']; TARGET=os.environ['TARGET_SHA']; TREE=os.environ['TARGET_TREE']
+          BUILD_DIGEST=os.environ['BUILD_DIGEST']; ORIGIN=os.environ['ORIGIN'].rstrip('/')
+          OUT=Path('order070-origin-evidence')
+          HEAD={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-origin/3'}
+          rec={'order':'ORDER-070-R3','started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'credential_name':'NORTHFLANK_API_TOKEN','secret_present':True,'secret_values_exported':False,'team_id':TEAM,'project_id':PROJECT,'service_id':SERVICE,'target_branch':BRANCH,'target_sha':TARGET,'target_tree':TREE,'build_digest':BUILD_DIGEST,'origin':ORIGIN,'new_service':False,'new_job':False,'new_addon':False,'new_volume':False,'real_order_count':0,'real_capital_movement':0,'runtime017_mutation':0,'production_learning_mutations':0,'requests':[]}
+          def persist():
+              raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (OUT/'origin-deploy-receipt.json').write_bytes(raw); (OUT/'SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  origin-deploy-receipt.json\n')
+          def data(x): return x.get('data',x) if isinstance(x,dict) else x
+          def raw_call(method,path,payload=None,label=None,timeout=90):
+              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode(); req=urllib.request.Request(API+path,headers=HEAD,data=body,method=method); raw=b''; status=0
+              try:
+                  with urllib.request.urlopen(req,timeout=timeout) as r: status=r.status; raw=r.read()
+              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
+              digest=hashlib.sha256(raw).hexdigest(); safe=''
+              try:
+                  obj=json.loads(raw.decode() or '{}'); safe=str(obj.get('message') or obj.get('error') or '')[:240] if isinstance(obj,dict) else ''
+              except Exception: obj={}
+              rec['requests'].append({'label':label or path,'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':digest,'safe_error':safe if status>=400 else ''}); persist(); return status,data(obj),digest,safe
+          def call(method,path,payload=None,label=None,timeout=90):
+              status,obj,digest,safe=raw_call(method,path,payload,label,timeout)
+              if not 200 <= status < 300: raise RuntimeError(f'{method} {path} status={status} body_sha256={digest} safe={safe}')
+              return obj
+          def get_public(path):
+              req=urllib.request.Request(ORIGIN+path,headers={'Accept':'application/json','Cache-Control':'no-cache','User-Agent':'senex-order070-live/3'},method='GET')
+              try:
+                  with urllib.request.urlopen(req,timeout=40) as r: raw=r.read(); status=r.status
+              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
+              digest=hashlib.sha256(raw).hexdigest()
+              try: obj=json.loads(raw.decode())
+              except Exception: obj={'non_json':True}
+              return status,obj,digest
+
+          # Resolve current authenticated prefix with the API key; no mutation until this passes.
+          probes=[f'/projects/{PROJECT}',f'/teams/{TEAM}/projects/{PROJECT}']; PREFIX=None; project=None
+          for p in probes:
+              status,obj,_,_=raw_call('GET',p,label='auth_probe_'+('team' if p.startswith('/teams/') else 'project'))
+              if 200 <= status < 300: PREFIX=p; project=obj; break
+          if PREFIX is None: raise RuntimeError('NORTHFLANK_API_TOKEN_NOT_AUTHORIZED')
+          rec['credential_authority']='AUTHENTICATED'; rec['northflank_prefix_mode']='TEAM_SCOPED' if PREFIX.startswith('/teams/') else 'PROJECT_SCOPED'; persist()
+
+          service=call('GET',f'{PREFIX}/services/{SERVICE}',label='service_auth')
+          before=call('GET',f'{PREFIX}/services/{SERVICE}/deployment',label='deployment_before')
+          internal=before.get('internal') or {}; runtime={}
+          if isinstance(before.get('docker'),dict): runtime['docker']=before['docker']
+          elif isinstance(before.get('buildpack'),dict): runtime['buildpack']=before['buildpack']
+          else: raise RuntimeError('RUNTIME_CONFIG_MISSING')
+          rec['before']={'build_id':internal.get('buildId'),'build_sha':internal.get('buildSHA'),'deployed_sha':internal.get('deployedSHA'),'branch':internal.get('branch'),'instances':before.get('instances')}; persist()
+
+          payload={'sha':TARGET,'overrides':{'buildArguments':{'SENEX_SOURCE_COMMIT':TARGET,'SENEX_SOURCE_TREE':TREE,'SENEX_BUILD_DIGEST':BUILD_DIGEST}}}
+          build=call('POST',f'{PREFIX}/services/{SERVICE}/build',payload,label='exact_build_start'); build_id=build.get('id')
+          if not build_id: raise RuntimeError('BUILD_ID_MISSING')
+          deadline=time.time()+3600; final=None
+          while time.time()<deadline:
+              final=call('GET',f'{PREFIX}/services/{SERVICE}/build/{build_id}',label='exact_build_poll')
+              if final.get('concluded'): break
+              time.sleep(15)
+          if not final or not final.get('concluded') or not final.get('success') or final.get('sha') != TARGET: raise RuntimeError('EXACT_BUILD_FAILED')
+          registry=final.get('registry') if isinstance(final.get('registry'),dict) else {}
+          rec['build']={'id':build_id,'sha':final.get('sha'),'branch':final.get('branch'),'status':final.get('status'),'success':final.get('success'),'created_at':final.get('createdAt'),'concluded_at':final.get('buildConcludedAt'),'registry_uri':registry.get('uri'),'registry_digest':registry.get('digest')}; persist()
+
+          deploy={'internal':{'id':SERVICE,'branch':BRANCH,'buildId':build_id,'buildSHA':TARGET},**runtime}
+          call('POST',f'{PREFIX}/services/{SERVICE}/deployment',deploy,label='deploy_exact_head')
+          deadline=time.time()+1800; stable=None
+          while time.time()<deadline:
+              dep=call('GET',f'{PREFIX}/services/{SERVICE}/deployment',label='deployment_poll'); svc=call('GET',f'{PREFIX}/services/{SERVICE}',label='service_poll'); containers=call('GET',f'{PREFIX}/services/{SERVICE}/containers?per_page=100',label='containers_poll')
+              ii=dep.get('internal') or {}; actual=ii.get('deployedSHA') or ii.get('buildSHA'); deployment_status=((svc.get('status') or {}).get('deployment') or {}).get('status'); arr=containers.get('containers') if isinstance(containers,dict) else containers; arr=arr if isinstance(arr,list) else []; running=[c for c in arr if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
+              if actual==TARGET and deployment_status=='COMPLETED' and len(running)>=1: stable=(dep,svc,arr); break
+              time.sleep(10)
+          if stable is None: raise RuntimeError('DEPLOYMENT_STABILIZATION_TIMEOUT')
+          dep,svc,arr=stable; ii=dep.get('internal') or {}; rec['deployment']={'build_id':ii.get('buildId'),'build_sha':ii.get('buildSHA'),'deployed_sha':ii.get('deployedSHA'),'branch':ii.get('branch'),'instances':dep.get('instances'),'service_deployment_status':((svc.get('status') or {}).get('deployment') or {}).get('status')}; persist()
+
+          deadline=time.time()+600; live={}
+          while time.time()<deadline:
+              live={}; ok=True
+              for path,key in [('/healthz','healthz'),('/readyz','readyz'),('/api/runtime/provenance','provenance')]:
+                  st,obj,dig=get_public(path); live[key]={'http':st,'body':obj,'sha256':dig}; ok=ok and st==200
+              p=(live.get('provenance') or {}).get('body') or {}
+              if ok and p.get('source_commit')==TARGET and p.get('source_tree')==TREE and p.get('build_digest')==BUILD_DIGEST: break
+              time.sleep(10)
+          rec['live_bootstrap']=live; p=(live.get('provenance') or {}).get('body') or {}
+          if (live.get('healthz') or {}).get('http')!=200 or (live.get('readyz') or {}).get('http')!=200: raise RuntimeError('LIVE_HEALTH_NOT_READY')
+          if p.get('source_commit')!=TARGET or p.get('source_tree')!=TREE or p.get('build_digest')!=BUILD_DIGEST: raise RuntimeError('LIVE_PROVENANCE_IDENTITY_MISMATCH')
+          rec['origin_exact_head_deploy']='PASS'; rec['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); persist()
+          print('ORIGIN_EXACT_HEAD_DEPLOY=PASS'); print('BUILD_ID='+str(build_id)); print('DEPLOYED_SHA='+str(rec['deployment']['deployed_sha'])); print('PROVENANCE_EXACT='+str(bool(p.get('exact'))).lower())
+          PY
+          (cd order070-origin-evidence && sha256sum -c SHA256SUMS)
+
+      - name: Upload origin deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-origin-exact-202f154a71915eb4b1e3cdf0e1eec8005760a028
+          path: order070-origin-evidence/
+          if-no-files-found: warn
+          retention-days: 30
