@@ -43,11 +43,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Prime current authority generation read-only
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --max-time 45 'https://h011-web--senecio-h011--wbjggn89fnf8.code.run/api/authority/snapshot?symbol=BTCUSDT' >/dev/null
       - name: Final edge proof reconciliation and seal
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
@@ -58,7 +53,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r5_edge_reconcile_seal.py
+          python ops/.github/scripts/order070_r5_edge_probe_seal_v2.py
           (cd order070-r5-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload final R5 evidence
         if: always()
