@@ -1,33 +1,33 @@
-name: ORDER070 Combined Service Safe Inspect
+name: ORDER070 Origin Exact Reversible Deploy
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-origin-exact-deploy.yml]
 permissions:
   contents: read
-env:
-  NF_API: https://api.northflank.com/v1
-  PROJECT_ID: seneciobot
-  SERVICE_ID: senecio-h011
 jobs:
-  inspect:
+  deploy:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
-      - name: Read only whitelisted service configuration
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ops/senex-zero-cost-audit-20260809
+          persist-credentials: false
+      - name: Execute exact deployment helper
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
-        shell: bash
         run: |
           set +x
-          set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python - <<'PY'
-          import json,os,urllib.request
-          api=os.environ['NF_API'].rstrip('/'); p=os.environ['PROJECT_ID']; s=os.environ['SERVICE_ID']; token=os.environ['NORTHFLANK_API_TOKEN']
-          req=urllib.request.Request(f'{api}/projects/{p}/services/{s}',headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-inspect/1'},method='GET')
-          with urllib.request.urlopen(req,timeout=30) as r: obj=json.load(r)
-          d=obj.get('data',obj); vcs=d.get('vcsData') or {}; bs=d.get('buildSettings') or {}; docker=bs.get('dockerfile') or {}
-          safe={'id':d.get('id'),'serviceType':d.get('serviceType'),'disabledCI':d.get('disabledCI'),'disabledCD':d.get('disabledCD'),'buildSource':d.get('buildSource'),'vcsData':{k:vcs.get(k) for k in ('projectUrl','projectType','accountLogin','vcsLinkId','projectBranch') if vcs.get(k) is not None},'dockerfile':{k:docker.get(k) for k in ('dockerFilePath','dockerWorkDir','buildEngine') if docker.get(k) is not None}}
-          print(json.dumps(safe,sort_keys=True))
-          PY
+          python .github/scripts/order070_origin_deploy.py
+          (cd order070-origin-evidence && sha256sum -c SHA256SUMS)
+      - name: Upload origin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-origin-exact-202f154a71915eb4b1e3cdf0e1eec8005760a028
+          path: order070-origin-evidence/
+          if-no-files-found: warn
+          retention-days: 30
