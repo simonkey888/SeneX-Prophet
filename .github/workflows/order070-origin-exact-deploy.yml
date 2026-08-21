@@ -7,6 +7,7 @@ on:
       - .github/scripts/order070_origin_deploy.py
 permissions:
   contents: read
+  issues: write
 jobs:
   deploy:
     runs-on: ubuntu-24.04
@@ -33,3 +34,47 @@ jobs:
           path: order070-origin-evidence/
           if-no-files-found: warn
           retention-days: 30
+      - name: Publish checkpoint to PR 67
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          OPS_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set +x
+          python - <<'PY'
+          import json,os,urllib.request
+          from pathlib import Path
+          p=Path('order070-origin-evidence/oci-bind-receipt.json')
+          d=json.loads(p.read_text()) if p.exists() else {}
+          live=d.get('live') or {}; prov=(live.get('provenance') or {}).get('body') or {}; ready=(live.get('readyz') or {}).get('body') or {}; dep=d.get('deployment') or {}; envafter=d.get('runtime_env_after') or {}; oci=d.get('oci_identity') or {}
+          lines=[
+            '```text',
+            'ORDER070_RUNTIME_BIND_CHECKPOINT=YES',
+            f"OPS_RUN={os.environ['RUN_ID']}",
+            f"OPS_COMMIT={os.environ['OPS_SHA']}",
+            f"WORKFLOW_JOB_STATUS={os.environ['JOB_STATUS']}",
+            'CANDIDATE_HEAD=202f154a71915eb4b1e3cdf0e1eec8005760a028',
+            f"OCI_MANIFEST={oci.get('manifest_digest') or d.get('image_digest') or 'UNKNOWN'}",
+            f"OCI_MANIFEST_LOG_HITS={oci.get('manifest_log_hits','UNKNOWN')}",
+            f"RUNTIME_ENV_NON_TARGET_PRESERVED={envafter.get('non_target_environment_preserved','UNKNOWN')}",
+            f"DEPLOYED_SHA={dep.get('deployed_sha','UNKNOWN')}",
+            f"SOURCE_BRANCH={dep.get('source_branch','UNKNOWN')}",
+            f"DISABLED_CI={dep.get('disabled_ci','UNKNOWN')}",
+            f"DISABLED_CD={dep.get('disabled_cd','UNKNOWN')}",
+            f"HEALTHZ={(live.get('healthz') or {}).get('http','UNKNOWN')}",
+            f"READYZ={(live.get('readyz') or {}).get('http','UNKNOWN')}",
+            f"PROVENANCE_EXACT={prov.get('exact','UNKNOWN')}",
+            f"PROVENANCE_IMAGE_DIGEST={prov.get('image_digest','UNKNOWN')}",
+            f"READY_CHECKS={json.dumps(ready.get('checks') or {},sort_keys=True,separators=(',',':'))}",
+            f"SUPABASE_QUOTA_NOTICE_OBSERVED={str(bool(d.get('supabase_quota_notice_observed'))).upper()}",
+            f"SUPABASE_CAUSALITY_CLAIMED={str(bool(d.get('supabase_causality_claimed'))).upper()}",
+            f"ORIGIN_EXACT_READY={d.get('origin_exact_ready','UNKNOWN')}",
+            '```'
+          ]
+          body='\n'.join(lines)
+          req=urllib.request.Request('https://api.github.com/repos/simonkey888/SeneX-Prophet/issues/67/comments',data=json.dumps({'body':body}).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-checkpoint/1'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('CHECKPOINT_COMMENT_HTTP='+str(r.status))
+          PY
