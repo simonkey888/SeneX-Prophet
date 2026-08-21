@@ -1,92 +1,33 @@
-name: ORDER070 Exact Bundle Build Probe
-
+name: ORDER070 Combined Service Safe Inspect
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-origin-exact-deploy.yml]
-
 permissions:
   contents: read
-
 env:
   NF_API: https://api.northflank.com/v1
   PROJECT_ID: seneciobot
   SERVICE_ID: senecio-h011
-  TARGET_SHA: 202f154a71915eb4b1e3cdf0e1eec8005760a028
-  TARGET_TREE: f037c7621135305fd3ec5f37aa029dfc8a28aa4b
-  BUILD_DIGEST: sha256:1806ad0bc71c45264695c1c8973a497a39f9903f867ece2d56fdbc12f44e4892
-  BUNDLE_URL: https://codeload.github.com/simonkey888/SeneX-Prophet/tar.gz/202f154a71915eb4b1e3cdf0e1eec8005760a028
-
 jobs:
-  build-probe:
+  inspect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
     steps:
-      - name: Verify exact candidate identity
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ env.TARGET_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Assert tree and bundle contents
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-          test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
-          curl -fsSL "$BUNDLE_URL" -o /tmp/exact.tar.gz
-          top="$(tar -tzf /tmp/exact.tar.gz | sed -n '1s#/.*##p')"
-          test -n "$top"
-          test "$(tar -xOzf /tmp/exact.tar.gz "$top/senecio_polymarket/Dockerfile" | sha256sum | awk '{print $1}')" = "$(sha256sum senecio_polymarket/Dockerfile | awk '{print $1}')"
-      - name: Start and poll exact bundle build
-        shell: bash
+      - name: Read only whitelisted service configuration
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        shell: bash
         run: |
           set +x
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          mkdir -p order070-origin-evidence
           python - <<'PY'
-          import datetime,hashlib,json,os,time,urllib.error,urllib.request
-          from pathlib import Path
-          api=os.environ['NF_API'].rstrip('/'); project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']; target=os.environ['TARGET_SHA']; tree=os.environ['TARGET_TREE']; bd=os.environ['BUILD_DIGEST']; bundle=os.environ['BUNDLE_URL']; token=os.environ['NORTHFLANK_API_TOKEN']; out=Path('order070-origin-evidence')
-          hdr={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-bundle/1'}
-          rec={'order':'ORDER-070-R3','phase':'EXACT_BUNDLE_BUILD','target_sha':target,'target_tree':tree,'build_digest':bd,'bundle_url':bundle,'requests':[],'secret_values_exported':False,'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
-          def save():
-              raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (out/'bundle-build.json').write_bytes(raw); (out/'SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  bundle-build.json\n')
-          def call(method,path,payload=None):
-              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode(); req=urllib.request.Request(api+path,headers=hdr,data=body,method=method); raw=b''
-              try:
-                  with urllib.request.urlopen(req,timeout=90) as r: status=r.status; raw=r.read()
-              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
-              dig=hashlib.sha256(raw).hexdigest(); safe=''
-              try: obj=json.loads(raw.decode() or '{}'); safe=str(obj.get('message') or obj.get('error') or '')[:300] if isinstance(obj,dict) else ''
-              except Exception: obj={}
-              rec['requests'].append({'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':dig,'safe_error':safe if status>=400 else ''}); save()
-              if not 200<=status<300: raise RuntimeError(f'{method} {path} status={status} safe={safe}')
-              return obj.get('data',obj) if isinstance(obj,dict) else obj
-          call('GET',f'/projects/{project}/services/{service}')
-          payload={'bundleUrl':bundle,'branch':'order070-202f154a','overrides':{'buildArguments':{'SENEX_SOURCE_COMMIT':target,'SENEX_SOURCE_TREE':tree,'SENEX_BUILD_DIGEST':bd}}}
-          b=call('POST',f'/projects/{project}/services/{service}/build',payload); bid=b.get('id')
-          if not bid: raise RuntimeError('BUILD_ID_MISSING')
-          final=None; end=time.time()+3600
-          while time.time()<end:
-              final=call('GET',f'/projects/{project}/services/{service}/build/{bid}')
-              if final.get('concluded'): break
-              time.sleep(15)
-          if not final or not final.get('concluded') or not final.get('success'): raise RuntimeError('BUNDLE_BUILD_FAILED')
-          reg=final.get('registry') if isinstance(final.get('registry'),dict) else {}
-          rec['build']={'id':bid,'branch':final.get('branch'),'pull_request_id':final.get('pullRequestId'),'sha':final.get('sha'),'status':final.get('status'),'success':final.get('success'),'registry_uri':reg.get('uri'),'registry_digest':reg.get('digest'),'created_at':final.get('createdAt'),'concluded_at':final.get('buildConcludedAt')}; rec['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); save()
-          print('BUNDLE_BUILD=PASS'); print('BUILD_ID='+str(bid)); print('BUILD_BRANCH='+str(final.get('branch'))); print('BUILD_SHA='+str(final.get('sha'))); print('REGISTRY_URI='+str(reg.get('uri'))); print('REGISTRY_DIGEST='+str(reg.get('digest')))
+          import json,os,urllib.request
+          api=os.environ['NF_API'].rstrip('/'); p=os.environ['PROJECT_ID']; s=os.environ['SERVICE_ID']; token=os.environ['NORTHFLANK_API_TOKEN']
+          req=urllib.request.Request(f'{api}/projects/{p}/services/{s}',headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-inspect/1'},method='GET')
+          with urllib.request.urlopen(req,timeout=30) as r: obj=json.load(r)
+          d=obj.get('data',obj); vcs=d.get('vcsData') or {}; bs=d.get('buildSettings') or {}; docker=bs.get('dockerfile') or {}
+          safe={'id':d.get('id'),'serviceType':d.get('serviceType'),'disabledCI':d.get('disabledCI'),'disabledCD':d.get('disabledCD'),'buildSource':d.get('buildSource'),'vcsData':{k:vcs.get(k) for k in ('projectUrl','projectType','accountLogin','vcsLinkId','projectBranch') if vcs.get(k) is not None},'dockerfile':{k:docker.get(k) for k in ('dockerFilePath','dockerWorkDir','buildEngine') if docker.get(k) is not None}}
+          print(json.dumps(safe,sort_keys=True))
           PY
-          (cd order070-origin-evidence && sha256sum -c SHA256SUMS)
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: order070-bundle-build-${{ env.TARGET_SHA }}
-          path: order070-origin-evidence/
-          if-no-files-found: warn
-          retention-days: 30
