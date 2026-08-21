@@ -46,7 +46,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Apply verified nullable-CD harness correction
+      - name: Apply verified harness corrections
         shell: bash
         run: |
           python - <<'PY'
@@ -56,8 +56,14 @@ jobs:
           old="or svc.get('disabledCD') is not True: raise RuntimeError('NORTHFLANK_EXACT_DEPLOYMENT_READBACK_FAILED')"
           new="or svc.get('disabledCD') not in (True,None): raise RuntimeError('NORTHFLANK_EXACT_DEPLOYMENT_READBACK_FAILED')"
           assert old in s
-          p.write_text(s.replace(old,new,1))
-          print('HARNESS_CORRECTION=DISABLED_CD_NULL_IS_OBSERVED_VALID_STATE')
+          s=s.replace(old,new,1)
+          old2="EDGE=urls[-1].rstrip('/')\n# Raw wrangler output may contain a claim URL/token; never persist or print it."
+          new2="EDGE=urls[-1].rstrip('/')\n# Temporary preview propagation is asynchronous; wait boundedly for the exact Worker to become routable.\nedge_boot=None\nfor _ in range(30):\n    edge_boot=http_json(EDGE,'/healthz')\n    if edge_boot['http']==200: break\n    time.sleep(2)\nif not edge_boot or edge_boot['http']!=200: raise RuntimeError('EDGE_PREVIEW_PROPAGATION_FAILED:'+str((edge_boot or {}).get('http')))\n# Raw wrangler output may contain a claim URL/token; never persist or print it."
+          assert old2 in s
+          s=s.replace(old2,new2,1)
+          p.write_text(s)
+          print('HARNESS_CORRECTION=DISABLED_CD_NULL_ACCEPTED_FROM_SAFE_READBACK')
+          print('HARNESS_CORRECTION=BOUNDED_TEMP_EDGE_PROPAGATION_GATE')
           PY
       - name: Run exact-head edge and live reconciliation
         env:
