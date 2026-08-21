@@ -1,0 +1,31 @@
+name: ORDER070 NF Safe Diagnostic
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-nf-safe-diag.yml]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Whitelisted Northflank readback
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python - <<'PY'
+          import json,os,urllib.request
+          base='https://api.northflank.com/v1'; token=os.environ['NORTHFLANK_API_TOKEN']; H={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-safe-diag/1'}
+          def get(path):
+              req=urllib.request.Request(base+path,headers=H,method='GET')
+              with urllib.request.urlopen(req,timeout=30) as r: x=json.load(r)
+              return x.get('data',x)
+          svc=get('/projects/seneciobot/services/senecio-h011'); dep=get('/projects/seneciobot/services/senecio-h011/deployment'); bld=get('/projects/seneciobot/services/senecio-h011/build/next-muscle-6785')
+          st=(svc.get('status') or {}).get('deployment') or {}; i=dep.get('internal') or {}; v=svc.get('vcsData') or {}
+          safe={'service_type':svc.get('serviceType'),'disabledCI':svc.get('disabledCI'),'disabledCD':svc.get('disabledCD'),'deployment_status':st.get('status'),'vcs_branch':v.get('projectBranch'),'deployment':{k:i.get(k) for k in ('buildId','buildSHA','deployedSHA','branch','id')},'build':{k:bld.get(k) for k in ('id','sha','branch','status','success','concluded','createdAt','buildConcludedAt')}}
+          print(json.dumps(safe,sort_keys=True))
+          PY
