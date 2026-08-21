@@ -1,35 +1,44 @@
-name: ORDER070 R4 Observe Origin Deploy
+name: ORDER070 R4 Northflank Auth Diagnostic
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-r4-observe.yml]
 permissions:
-  actions: read
   contents: read
   statuses: write
 jobs:
-  observe:
+  diagnose:
     runs-on: ubuntu-latest
+    environment: northflank-readonly-audit
     steps:
-      - name: Publish target deployment run status
+      - name: Compare maintenance and readonly authentication GET-only
         env:
           GH_TOKEN: ${{ github.token }}
+          MAINT: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+          READONLY: ${{ secrets.NORTHFLANK_API_TOKEN }}
         shell: bash
         run: |
+          set +x
           set -euo pipefail
-          sleep 8
+          test -n "${MAINT:-}"
+          test -n "${READONLY:-}"
+          echo "::add-mask::${MAINT}"
+          echo "::add-mask::${READONLY}"
           python - <<'PY'
-          import json,os,urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; target='60335437d149af4374286422187867eb7dac3878'
-          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-r4-observer/2'}
-          u=f'https://api.github.com/repos/{repo}/actions/runs?head_sha={target}&per_page=50'
-          with urllib.request.urlopen(urllib.request.Request(u,headers=h),timeout=30) as r:d=json.load(r)
-          rows=[x for x in d.get('workflow_runs',[]) if x.get('name')=='ORDER070 R4 Origin Exact Deploy And OCI Bind']
-          x=rows[0] if rows else {}
-          conclusion=x.get('conclusion'); status=x.get('status')
-          state='success' if conclusion=='success' else ('failure' if status=='completed' else 'pending')
-          rid=str(x.get('id','NONE')); desc=f'run={rid} status={status} conclusion={conclusion}'[:140]
-          payload={'state':state,'context':'ORDER070/origin-r4-observer','description':desc,'target_url':x.get('html_url') or f'https://github.com/{repo}/actions'}
+          import json,os,urllib.error,urllib.request
+          api='https://api.northflank.com/v1'; repo=os.environ['GITHUB_REPOSITORY']; gh=os.environ['GH_TOKEN']; target='60335437d149af4374286422187867eb7dac3878'
+          def probe(token,path):
+              req=urllib.request.Request(api+path,headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-r4-authdiag/1'},method='GET')
+              try:
+                  with urllib.request.urlopen(req,timeout=30) as r:return r.status
+              except urllib.error.HTTPError as e:return e.code
+          m1=probe(os.environ['MAINT'],'/projects/seneciobot'); m2=probe(os.environ['MAINT'],'/teams/6a32fd953f19ee4079ccf395/projects/seneciobot')
+          r1=probe(os.environ['READONLY'],'/projects/seneciobot'); r2=probe(os.environ['READONLY'],'/projects/seneciobot/services/senecio-h011/deployment')
+          state='failure' if m1 not in range(200,300) and m2 not in range(200,300) else 'success'
+          desc=f'maint_project={m1} maint_team={m2} readonly_project={r1} readonly_deploy={r2}'[:140]
+          h={'Authorization':f'Bearer {gh}','Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-r4-authdiag/1'}
+          payload={'state':state,'context':'ORDER070/northflank-auth-diagnostic','description':desc,'target_url':f'https://github.com/{repo}/commit/{target}'}
           req=urllib.request.Request(f'https://api.github.com/repos/{repo}/statuses/{target}',data=json.dumps(payload).encode(),headers=h,method='POST')
           with urllib.request.urlopen(req,timeout=30) as r: print('STATUS_HTTP='+str(r.status))
+          print(desc)
           PY
