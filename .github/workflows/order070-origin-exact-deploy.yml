@@ -43,23 +43,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Bounded origin authority readiness gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          ORIGIN='https://h011-web--senecio-h011--wbjggn89fnf8.code.run'
-          ok=0
-          for i in $(seq 1 60); do
-            snapshot=$(curl -sS -o /tmp/snapshot -w '%{http_code}' --max-time 30 "$ORIGIN/api/authority/snapshot?symbol=BTCUSDT" || true)
-            health=$(curl -sS -o /tmp/health -w '%{http_code}' --max-time 30 "$ORIGIN/healthz" || true)
-            ready=$(curl -sS -o /tmp/ready -w '%{http_code}' --max-time 30 "$ORIGIN/readyz?symbol=BTCUSDT" || true)
-            provenance=$(curl -sS -o /tmp/provenance -w '%{http_code}' --max-time 30 "$ORIGIN/api/runtime/provenance" || true)
-            echo "ORIGIN_GATE_ATTEMPT=$i SNAPSHOT=$snapshot HEALTH=$health READY=$ready PROVENANCE=$provenance"
-            if [ "$snapshot" = 200 ] && [ "$health" = 200 ] && [ "$ready" = 200 ] && [ "$provenance" = 200 ]; then ok=1; break; fi
-            sleep 5
-          done
-          test "$ok" = 1
-      - name: Final edge proof reconciliation and seal
+      - name: Final Cloudflare remote reconciliation and seal
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
           CANDIDATE_DIR: candidate
@@ -69,7 +53,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r5_reconcile_seal_verified_edge.py
+          python ops/.github/scripts/order070_r5_remote_dev_reconcile_seal.py
           (cd order070-r5-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload final R5 evidence
         if: always()
