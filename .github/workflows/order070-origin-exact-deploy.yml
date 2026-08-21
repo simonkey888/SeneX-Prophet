@@ -1,4 +1,4 @@
-name: ORDER070 R4 Origin Exact Deploy And OCI Bind
+name: ORDER070 R5 Exact Origin Edge Finalize
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
@@ -6,145 +6,44 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: order070-origin-r4
+  group: order070-r5-finalize
   cancel-in-progress: false
-env:
-  NF_API: https://api.northflank.com/v1
-  TEAM_ID: 6a32fd953f19ee4079ccf395
-  PROJECT_ID: seneciobot
-  SERVICE_ID: senecio-h011
-  TARGET_BRANCH: feat/order-070-runtime-truth-hardening
-  TARGET_SHA: 483b389a83610992800181c0a21b5a337009f7b4
-  TARGET_TREE: 0494d3d4066f94a9dd055d81c07a3633a243ec2f
-  BUILD_DIGEST: sha256:1806ad0bc71c45264695c1c8973a497a39f9903f867ece2d56fdbc12f44e4892
-  ORIGIN: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
 jobs:
-  deploy:
+  finalize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    environment: northflank-readonly-audit
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ env.TARGET_SHA }}
+          ref: 483b389a83610992800181c0a21b5a337009f7b4
           fetch-depth: 0
           persist-credentials: false
-      - name: Assert exact candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-          test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
-          test "$(git ls-remote origin refs/heads/${TARGET_BRANCH} | awk '{print $1}')" = "$TARGET_SHA"
-      - name: Build deploy bind and verify existing origin
-        shell: bash
+          path: candidate
+      - name: Checkout ops runner
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: ops
+      - name: Run R5 exact build deploy edge reconciliation and seal
         env:
-          NORTHFLANK_SENEX_MAINTENANCE_TOKEN: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+          CANDIDATE_DIR: candidate
+        shell: bash
         run: |
           set +x
           set -euo pipefail
-          test -n "${NORTHFLANK_SENEX_MAINTENANCE_TOKEN:-}"
-          echo "::add-mask::${NORTHFLANK_SENEX_MAINTENANCE_TOKEN}"
-          mkdir -p order070-r4-origin-evidence
-          python - <<'PY'
-          from __future__ import annotations
-          import datetime,hashlib,json,os,re,time,urllib.error,urllib.parse,urllib.request
-          from pathlib import Path
-          API=os.environ['NF_API'].rstrip('/'); TOKEN=os.environ['NORTHFLANK_SENEX_MAINTENANCE_TOKEN']
-          TEAM=os.environ['TEAM_ID']; P=os.environ['PROJECT_ID']; S=os.environ['SERVICE_ID']; BR=os.environ['TARGET_BRANCH']
-          TS=os.environ['TARGET_SHA']; TT=os.environ['TARGET_TREE']; BD=os.environ['BUILD_DIGEST']; ORIGIN=os.environ['ORIGIN'].rstrip('/')
-          OUT=Path('order070-r4-origin-evidence'); H={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-r4/1'}
-          rec={'order':'ORDER-070-R4','target_sha':TS,'target_tree':TT,'build_digest':BD,'project_id':P,'service_id':S,'secret_present':True,'secret_values_exported':False,'new_service':False,'new_job':False,'new_addon':False,'new_volume':False,'real_order_count':0,'real_capital_movement':0,'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'requests':[]}
-          def save():
-              raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (OUT/'origin-r4-receipt.json').write_bytes(raw); (OUT/'MANIFEST.sha256').write_text(hashlib.sha256(raw).hexdigest()+'  origin-r4-receipt.json\n')
-          def data(x): return x.get('data',x) if isinstance(x,dict) else x
-          def rawcall(method,path,payload=None,label=None,query=None,timeout=90):
-              url=API+path
-              if query: url+='?'+urllib.parse.urlencode(query)
-              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode(); req=urllib.request.Request(url,headers=H,data=body,method=method)
-              try:
-                  with urllib.request.urlopen(req,timeout=timeout) as r: status=r.status; raw=r.read()
-              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
-              try: obj=json.loads(raw.decode() or '{}')
-              except Exception: obj={}
-              safe=str(obj.get('message') or obj.get('error') or '')[:180] if isinstance(obj,dict) else ''
-              rec['requests'].append({'label':label or path,'method':method,'path':path,'status':status,'response_sha256':hashlib.sha256(raw).hexdigest(),'safe_error':safe if status>=400 else ''}); save()
-              return status,data(obj),safe
-          def call(method,path,payload=None,label=None,query=None,timeout=90):
-              st,obj,safe=rawcall(method,path,payload,label,query,timeout)
-              if not 200<=st<300: raise RuntimeError(f'{label or path}:HTTP_{st}:{safe}')
-              return obj
-          def pub(path):
-              req=urllib.request.Request(ORIGIN+path,headers={'Accept':'application/json','Cache-Control':'no-cache','User-Agent':'senex-order070-r4-live/1'},method='GET')
-              try:
-                  with urllib.request.urlopen(req,timeout=40) as r: st=r.status; raw=r.read()
-              except urllib.error.HTTPError as e: st=e.code; raw=e.read()
-              try: obj=json.loads(raw.decode())
-              except Exception: obj={'non_json':True}
-              return {'http':st,'body':obj,'sha256':hashlib.sha256(raw).hexdigest()}
-          # Authenticate against either supported project route without exposing token.
-          PREFIX=None
-          for pref in (f'/projects/{P}',f'/teams/{TEAM}/projects/{P}'):
-              st,obj,_=rawcall('GET',pref,label='auth_probe')
-              if 200<=st<300: PREFIX=pref; break
-              if st not in (401,403,404): raise RuntimeError(f'UNEXPECTED_AUTH_STATUS:{st}')
-          if PREFIX is None: rec['credential_authority']='REJECTED'; save(); raise RuntimeError('MAINTENANCE_CREDENTIAL_NOT_AUTHORIZED')
-          rec['credential_authority']='AUTHENTICATED'; rec['prefix_mode']='TEAM_SCOPED' if PREFIX.startswith('/teams/') else 'PROJECT_SCOPED'; save()
-          svc=call('GET',f'{PREFIX}/services/{S}',label='service_before'); dep0=call('GET',f'{PREFIX}/services/{S}/deployment',label='deployment_before')
-          if isinstance(svc,dict) and svc.get('id') not in (None,S): raise RuntimeError('SERVICE_IDENTITY_MISMATCH')
-          runtime={}
-          if isinstance(dep0.get('docker'),dict): runtime['docker']=dep0['docker']
-          elif isinstance(dep0.get('buildpack'),dict): runtime['buildpack']=dep0['buildpack']
-          else: raise RuntimeError('RUNTIME_CONFIG_MISSING')
-          rec['before']={'deployed_sha':(dep0.get('internal') or {}).get('deployedSHA'),'build_sha':(dep0.get('internal') or {}).get('buildSHA'),'branch':(dep0.get('internal') or {}).get('branch')}; save()
-          build=call('POST',f'{PREFIX}/services/{S}/build',{'sha':TS,'overrides':{'buildArguments':{'SENEX_SOURCE_COMMIT':TS,'SENEX_SOURCE_TREE':TT,'SENEX_BUILD_DIGEST':BD}}},label='exact_build_start')
-          bid=build.get('id');
-          if not bid: raise RuntimeError('BUILD_ID_MISSING')
-          end=time.time()+3600; final=None
-          while time.time()<end:
-              final=call('GET',f'{PREFIX}/services/{S}/build/{bid}',label='exact_build_poll')
-              if final.get('concluded'): break
-              time.sleep(15)
-          if not final or not final.get('concluded') or not final.get('success') or final.get('sha')!=TS: raise RuntimeError('EXACT_BUILD_FAILED')
-          reg=final.get('registry') if isinstance(final.get('registry'),dict) else {}; img=str(reg.get('digest') or '').lower()
-          if not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}',img): raise RuntimeError('OCI_MANIFEST_DIGEST_MISSING')
-          if not img.startswith('sha256:'): img='sha256:'+img
-          rec['build']={'id':bid,'sha':final.get('sha'),'branch':final.get('branch'),'success':final.get('success'),'registry_uri':reg.get('uri'),'registry_digest':img}; save()
-          # Bind the exact OCI manifest into runtime provenance while preserving every unrelated environment entry.
-          envdoc=call('GET',f'{PREFIX}/services/{S}/runtime-environment',label='runtime_env_before',query={'show':'this'}); env=envdoc.get('runtimeEnvironment') if isinstance(envdoc,dict) else None
-          if not isinstance(env,dict): raise RuntimeError('RUNTIME_ENV_NOT_READABLE')
-          def fp(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-          before_other={k:v for k,v in env.items() if k!='SENEX_IMAGE_DIGEST'}; updated=dict(env); updated['SENEX_IMAGE_DIGEST']=img
-          call('PATCH',f'{PREFIX}/services/combined/{S}',{'runtimeEnvironment':updated},label='bind_runtime_image_digest')
-          afterdoc=call('GET',f'{PREFIX}/services/{S}/runtime-environment',label='runtime_env_after',query={'show':'this'}); after=afterdoc.get('runtimeEnvironment') if isinstance(afterdoc,dict) else None
-          if not isinstance(after,dict) or after.get('SENEX_IMAGE_DIGEST')!=img or {k:v for k,v in after.items() if k!='SENEX_IMAGE_DIGEST'}!=before_other: raise RuntimeError('RUNTIME_ENV_BIND_DRIFT')
-          rec['oci_bind']={'image_digest':img,'non_target_environment_preserved':True,'before_keys_sha256':fp(sorted(env)),'after_keys_sha256':fp(sorted(after))}; save()
-          deploy={'internal':{'id':S,'branch':BR,'buildId':bid,'buildSHA':TS},**runtime}; call('POST',f'{PREFIX}/services/{S}/deployment',deploy,label='deploy_exact_head')
-          end=time.time()+1800; stable=None
-          while time.time()<end:
-              d=call('GET',f'{PREFIX}/services/{S}/deployment',label='deployment_poll'); s=call('GET',f'{PREFIX}/services/{S}',label='service_poll'); cs=call('GET',f'{PREFIX}/services/{S}/containers',label='containers_poll',query={'per_page':100})
-              ii=d.get('internal') or {}; status=((s.get('status') or {}).get('deployment') or {}).get('status'); arr=cs.get('containers') if isinstance(cs,dict) else cs; arr=arr if isinstance(arr,list) else []
-              if (ii.get('deployedSHA') or ii.get('buildSHA'))==TS and status=='COMPLETED' and any(isinstance(c,dict) and c.get('status')=='TASK_RUNNING' for c in arr): stable=(d,s,arr); break
-              if status=='FAILED': raise RuntimeError('DEPLOYMENT_FAILED')
-              time.sleep(10)
-          if stable is None: raise RuntimeError('DEPLOYMENT_STABILIZATION_TIMEOUT')
-          d,s,arr=stable; ii=d.get('internal') or {}; rec['deployment']={'build_id':ii.get('buildId'),'build_sha':ii.get('buildSHA'),'deployed_sha':ii.get('deployedSHA'),'branch':ii.get('branch'),'status':((s.get('status') or {}).get('deployment') or {}).get('status'),'running_containers':sum(1 for c in arr if isinstance(c,dict) and c.get('status')=='TASK_RUNNING')}; save()
-          end=time.time()+600; live={}
-          while time.time()<end:
-              live={k:pub(p) for p,k in [('/healthz','healthz'),('/readyz','readyz'),('/api/runtime/provenance','provenance'),('/api/authority/snapshot?symbol=BTCUSDT','authority')]}
-              p=live['provenance']['body'] if isinstance(live['provenance']['body'],dict) else {}
-              if live['healthz']['http']==200 and live['readyz']['http']==200 and live['provenance']['http']==200 and p.get('exact') is True and p.get('source_commit')==TS and p.get('source_tree')==TT and p.get('build_digest')==BD and p.get('image_digest')==img: break
-              time.sleep(10)
-          else: rec['live']=live; save(); raise RuntimeError('LIVE_EXACT_READINESS_TIMEOUT')
-          rec['live']=live; rec['origin_exact_ready']='PASS'; rec['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); save()
-          print('ORIGIN_EXACT_HEAD_DEPLOY=PASS'); print('BUILD_ID='+str(bid)); print('DEPLOYED_SHA='+str(ii.get('deployedSHA'))); print('IMAGE_DIGEST='+img); print('HEALTHZ='+str(live['healthz']['http'])); print('READYZ='+str(live['readyz']['http'])); print('PROVENANCE_EXACT='+str(live['provenance']['body'].get('exact')).lower())
-          PY
-          (cd order070-r4-origin-evidence && sha256sum -c MANIFEST.sha256)
-      - name: Upload origin evidence
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python ops/.github/scripts/order070_r5_finish.py
+          (cd order070-r5-final-evidence && sha256sum -c MANIFEST.sha256)
+      - name: Upload final R5 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: order070-r4-origin-483b389a83610992800181c0a21b5a337009f7b4
-          path: order070-r4-origin-evidence/
+          name: order070-r5-final-483b389a83610992800181c0a21b5a337009f7b4
+          path: order070-r5-final-evidence/
           if-no-files-found: warn
           retention-days: 30
