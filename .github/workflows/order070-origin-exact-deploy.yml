@@ -1,4 +1,4 @@
-name: ORDER070 Origin Exact Deploy
+name: ORDER070 Exact Bundle Build Probe
 
 on:
   push:
@@ -10,36 +10,35 @@ permissions:
 
 env:
   NF_API: https://api.northflank.com/v1
-  TEAM_ID: 6a32fd953f19ee4079ccf395
   PROJECT_ID: seneciobot
   SERVICE_ID: senecio-h011
-  TARGET_BRANCH: feat/order-070-runtime-truth-hardening
   TARGET_SHA: 202f154a71915eb4b1e3cdf0e1eec8005760a028
   TARGET_TREE: f037c7621135305fd3ec5f37aa029dfc8a28aa4b
   BUILD_DIGEST: sha256:1806ad0bc71c45264695c1c8973a497a39f9903f867ece2d56fdbc12f44e4892
-  ORIGIN: https://h011-web--senecio-h011--wbjggn89fnf8.code.run
+  BUNDLE_URL: https://codeload.github.com/simonkey888/SeneX-Prophet/tar.gz/202f154a71915eb4b1e3cdf0e1eec8005760a028
 
 jobs:
-  origin-exact-deploy:
+  build-probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 70
     steps:
-      - name: Checkout exact candidate
+      - name: Verify exact candidate identity
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.TARGET_SHA }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Assert exact remote identity
+      - name: Assert tree and bundle contents
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
-          test "$(git ls-remote origin refs/heads/${TARGET_BRANCH} | awk '{print $1}')" = "$TARGET_SHA"
-
-      - name: Deploy exact candidate with repository Northflank key
+          curl -fsSL "$BUNDLE_URL" -o /tmp/exact.tar.gz
+          top="$(tar -tzf /tmp/exact.tar.gz | head -1 | cut -d/ -f1)"
+          test -n "$top"
+          test "$(tar -xOzf /tmp/exact.tar.gz "$top/senecio_polymarket/Dockerfile" | sha256sum | awk '{print $1}')" = "$(sha256sum senecio_polymarket/Dockerfile | awk '{print $1}')"
+      - name: Start and poll exact bundle build
         shell: bash
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
@@ -50,103 +49,44 @@ jobs:
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
           mkdir -p order070-origin-evidence
           python - <<'PY'
-          from __future__ import annotations
-          import datetime, hashlib, json, os, time, urllib.error, urllib.request
+          import datetime,hashlib,json,os,time,urllib.error,urllib.request
           from pathlib import Path
-
-          API=os.environ['NF_API'].rstrip('/'); TOKEN=os.environ['NORTHFLANK_API_TOKEN']
-          PROJECT=os.environ['PROJECT_ID']; SERVICE=os.environ['SERVICE_ID']; BRANCH=os.environ['TARGET_BRANCH']
-          TARGET=os.environ['TARGET_SHA']; TREE=os.environ['TARGET_TREE']; BUILD_DIGEST=os.environ['BUILD_DIGEST']; ORIGIN=os.environ['ORIGIN'].rstrip('/')
-          OUT=Path('order070-origin-evidence')
-          HEAD={'Authorization':f'Bearer {TOKEN}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-origin/4'}
-          rec={'order':'ORDER-070-R3','started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'credential_name':'NORTHFLANK_API_TOKEN_REPOSITORY_SCOPE','secret_present':True,'secret_values_exported':False,'project_id':PROJECT,'service_id':SERVICE,'target_branch':BRANCH,'target_sha':TARGET,'target_tree':TREE,'build_digest':BUILD_DIGEST,'origin':ORIGIN,'new_service':False,'new_job':False,'new_addon':False,'new_volume':False,'real_order_count':0,'real_capital_movement':0,'runtime017_mutation':0,'production_learning_mutations':0,'requests':[]}
-          def persist():
-              raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (OUT/'origin-deploy-receipt.json').write_bytes(raw); (OUT/'SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  origin-deploy-receipt.json\n')
-          def data(x): return x.get('data',x) if isinstance(x,dict) else x
-          def call(method,path,payload=None,label=None,timeout=90,allow=()):
-              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode(); req=urllib.request.Request(API+path,headers=HEAD,data=body,method=method); raw=b''; status=0
+          api=os.environ['NF_API'].rstrip('/'); project=os.environ['PROJECT_ID']; service=os.environ['SERVICE_ID']; target=os.environ['TARGET_SHA']; tree=os.environ['TARGET_TREE']; bd=os.environ['BUILD_DIGEST']; bundle=os.environ['BUNDLE_URL']; token=os.environ['NORTHFLANK_API_TOKEN']; out=Path('order070-origin-evidence')
+          hdr={'Authorization':f'Bearer {token}','Accept':'application/json','Content-Type':'application/json','User-Agent':'senex-order070-bundle/1'}
+          rec={'order':'ORDER-070-R3','phase':'EXACT_BUNDLE_BUILD','target_sha':target,'target_tree':tree,'build_digest':bd,'bundle_url':bundle,'requests':[],'secret_values_exported':False,'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+          def save():
+              raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode(); (out/'bundle-build.json').write_bytes(raw); (out/'SHA256SUMS').write_text(hashlib.sha256(raw).hexdigest()+'  bundle-build.json\n')
+          def call(method,path,payload=None):
+              body=None if payload is None else json.dumps(payload,separators=(',',':')).encode(); req=urllib.request.Request(api+path,headers=hdr,data=body,method=method); raw=b''
               try:
-                  with urllib.request.urlopen(req,timeout=timeout) as r: status=r.status; raw=r.read()
+                  with urllib.request.urlopen(req,timeout=90) as r: status=r.status; raw=r.read()
               except urllib.error.HTTPError as e: status=e.code; raw=e.read()
-              digest=hashlib.sha256(raw).hexdigest(); safe=''
-              try:
-                  obj=json.loads(raw.decode() or '{}'); safe=str(obj.get('message') or obj.get('error') or '')[:240] if isinstance(obj,dict) else ''
+              dig=hashlib.sha256(raw).hexdigest(); safe=''
+              try: obj=json.loads(raw.decode() or '{}'); safe=str(obj.get('message') or obj.get('error') or '')[:300] if isinstance(obj,dict) else ''
               except Exception: obj={}
-              rec['requests'].append({'label':label or path,'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':digest,'safe_error':safe if status>=400 else ''}); persist()
-              if not 200 <= status < 300 and status not in allow: raise RuntimeError(f'{method} {path} status={status} body_sha256={digest} safe={safe}')
-              return status,data(obj)
-          def get_public(path):
-              req=urllib.request.Request(ORIGIN+path,headers={'Accept':'application/json','Cache-Control':'no-cache','User-Agent':'senex-order070-live/4'},method='GET')
-              try:
-                  with urllib.request.urlopen(req,timeout=40) as r: raw=r.read(); status=r.status
-              except urllib.error.HTTPError as e: status=e.code; raw=e.read()
-              digest=hashlib.sha256(raw).hexdigest()
-              try: obj=json.loads(raw.decode())
-              except Exception: obj={'non_json':True}
-              return status,obj,digest
-
-          # Valid repository-scope key must authenticate before mutation.
-          st,project=call('GET',f'/projects/{PROJECT}',label='project_auth')
-          if st!=200: raise RuntimeError('REPOSITORY_KEY_AUTH_FAILED')
-          _,service=call('GET',f'/projects/{PROJECT}/services/{SERVICE}',label='service_auth')
-          _,before=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/deployment',label='deployment_before')
-          internal=before.get('internal') or {}; runtime={}
-          if isinstance(before.get('docker'),dict): runtime['docker']=before['docker']
-          elif isinstance(before.get('buildpack'),dict): runtime['buildpack']=before['buildpack']
-          else: raise RuntimeError('RUNTIME_CONFIG_MISSING')
-          rec['before']={'build_id':internal.get('buildId'),'build_sha':internal.get('buildSHA'),'deployed_sha':internal.get('deployedSHA'),'branch':internal.get('branch'),'instances':before.get('instances')}; persist()
-
-          # Exact candidate build with per-build immutable provenance args.
-          payload={'sha':TARGET,'overrides':{'buildArguments':{'SENEX_SOURCE_COMMIT':TARGET,'SENEX_SOURCE_TREE':TREE,'SENEX_BUILD_DIGEST':BUILD_DIGEST}}}
-          _,build=call('POST',f'/projects/{PROJECT}/services/{SERVICE}/build',payload,label='exact_build_start'); build_id=build.get('id')
-          if not build_id: raise RuntimeError('BUILD_ID_MISSING')
-          deadline=time.time()+3600; final=None
-          while time.time()<deadline:
-              _,final=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/build/{build_id}',label='exact_build_poll')
+              rec['requests'].append({'method':method,'path':path,'status':status,'bytes':len(raw),'body_sha256':dig,'safe_error':safe if status>=400 else ''}); save()
+              if not 200<=status<300: raise RuntimeError(f'{method} {path} status={status} safe={safe}')
+              return obj.get('data',obj) if isinstance(obj,dict) else obj
+          call('GET',f'/projects/{project}/services/{service}')
+          payload={'bundleUrl':bundle,'branch':'order070-202f154a','overrides':{'buildArguments':{'SENEX_SOURCE_COMMIT':target,'SENEX_SOURCE_TREE':tree,'SENEX_BUILD_DIGEST':bd}}}
+          b=call('POST',f'/projects/{project}/services/{service}/build',payload); bid=b.get('id')
+          if not bid: raise RuntimeError('BUILD_ID_MISSING')
+          final=None; end=time.time()+3600
+          while time.time()<end:
+              final=call('GET',f'/projects/{project}/services/{service}/build/{bid}')
               if final.get('concluded'): break
               time.sleep(15)
-          if not final or not final.get('concluded') or not final.get('success') or final.get('sha') != TARGET: raise RuntimeError('EXACT_BUILD_FAILED')
-          registry=final.get('registry') if isinstance(final.get('registry'),dict) else {}
-          rec['build']={'id':build_id,'sha':final.get('sha'),'branch':final.get('branch'),'status':final.get('status'),'success':final.get('success'),'created_at':final.get('createdAt'),'concluded_at':final.get('buildConcludedAt'),'registry_uri':registry.get('uri'),'registry_digest':registry.get('digest')}; persist()
-
-          # Deploy only this build to the already existing service; preserve current runtime shape.
-          deploy={'internal':{'id':SERVICE,'branch':BRANCH,'buildId':build_id,'buildSHA':TARGET},**runtime}
-          call('POST',f'/projects/{PROJECT}/services/{SERVICE}/deployment',deploy,label='deploy_exact_head')
-          deadline=time.time()+1800; stable=None
-          while time.time()<deadline:
-              _,dep=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/deployment',label='deployment_poll'); _,svc=call('GET',f'/projects/{PROJECT}/services/{SERVICE}',label='service_poll'); _,containers=call('GET',f'/projects/{PROJECT}/services/{SERVICE}/containers?per_page=100',label='containers_poll')
-              ii=dep.get('internal') or {}; actual=ii.get('deployedSHA') or ii.get('buildSHA'); deployment_status=((svc.get('status') or {}).get('deployment') or {}).get('status'); arr=containers.get('containers') if isinstance(containers,dict) else containers; arr=arr if isinstance(arr,list) else []; running=[c for c in arr if isinstance(c,dict) and c.get('status')=='TASK_RUNNING']
-              if actual==TARGET and deployment_status=='COMPLETED' and len(running)>=1: stable=(dep,svc,arr); break
-              time.sleep(10)
-          if stable is None: raise RuntimeError('DEPLOYMENT_STABILIZATION_TIMEOUT')
-          dep,svc,arr=stable; ii=dep.get('internal') or {}
-          container_ids=[]
-          for c in arr:
-              if isinstance(c,dict): container_ids.append({k:c.get(k) for k in ('id','name','status','startedAt','image','imageDigest','deploymentId','revision') if c.get(k) is not None})
-          rec['deployment']={'build_id':ii.get('buildId'),'build_sha':ii.get('buildSHA'),'deployed_sha':ii.get('deployedSHA'),'branch':ii.get('branch'),'instances':dep.get('instances'),'service_deployment_status':((svc.get('status') or {}).get('deployment') or {}).get('status'),'containers':container_ids}; persist()
-
-          # Fresh public exact-head bootstrap. No direct origin mutation probes.
-          deadline=time.time()+600; live={}
-          while time.time()<deadline:
-              live={}; ok=True
-              for path,key in [('/healthz','healthz'),('/readyz','readyz'),('/api/runtime/provenance','provenance')]:
-                  st,obj,dig=get_public(path); live[key]={'http':st,'body':obj,'sha256':dig}; ok=ok and st==200
-              p=(live.get('provenance') or {}).get('body') or {}
-              if ok and p.get('source_commit')==TARGET and p.get('source_tree')==TREE and p.get('build_digest')==BUILD_DIGEST: break
-              time.sleep(10)
-          rec['live_bootstrap']=live; p=(live.get('provenance') or {}).get('body') or {}
-          if (live.get('healthz') or {}).get('http')!=200 or (live.get('readyz') or {}).get('http')!=200: raise RuntimeError('LIVE_HEALTH_NOT_READY')
-          if p.get('source_commit')!=TARGET or p.get('source_tree')!=TREE or p.get('build_digest')!=BUILD_DIGEST: raise RuntimeError('LIVE_PROVENANCE_IDENTITY_MISMATCH')
-          rec['origin_exact_head_deploy']='PASS'; rec['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); persist()
-          print('ORIGIN_EXACT_HEAD_DEPLOY=PASS'); print('BUILD_ID='+str(build_id)); print('DEPLOYED_SHA='+str(rec['deployment']['deployed_sha'])); print('PROVENANCE_EXACT='+str(bool(p.get('exact'))).lower()); print('IMAGE_DIGEST='+str(p.get('image_digest')))
+          if not final or not final.get('concluded') or not final.get('success'): raise RuntimeError('BUNDLE_BUILD_FAILED')
+          reg=final.get('registry') if isinstance(final.get('registry'),dict) else {}
+          rec['build']={'id':bid,'branch':final.get('branch'),'pull_request_id':final.get('pullRequestId'),'sha':final.get('sha'),'status':final.get('status'),'success':final.get('success'),'registry_uri':reg.get('uri'),'registry_digest':reg.get('digest'),'created_at':final.get('createdAt'),'concluded_at':final.get('buildConcludedAt')}; rec['completed_at']=datetime.datetime.now(datetime.timezone.utc).isoformat(); save()
+          print('BUNDLE_BUILD=PASS'); print('BUILD_ID='+str(bid)); print('BUILD_BRANCH='+str(final.get('branch'))); print('BUILD_SHA='+str(final.get('sha'))); print('REGISTRY_URI='+str(reg.get('uri'))); print('REGISTRY_DIGEST='+str(reg.get('digest')))
           PY
           (cd order070-origin-evidence && sha256sum -c SHA256SUMS)
-
-      - name: Upload origin deployment evidence
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: order070-origin-exact-202f154a71915eb4b1e3cdf0e1eec8005760a028
+          name: order070-bundle-build-${{ env.TARGET_SHA }}
           path: order070-origin-evidence/
           if-no-files-found: warn
           retention-days: 30
