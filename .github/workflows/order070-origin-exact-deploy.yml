@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Final Cloudflare remote reconciliation and seal
+      - name: Final edge proof reconciliation and seal
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
           CANDIDATE_DIR: candidate
@@ -53,7 +53,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r5_remote_dev_reconcile_seal.py
+          python ops/.github/scripts/order070_r5_public_get_final.py
           (cd order070-r5-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload final R5 evidence
         if: always()
