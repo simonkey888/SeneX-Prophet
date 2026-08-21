@@ -1,4 +1,4 @@
-name: ORDER070 R4 Northflank Auth Diagnostic
+name: ORDER070 R5 Repository Token Auth Probe
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
@@ -7,38 +7,37 @@ permissions:
   contents: read
   statuses: write
 jobs:
-  diagnose:
+  probe:
     runs-on: ubuntu-latest
     environment: northflank-readonly-audit
     steps:
-      - name: Compare maintenance and readonly authentication GET-only
+      - name: Bounded GET auth probe repository-scoped token
         env:
           GH_TOKEN: ${{ github.token }}
-          MAINT: ${{ secrets.NORTHFLANK_SENEX_MAINTENANCE_TOKEN }}
-          READONLY: ${{ secrets.NORTHFLANK_API_TOKEN }}
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
         shell: bash
         run: |
           set +x
           set -euo pipefail
-          test -n "${MAINT:-}"
-          test -n "${READONLY:-}"
-          echo "::add-mask::${MAINT}"
-          echo "::add-mask::${READONLY}"
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
           python - <<'PY'
           import json,os,urllib.error,urllib.request
           api='https://api.northflank.com/v1'; repo=os.environ['GITHUB_REPOSITORY']; gh=os.environ['GH_TOKEN']; target='60335437d149af4374286422187867eb7dac3878'
-          def probe(token,path):
-              req=urllib.request.Request(api+path,headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-r4-authdiag/1'},method='GET')
+          def probe(path):
+              req=urllib.request.Request(api+path,headers={'Authorization':f"Bearer {os.environ['NORTHFLANK_API_TOKEN']}",'Accept':'application/json','User-Agent':'senex-order070-r5-authprobe/1'},method='GET')
               try:
                   with urllib.request.urlopen(req,timeout=30) as r:return r.status
               except urllib.error.HTTPError as e:return e.code
-          m1=probe(os.environ['MAINT'],'/projects/seneciobot'); m2=probe(os.environ['MAINT'],'/teams/6a32fd953f19ee4079ccf395/projects/seneciobot')
-          r1=probe(os.environ['READONLY'],'/projects/seneciobot'); r2=probe(os.environ['READONLY'],'/projects/seneciobot/services/senecio-h011/deployment')
-          state='failure' if m1 not in range(200,300) and m2 not in range(200,300) else 'success'
-          desc=f'maint_project={m1} maint_team={m2} readonly_project={r1} readonly_deploy={r2}'[:140]
-          h={'Authorization':f'Bearer {gh}','Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-r4-authdiag/1'}
-          payload={'state':state,'context':'ORDER070/northflank-auth-diagnostic','description':desc,'target_url':f'https://github.com/{repo}/commit/{target}'}
+          project=probe('/projects/seneciobot')
+          deployment=probe('/projects/seneciobot/services/senecio-h011/deployment')
+          ok=200<=project<300 and 200<=deployment<300
+          state='success' if ok else 'failure'; desc=f'project={project} deployment={deployment}'
+          h={'Authorization':f'Bearer {gh}','Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-r5-authprobe/1'}
+          payload={'state':state,'context':'ORDER070/r5-repository-token-probe','description':desc,'target_url':f'https://github.com/{repo}/commit/{target}'}
           req=urllib.request.Request(f'https://api.github.com/repos/{repo}/statuses/{target}',data=json.dumps(payload).encode(),headers=h,method='POST')
           with urllib.request.urlopen(req,timeout=30) as r: print('STATUS_HTTP='+str(r.status))
+          print('REPOSITORY_TOKEN_AUTH_PROBE='+('PASS' if ok else 'FAIL'))
           print(desc)
+          if not ok: raise SystemExit(1)
           PY
