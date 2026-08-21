@@ -2,7 +2,9 @@ name: ORDER070 Origin Exact Reversible Deploy
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
-    paths: [.github/workflows/order070-origin-exact-deploy.yml]
+    paths:
+      - .github/workflows/order070-origin-exact-deploy.yml
+      - .github/scripts/order070_origin_deploy.py
 permissions:
   contents: read
 jobs:
