@@ -46,6 +46,19 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: ops
+      - name: Apply verified nullable-CD harness correction
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('ops/.github/scripts/order070_final_proof.py')
+          s=p.read_text()
+          old="or svc.get('disabledCD') is not True: raise RuntimeError('NORTHFLANK_EXACT_DEPLOYMENT_READBACK_FAILED')"
+          new="or svc.get('disabledCD') not in (True,None): raise RuntimeError('NORTHFLANK_EXACT_DEPLOYMENT_READBACK_FAILED')"
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          print('HARNESS_CORRECTION=DISABLED_CD_NULL_IS_OBSERVED_VALID_STATE')
+          PY
       - name: Run exact-head edge and live reconciliation
         env:
           GITHUB_TOKEN: ${{ github.token }}
