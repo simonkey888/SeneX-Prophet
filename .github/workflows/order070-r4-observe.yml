@@ -1,4 +1,4 @@
-name: ORDER070 R5 Dual Credential Blocker Seal
+name: ORDER070 R5 Repository Scoped Northflank Probe
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
@@ -6,75 +6,35 @@ on:
 permissions:
   contents: read
 jobs:
-  seal:
+  probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Create sealed blocker evidence
+      - name: Bounded GET auth probe using repository-scoped secret only
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
         shell: bash
         run: |
+          set +x
           set -euo pipefail
-          mkdir -p order070-r5-blocker
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
           python - <<'PY'
-          import datetime,hashlib,json
-          from pathlib import Path
-          out=Path('order070-r5-blocker')
-          rec={
-            'order':'ORDER-070-R5',
-            'authority_comment':5369732950,
-            'status':'BLOCKED_REAL',
-            'blocker_class':'EXTERNAL_NORTHFLANK_AUTHORIZATION_REJECTED_ALL_AUTHORIZED_CREDENTIAL_PATHS',
-            'candidate':{
-              'head':'483b389a83610992800181c0a21b5a337009f7b4',
-              'tree':'0494d3d4066f94a9dd055d81c07a3633a243ec2f',
-              'changed':False,
-              'new_ci':False,
-              'new_prepush':False,
-              'merge':False
-            },
-            'credential_paths':[
-              {
-                'name':'NORTHFLANK_SENEX_MAINTENANCE_TOKEN',
-                'run_id':32476789618,
-                'job_id':96754686543,
-                'secret_present':True,
-                'secret_value_observed':False,
-                'probes':[
-                  {'method':'GET','path':'/v1/projects/seneciobot','http':401},
-                  {'method':'GET','path':'/v1/teams/6a32fd953f19ee4079ccf395/projects/seneciobot','http':401}
-                ],
-                'mutation_attempted':False
-              },
-              {
-                'name':'NORTHFLANK_API_TOKEN',
-                'run_id':32482199575,
-                'job_id':96770807824,
-                'secret_present':True,
-                'secret_value_observed':False,
-                'probes':[
-                  {'method':'GET','path':'/v1/projects/seneciobot','http':401},
-                  {'method':'GET','path':'/v1/projects/seneciobot/services/senecio-h011/deployment','http':401}
-                ],
-                'mutation_attempted':False
-              }
-            ],
-            'northflank_mutations':0,
-            'build_started':False,
-            'deploy_started':False,
-            'oci_bind_started':False,
-            'cloudflare_final_started':False,
-            'live_e2e_started':False,
-            'sealed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()
-          }
-          raw=(json.dumps(rec,sort_keys=True,indent=2)+'\n').encode()
-          (out/'BLOCKER.json').write_bytes(raw)
-          digest=hashlib.sha256(raw).hexdigest()
-          (out/'MANIFEST.sha256').write_text(digest+'  BLOCKER.json\n')
-          print('BLOCKER_SHA256='+digest)
+          import json,os,urllib.error,urllib.request
+          api='https://api.northflank.com/v1'
+          token=os.environ['NORTHFLANK_API_TOKEN']
+          def probe(path):
+              req=urllib.request.Request(api+path,headers={'Authorization':f'Bearer {token}','Accept':'application/json','User-Agent':'senex-order070-r5-repo-scope/1'},method='GET')
+              try:
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      raw=r.read(); return r.status,len(raw)
+              except urllib.error.HTTPError as e:
+                  raw=e.read(); return e.code,len(raw)
+          p=probe('/projects/seneciobot')
+          d=probe('/projects/seneciobot/services/senecio-h011/deployment')
+          print('REPOSITORY_SECRET_SOURCE=NO_ENVIRONMENT_SHADOW')
+          print(f'PROJECT_HTTP={p[0]}')
+          print(f'DEPLOYMENT_HTTP={d[0]}')
+          ok=200<=p[0]<300 and 200<=d[0]<300
+          print('AUTH_PROBE='+('PASS' if ok else 'FAIL'))
+          if not ok: raise SystemExit(1)
           PY
-          (cd order070-r5-blocker && sha256sum -c MANIFEST.sha256)
-      - name: Upload sealed blocker artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: order070-r5-blocked-real-dual-credential
-          path: order070-r5-blocker/
-          retention-days: 30
