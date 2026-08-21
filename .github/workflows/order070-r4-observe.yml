@@ -1,0 +1,32 @@
+name: ORDER070 R4 Observe Origin Deploy
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-r4-observe.yml]
+permissions:
+  actions: read
+  contents: read
+  issues: write
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report target deployment run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 8
+          python - <<'PY'
+          import json,os,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; target='60335437d149af4374286422187867eb7dac3878'
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','User-Agent':'senex-order070-r4-observer/1'}
+          u=f'https://api.github.com/repos/{repo}/actions/runs?head_sha={target}&per_page=50'
+          with urllib.request.urlopen(urllib.request.Request(u,headers=h),timeout=30) as r:d=json.load(r)
+          rows=[x for x in d.get('workflow_runs',[]) if x.get('name')=='ORDER070 R4 Origin Exact Deploy And OCI Bind']
+          x=rows[0] if rows else {}
+          body='```text\nORDER070_R4_ORIGIN_OBSERVER=YES\nOPS_SHA='+target+'\nRUN_ID='+str(x.get('id','NONE'))+'\nSTATUS='+str(x.get('status','NONE'))+'\nCONCLUSION='+str(x.get('conclusion','NONE'))+'\n```'
+          req=urllib.request.Request(f'https://api.github.com/repos/{repo}/issues/67/comments',data=json.dumps({'body':body}).encode(),headers={**h,'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('COMMENT_HTTP='+str(r.status))
+          PY
