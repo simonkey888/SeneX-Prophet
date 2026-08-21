@@ -52,23 +52,256 @@ class PublicBoundaryTests(unittest.TestCase):
 
 
 class AuthoritySnapshotTests(unittest.TestCase):
-    def test_atomic_snapshot_builds_authority_once_and_reuses_id(self):
-        rows=[{"id":1,"symbol":"BTCUSDT","horizon":"1h","outcome":"WIN","ts":"2026-01-01T00:00:00Z","audit":{} }]
-        calls={"history":0,"count":0,"gate":0}
-        async def history(symbol=None): calls["history"]+=1; return rows
-        async def count(): calls["count"]+=1; return 1414
-        def gate(score): calls["gate"]+=1; return {"trade_mode":"PAPER","live_capital_locked":True,"orders_enabled":False,"effective_gate":"LOCKED","unlocked":False}
-        store=AuthoritySnapshotStore(ttl_s=60)
+    ROW = {"id": 1, "symbol": "BTCUSDT", "horizon": "1h", "outcome": "WIN", "ts": "2026-01-01T00:00:00Z", "audit": {}}
+    PROVENANCE = {
+        "contract": "senex-runtime-provenance-v1",
+        "source_commit": "a" * 40,
+        "source_tree": "b" * 40,
+        "image_digest": "sha256:" + "c" * 64,
+        "build_digest": "sha256:" + "d" * 64,
+        "computed_build_digest": "sha256:" + "d" * 64,
+        "checks": {
+            "commit_exact": True,
+            "tree_exact": True,
+            "image_digest_exact": True,
+            "build_digest_exact": True,
+            "build_digest_matches_runtime_files": True,
+        },
+        "exact": True,
+    }
+
+    @staticmethod
+    def gate(score):
+        return {
+            "trade_mode": "PAPER",
+            "live_capital_locked": True,
+            "orders_enabled": False,
+            "effective_gate": "LOCKED_BY_PAPER_POLICY",
+            "unlocked": False,
+            "verified": int(score.get("independent_1h_rows") or 0),
+        }
+
+    @staticmethod
+    def decode(payload):
+        if isinstance(payload, dict):
+            return payload
+        return json.loads(payload.body.decode())
+
+    def test_r4_t1_concurrent_readiness_and_authority_surfaces_share_one_generation(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+        calls = {"history": 0, "count": 0}
+
+        async def history(symbol=None):
+            calls["history"] += 1
+            return [dict(self.ROW)]
+
+        async def count():
+            calls["count"] += 1
+            return 1414
+
         async def run():
-            a=await store.get("BTCUSDT",live_gate_builder=gate)
-            b=await store.get("BTCUSDT",live_gate_builder=gate)
-            return a,b
-        with mock.patch.object(supabase_client,"fetch_authority_history",side_effect=history), mock.patch.object(supabase_client,"count_predictions_exact",side_effect=count):
-            a,b=asyncio.run(run())
-        self.assertEqual(a.snapshot_id,b.snapshot_id)
-        self.assertEqual(a.score["authority_snapshot_id"],a.live_gate["authority_snapshot_id"])
-        self.assertEqual(a.exact_total_predictions,1414)
-        self.assertEqual(calls,{"history":1,"count":1,"gate":1})
+            await store.get("BTCUSDT", live_gate_builder=self.gate)
+            with mock.patch.object(main_real, "authority_store", store), \
+                 mock.patch.object(main_real, "_live_gate_from_score", side_effect=self.gate), \
+                 mock.patch.object(main_real.oracle_runner, "get_state", return_value={"started_at": "2026-08-21T00:00:00Z"}):
+                return await asyncio.gather(
+                    main_real.readyz("BTCUSDT"),
+                    main_real.public_authority_snapshot("BTCUSDT"),
+                    main_real.public_authoritative_oracle_score("BTCUSDT"),
+                    main_real.public_oracle_state("BTCUSDT"),
+                    main_real.public_live_gate("BTCUSDT"),
+                )
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=history), \
+             mock.patch.object(supabase_client, "count_predictions_exact", side_effect=count), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            ready, snapshot, score, state, gate = asyncio.run(run())
+
+        ready = self.decode(ready)
+        ids = {
+            ready["authority_snapshot_id"],
+            snapshot["snapshot_id"],
+            score["authority_snapshot_id"],
+            state["authority_snapshot_id"],
+            gate["authority_snapshot_id"],
+        }
+        generations = {
+            ready["generation"],
+            snapshot["generation"],
+            score["authority_generation"],
+            state["authority_generation"],
+            gate["authority_generation"],
+        }
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(generations, {1})
+        self.assertEqual(ready["status"], "ready")
+        self.assertEqual(calls, {"history": 1, "count": 1})
+
+    def test_r4_t2_readiness_is_observational_and_does_not_rotate_generation(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+        calls = {"history": 0, "count": 0}
+
+        async def history(symbol=None):
+            calls["history"] += 1
+            return [dict(self.ROW)]
+
+        async def count():
+            calls["count"] += 1
+            return 1414
+
+        async def run():
+            snap = await store.get("BTCUSDT", live_gate_builder=self.gate)
+            with mock.patch.object(main_real, "authority_store", store), \
+                 mock.patch.object(main_real.oracle_runner, "get_state", return_value={"started_at": "2026-08-21T00:00:00Z"}):
+                first = self.decode(await main_real.readyz("BTCUSDT"))
+                second = self.decode(await main_real.readyz("BTCUSDT"))
+            return snap, first, second
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=history), \
+             mock.patch.object(supabase_client, "count_predictions_exact", side_effect=count), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            snap, first, second = asyncio.run(run())
+
+        self.assertEqual(first["authority_snapshot_id"], snap.snapshot_id)
+        self.assertEqual(second["authority_snapshot_id"], snap.snapshot_id)
+        self.assertEqual(first["generation"], second["generation"])
+        self.assertEqual(calls, {"history": 1, "count": 1})
+
+    def test_r4_t3_identical_complete_refresh_keeps_content_identity_and_generation(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+
+        async def run():
+            first = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            second = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            return first, second
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", return_value=[dict(self.ROW)]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", return_value=1414), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            first, second = asyncio.run(run())
+
+        self.assertIs(first, second)
+        self.assertEqual(first.snapshot_id, second.snapshot_id)
+        self.assertEqual(first.canonical_sha256, second.canonical_sha256)
+        self.assertEqual(first.generation, second.generation)
+
+    def test_r4_t4_canonical_authority_change_publishes_one_new_atomic_generation(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+        changed = dict(self.ROW, id=2, ts="2026-01-01T01:00:00Z", outcome="LOSS")
+
+        async def run():
+            first = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            second = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            return first, second
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=[[dict(self.ROW)], [dict(self.ROW), changed]]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", side_effect=[1414, 1415]), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            first, second = asyncio.run(run())
+
+        self.assertNotEqual(first.snapshot_id, second.snapshot_id)
+        self.assertNotEqual(first.canonical_sha256, second.canonical_sha256)
+        self.assertEqual((first.generation, second.generation), (1, 2))
+        self.assertEqual(second.score["authority_snapshot_id"], second.live_gate["authority_snapshot_id"])
+        self.assertEqual(second.score["authority_generation"], 2)
+        self.assertEqual(second.live_gate["authority_generation"], 2)
+
+    def test_r4_t5_history_failure_retains_last_good_and_readiness_fails(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+
+        async def run():
+            good = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            retained = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            with mock.patch.object(main_real, "authority_store", store), \
+                 mock.patch.object(main_real.oracle_runner, "get_state", return_value={"started_at": "2026-08-21T00:00:00Z"}):
+                ready = self.decode(await main_real.readyz("BTCUSDT"))
+            return good, retained, store.refresh_status("BTCUSDT"), ready
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=[[dict(self.ROW)], RuntimeError("history down")]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", side_effect=[1414, 1414]), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            good, retained, status, ready = asyncio.run(run())
+
+        self.assertIs(good, retained)
+        self.assertIn("AUTHORITY_HISTORY:RuntimeError", status["last_refresh_error"])
+        self.assertEqual(ready["status"], "not_ready")
+        self.assertFalse(ready["checks"]["last_refresh_ok"])
+        self.assertEqual(ready["authority_snapshot_id"], good.snapshot_id)
+
+    def test_r4_t6_exact_count_failure_retains_last_good_and_readiness_fails(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+
+        async def run():
+            good = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            retained = await store.get("BTCUSDT", live_gate_builder=self.gate, force=True)
+            with mock.patch.object(main_real, "authority_store", store), \
+                 mock.patch.object(main_real.oracle_runner, "get_state", return_value={"started_at": "2026-08-21T00:00:00Z"}):
+                ready = self.decode(await main_real.readyz("BTCUSDT"))
+            return good, retained, store.refresh_status("BTCUSDT"), ready
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=[[dict(self.ROW)], [dict(self.ROW)]]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", side_effect=[1414, RuntimeError("count down")]), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            good, retained, status, ready = asyncio.run(run())
+
+        self.assertIs(good, retained)
+        self.assertIn("EXACT_COUNT:RuntimeError", status["last_refresh_error"])
+        self.assertEqual(ready["status"], "not_ready")
+        self.assertFalse(ready["checks"]["last_refresh_ok"])
+        self.assertEqual(ready["authority_snapshot_id"], good.snapshot_id)
+
+    def test_r4_t7_first_refresh_failure_creates_no_valid_generation(self):
+        from backend.authority_snapshot import AuthoritySnapshotRefreshError
+
+        store = AuthoritySnapshotStore(ttl_s=60)
+        with mock.patch.object(supabase_client, "fetch_authority_history", side_effect=RuntimeError("history down")), \
+             mock.patch.object(supabase_client, "count_predictions_exact", return_value=1414):
+            with self.assertRaises(AuthoritySnapshotRefreshError):
+                asyncio.run(store.get("BTCUSDT", live_gate_builder=self.gate, force=True))
+        snap, status = store.observe("BTCUSDT")
+        self.assertIsNone(snap)
+        self.assertTrue(status["snapshot_stale"])
+        self.assertIsNotNone(status["last_refresh_error"])
+
+    def test_r4_t8_capture_time_change_alone_does_not_change_canonical_identity(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+
+        async def run():
+            first = await store._capture_complete("BTCUSDT", self.gate)
+            second = await store._capture_complete("BTCUSDT", self.gate)
+            return first, second
+
+        with mock.patch.object(supabase_client, "fetch_authority_history", return_value=[dict(self.ROW)]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", return_value=1414), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)), \
+             mock.patch("backend.authority_snapshot._utcnow", side_effect=["2026-08-21T00:00:00+00:00", "2026-08-21T00:01:00+00:00"]):
+            first, second = asyncio.run(run())
+
+        self.assertNotEqual(first.captured_at, second.captured_at)
+        self.assertEqual(first.canonical_sha256, second.canonical_sha256)
+        self.assertEqual(first.canonical_hex, second.canonical_hex)
+
+    def test_r4_t9_generation_canonical_and_freshness_fields_are_exposed(self):
+        store = AuthoritySnapshotStore(ttl_s=60)
+        with mock.patch.object(supabase_client, "fetch_authority_history", return_value=[dict(self.ROW)]), \
+             mock.patch.object(supabase_client, "count_predictions_exact", return_value=1414), \
+             mock.patch("backend.authority_snapshot.runtime_provenance", return_value=dict(self.PROVENANCE)):
+            snap = asyncio.run(store.get("BTCUSDT", live_gate_builder=self.gate, force=True))
+        payload = snap.to_dict(store.refresh_status("BTCUSDT"))
+        required = {
+            "snapshot_id", "generation", "symbol", "captured_at", "canonical_sha256",
+            "authority_history_complete", "authority_history_rows", "exact_total_predictions",
+            "exact_count_complete", "last_cursor_or_equivalent", "failure_reason", "score",
+            "live_gate", "provenance", "last_refresh_attempt_at", "last_refresh_success_at",
+            "last_refresh_error", "snapshot_age_s", "snapshot_stale",
+        }
+        self.assertTrue(required <= set(payload))
+        self.assertEqual(payload["generation"], 1)
+        self.assertTrue(payload["canonical_sha256"].startswith("sha256:"))
+        self.assertFalse(payload["snapshot_stale"])
+        self.assertIsNone(payload["last_refresh_error"])
+        self.assertEqual(payload["score"]["authority_snapshot_id"], payload["snapshot_id"])
+        self.assertEqual(payload["live_gate"]["authority_snapshot_id"], payload["snapshot_id"])
 
     def test_exact_count_uses_content_range_not_response_length(self):
         class Resp:

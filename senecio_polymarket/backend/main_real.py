@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
@@ -76,13 +76,29 @@ async def real_lifespan(public_app: FastAPI):
     quarantine_legacy_outcome_backfill()
     authority_store.clear()
     oracle_runner.start()
+
+    # R4: establish and continuously revalidate authority during controlled
+    # runtime lifecycle. Public readiness remains observational and never
+    # triggers a refresh itself. Failed refreshes retain the immutable last-good
+    # generation and are surfaced through refresh status.
+    try:
+        await _snapshot("BTCUSDT", force=True)
+    except Exception as exc:
+        log.warning("initial authority snapshot unavailable: %s", exc)
+    authority_refresh_task = asyncio.create_task(_authority_refresh_loop("BTCUSDT"))
+
     log.info("SENEX public read-only runtime up")
-    yield
-    await oracle_runner.stop()
-    await asyncio.gather(_kalshi.stop(), _boros.stop(), _poly.stop())
-    if demo:
-        await legacy._scheduler.stop()
-    await legacy._bus.close()
+    try:
+        yield
+    finally:
+        authority_refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await authority_refresh_task
+        await oracle_runner.stop()
+        await asyncio.gather(_kalshi.stop(), _boros.stop(), _poly.stop())
+        if demo:
+            await legacy._scheduler.stop()
+        await legacy._bus.close()
 
 
 def _build_public_app() -> FastAPI:
@@ -143,6 +159,19 @@ def _live_gate_from_score(score: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+async def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:
+    interval = authority_store.refresh_interval_s()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await _snapshot(symbol, force=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The store records failure separately and retains last-known-good.
+            log.warning("authority snapshot refresh failed for %s: %s", symbol, exc)
+
+
 async def _snapshot(symbol: str = "BTCUSDT", *, force: bool = False):
     return await authority_store.get(
         normalize_symbol(symbol),
@@ -183,6 +212,8 @@ async def public_oracle_state(symbol: str = Query(default="BTCUSDT")):
         **state,
         "last_prediction": state.get("last_prediction_result"),
         "authority_snapshot_id": snap.snapshot_id,
+        "authority_generation": snap.generation,
+        "authority_canonical_sha256": snap.canonical_sha256,
         "authority": {
             "symbol": snap.symbol,
             "independent_1h_rows": snap.score.get("independent_1h_rows"),
@@ -199,7 +230,8 @@ async def public_oracle_state(symbol: str = Query(default="BTCUSDT")):
 
 @app.get("/api/authority/snapshot")
 async def public_authority_snapshot(symbol: str = Query(default="BTCUSDT")):
-    return (await _snapshot(symbol)).to_dict()
+    snap = await _snapshot(symbol)
+    return snap.to_dict(authority_store.refresh_status(snap.symbol))
 
 
 @app.get("/api/runtime/provenance")
@@ -227,12 +259,26 @@ async def compatibility_health():
 
 @app.get("/readyz")
 async def readyz(symbol: str = Query(default="BTCUSDT")):
-    """Fail-closed readiness: authority, exact count and provenance must all be exact."""
+    """Observational fail-closed readiness over the current shared generation."""
+    normalized = normalize_symbol(symbol)
     try:
-        snap = await _snapshot(symbol, force=True)
+        snap, refresh = authority_store.observe(normalized)
     except Exception as exc:
         return JSONResponse(
             {"status": "not_ready", "probe": "readiness", "reason": type(exc).__name__},
+            status_code=503,
+        )
+    if snap is None:
+        return JSONResponse(
+            {
+                "status": "not_ready",
+                "probe": "readiness",
+                "reason": "NO_VALID_AUTHORITY_GENERATION",
+                "authority_snapshot_id": None,
+                "generation": None,
+                "canonical_sha256": None,
+                **refresh,
+            },
             status_code=503,
         )
     runner = oracle_runner.get_state()
@@ -243,6 +289,8 @@ async def readyz(symbol: str = Query(default="BTCUSDT")):
         "oracle_started": bool(runner.get("started_at")),
         "paper_lock": snap.live_gate.get("trade_mode") == "PAPER" and bool(snap.live_gate.get("live_capital_locked")),
         "orders_disabled": snap.live_gate.get("orders_enabled", False) is False,
+        "snapshot_fresh": refresh.get("snapshot_stale") is False,
+        "last_refresh_ok": refresh.get("last_refresh_error") is None,
     }
     ready = all(checks.values())
     payload = {
@@ -250,7 +298,10 @@ async def readyz(symbol: str = Query(default="BTCUSDT")):
         "probe": "readiness",
         "checks": checks,
         "authority_snapshot_id": snap.snapshot_id,
+        "generation": snap.generation,
+        "canonical_sha256": snap.canonical_sha256,
         "provenance": snap.provenance,
+        **refresh,
     }
     return payload if ready else JSONResponse(payload, status_code=503)
 
@@ -266,6 +317,8 @@ async def market_context(symbol: str = Query(default="BTCUSDT")):
         "boros": _boros.snapshot(),
         "oracle": oracle_runner.get_state(),
         "authority_snapshot_id": snap.snapshot_id,
+        "authority_generation": snap.generation,
+        "authority_canonical_sha256": snap.canonical_sha256,
         "authority": {
             "symbol": snap.symbol,
             "authority_1h": snap.score.get("authority_1h"),
