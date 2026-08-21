@@ -1,0 +1,87 @@
+name: ORDER070 Final Exact Proof
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths:
+      - .github/workflows/order070-final-exact-proof.yml
+      - .github/scripts/order070_final_proof.py
+permissions:
+  contents: read
+  statuses: write
+concurrency:
+  group: order070-final-exact-proof
+  cancel-in-progress: true
+jobs:
+  final-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Publish run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          OPS_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set +x
+          python - <<'PY'
+          import json,os,urllib.request
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['OPS_SHA']}"
+          payload={'state':'pending','context':'ORDER070/final-exact-proof','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-final-status/1'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('RUN_ID_STATUS_HTTP='+str(r.status))
+          PY
+      - name: Checkout exact ORDER-070 candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 202f154a71915eb4b1e3cdf0e1eec8005760a028
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Checkout ops harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ops/senex-zero-cost-audit-20260809
+          fetch-depth: 1
+          persist-credentials: false
+          path: ops
+      - name: Run exact-head edge and live reconciliation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python ops/.github/scripts/order070_final_proof.py candidate | tee /tmp/order070-final-summary.txt
+          (cd candidate/order070-final-evidence && sha256sum -c MANIFEST.sha256)
+      - name: Upload sealed final evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-final-202f154a71915eb4b1e3cdf0e1eec8005760a028
+          path: candidate/order070-final-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish final status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          OPS_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set +x
+          python - <<'PY'
+          import json,os,urllib.request
+          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
+          url=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['OPS_SHA']}"
+          payload={'state':state,'context':'ORDER070/final-exact-proof','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-order070-final-status/1'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('FINAL_STATUS_HTTP='+str(r.status))
+          PY
