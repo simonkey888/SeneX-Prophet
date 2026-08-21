@@ -5,14 +5,30 @@ on:
     paths: [.github/workflows/order070-origin-exact-deploy.yml]
 permissions:
   contents: read
+  statuses: write
 concurrency:
   group: order070-r5-final-edge-seal
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   finalize:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
+      - name: Publish run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':'pending','context':'ORDER070/R5-final-edge-seal','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r5-status/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
       - name: Checkout exact candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -47,3 +63,21 @@ jobs:
           path: order070-r5-final-evidence/
           if-no-files-found: warn
           retention-days: 30
+      - name: Publish terminal status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':state,'context':'ORDER070/R5-final-edge-seal','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r5-status/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
