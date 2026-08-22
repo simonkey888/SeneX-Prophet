@@ -38,10 +38,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: candidate
-      - name: Checkout ops runner
+      - name: Checkout exact corrected ops wrapper
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.sha }}
+          ref: 1cf56060b3dbbf255951a3489e26b0307ee0259a
           fetch-depth: 1
           persist-credentials: false
           path: ops
@@ -55,7 +55,7 @@ jobs:
           test "$(git -C candidate rev-parse HEAD)" = b438c0d6dc156d4183929366963df988d97a5283
           test "$(git -C candidate rev-parse HEAD^{tree})" = e1e4b002aa90402517edb90412b755bc8529327e
           test -z "$(git -C candidate status --porcelain)"
-          test "$(git -C ops rev-parse HEAD^)" = 1cf56060b3dbbf255951a3489e26b0307ee0259a
+          test "$(git -C ops rev-parse HEAD)" = "$OPS_WRAPPER_REV"
           python -m pip install --quiet --require-hashes -r candidate/senecio_polymarket/requirements.lock
           python -m unittest -v candidate/senecio_polymarket/tests/test_order_070_r6_public_boundary.py
           /usr/bin/time -f '%M' -o /tmp/rss_kb python -c 'import backend.main_real'
