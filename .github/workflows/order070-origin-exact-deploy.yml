@@ -62,7 +62,12 @@ jobs:
           ! grep -q "method='PATCH'" ops/.github/scripts/order070_r7_stability_only.py
           ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_stability_only.py
           ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_stability_only.py
-          python -m py_compile ops/.github/scripts/order070_r7_stability_only.py
+          ! grep -q "method='POST'" ops/.github/scripts/order070_r7_stability_resume.py
+          ! grep -q "method='PATCH'" ops/.github/scripts/order070_r7_stability_resume.py
+          ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_stability_resume.py
+          ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_stability_resume.py
+          grep -q "state_telemetry_503" ops/.github/scripts/order070_r7_stability_resume.py
+          python -m py_compile ops/.github/scripts/order070_r7_stability_only.py ops/.github/scripts/order070_r7_stability_resume.py
       - name: Observe and seal 30 minute stability
         shell: bash
         run: |
@@ -70,7 +75,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r7_stability_only.py
+          python ops/.github/scripts/order070_r7_stability_resume.py
           (cd order070-r7-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload terminal R7 evidence
         if: always()
