@@ -42,16 +42,22 @@ jobs:
             senecio_polymarket/backend/oracle_runner.py \
             senecio_polymarket/backend/supabase_client.py
 
-      - name: Single-settlement-authority invariant
+      - name: Single-settlement-authority and canonical-build invariant
         run: |
           ! grep -q 'oracle_verifier.py' senecio_polymarket/start_single_authority.sh
-          grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
-          grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
+          test ! -e senecio_polymarket/Dockerfile
+          grep -q 'start_single_authority.sh /start.sh' Dockerfile
+          grep -q 'start_single_authority.sh /app/start.sh' Dockerfile
+          grep -q '^USER senex:senex$' Dockerfile
+          ! grep -q 'chmod -R 777' Dockerfile
+          ! grep -q 'mv /app/oracle/predict_only.py' Dockerfile
+          ! grep -q 'cp /app/oracle_runtime/predict_only.py' Dockerfile
+          grep -q 'from oracle_runtime.predict_only import' senecio_polymarket/backend/oracle_runner.py
           grep -q 'WINDOW_1H_S' senecio_polymarket/backend/oracle_runner.py
           grep -q 'update_outcome_dual' senecio_polymarket/backend/oracle_runner.py
           ! test -e senecio_polymarket/oracle/oracle_verifier.py
 
       - name: Legacy launcher isolation invariant
         run: |
-          ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
+          ! grep -q 'oracle_verifier.py' Dockerfile
           ! test -e senecio_polymarket/oracle/oracle_verifier.py

@@ -211,21 +211,42 @@ async def fetch_authority_history(
     )
 
 
-async def count_predictions() -> int:
-    """Get total prediction count by fetching all IDs (works around content-range header issues)."""
+class ExactCountUnavailableError(RuntimeError):
+    """Raised when PostgREST cannot prove the exact row count."""
+
+
+async def count_predictions_exact() -> int:
+    """Return the exact visible row count via PostgREST ``count=exact``.
+
+    Fetching a bounded list and calling ``len`` is explicitly forbidden here:
+    PostgREST may cap response rows independently of the requested limit.
+    """
+    c = _get_client()
     try:
-        c = _get_client()
-        r = await c.get(f"/{SUPABASE_TABLE}", params={"select": "id", "limit": "10000"})
-        if r.status_code == 200:
-            data = r.json()
-            return len(data) if isinstance(data, list) else 0
-        range_header = r.headers.get("content-range", "")
-        if "/" in range_header:
-            total = range_header.split("/")[-1]
-            return int(total) if total.isdigit() else 0
-        return 0
+        r = await c.get(
+            f"/{SUPABASE_TABLE}",
+            params={"select": "id", "limit": "1"},
+            headers={"Prefer": "count=exact", "Range": "0-0"},
+        )
+    except Exception as exc:
+        raise ExactCountUnavailableError(f"EXACT_COUNT_REQUEST_ERROR:{type(exc).__name__}") from exc
+    if r.status_code not in (200, 206):
+        raise ExactCountUnavailableError(f"EXACT_COUNT_HTTP_{r.status_code}")
+    range_header = str(r.headers.get("content-range", ""))
+    if "/" not in range_header:
+        raise ExactCountUnavailableError("EXACT_COUNT_CONTENT_RANGE_MISSING")
+    total = range_header.rsplit("/", 1)[-1].strip()
+    if not total.isdigit():
+        raise ExactCountUnavailableError("EXACT_COUNT_CONTENT_RANGE_UNKNOWN")
+    return int(total)
+
+
+async def count_predictions() -> int:
+    """Compatibility alias with exact semantics; failures remain explicit as 0 only here."""
+    try:
+        return await count_predictions_exact()
     except Exception as e:
-        log.debug("supabase count error: %s", e)
+        log.debug("supabase exact count unavailable: %s", e)
         return 0
 
 

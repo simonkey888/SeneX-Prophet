@@ -1,8 +1,8 @@
 """Runtime bridge for the production ``predict_only`` module.
 
-The Docker image preserves the original predictor as ``predict_only_base.py``
-and installs this module at ``/app/oracle/predict_only.py``. Every original
-function is re-exported unchanged except ``run_prediction``.
+The canonical runtime imports this bridge explicitly as
+``oracle_runtime.predict_only``. The frozen original predictor remains at
+``/app/oracle/predict_only.py`` and is loaded read-only; no build-time overlay is used.
 
 Production additions:
 - bind the proof-qualified learning + real-market SingleDecisionCore;
@@ -21,6 +21,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +30,9 @@ from oracle_runtime import institutional_core_real as _learning_core
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
 _ORACLE_DIR = _ROOT_DIR / "oracle"
-_BASE_PATH = _ORACLE_DIR / "predict_only_base.py"
+_BASE_PATH = _ORACLE_DIR / "predict_only.py"
 if not _BASE_PATH.exists():
-    _BASE_PATH = _ORACLE_DIR / "predict_only.py"
+    raise ImportError(f"canonical predictor missing: {_BASE_PATH}")
 
 _spec = importlib.util.spec_from_file_location("_senex_predict_only_base", _BASE_PATH)
 if _spec is None or _spec.loader is None:
@@ -130,7 +131,9 @@ def _boros_snapshot_for_audit() -> dict[str, Any]:
     }
 
 
-def _decision_replay_snapshot(market: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+def _decision_replay_snapshot(
+    market: dict[str, Any], result: dict[str, Any], *, query_observed_at_epoch: float
+) -> dict[str, Any]:
     """Persist the bounded inputs needed by a future full-pipeline replay."""
     audit = result.get("_audit") if isinstance(result.get("_audit"), dict) else {}
     execution = audit.get("execution_state") if isinstance(audit, dict) else {}
@@ -159,7 +162,19 @@ def _decision_replay_snapshot(market: dict[str, Any], result: dict[str, Any]) ->
         "code_hash": learning.get("code_hash") if isinstance(learning, dict) else None,
         "config_hash": learning.get("config_hash") if isinstance(learning, dict) else None,
         "production_writeback": False,
+        "feature_source_identity": {
+            "symbol": market.get("symbol"),
+            "exchange_used": market.get("exchange_used"),
+            "timeframe": market.get("timeframe"),
+        },
+        "feature_observations": copy.deepcopy(market.get("feature_observations") or {}),
+        "query_observed_at_epoch": float(query_observed_at_epoch),
     }
+    try:
+        from backend.runtime_provenance import runtime_provenance
+        snapshot["runtime_provenance"] = runtime_provenance()
+    except Exception:
+        snapshot["runtime_provenance"] = {"exact": False, "reason": "PROVENANCE_UNAVAILABLE"}
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     snapshot["snapshot_hash"] = hashlib.sha256(encoded).hexdigest()
     return snapshot
@@ -187,6 +202,7 @@ def run_prediction(market_data: dict) -> dict:
     working["kalshi_context"] = kalshi
     working["boros_context"] = boros
 
+    query_observed_at_epoch = time.time()
     previous = sys.modules.get("institutional_core")
     sys.modules["institutional_core"] = _learning_core
     try:
@@ -245,7 +261,22 @@ def run_prediction(market_data: dict) -> dict:
         except (TypeError, ValueError):
             pass
         audit["external_markets_v1"] = external
-        audit["decision_replay_v1"] = _decision_replay_snapshot(working, result)
+        audit["decision_replay_v1"] = _decision_replay_snapshot(
+            working, result, query_observed_at_epoch=query_observed_at_epoch
+        )
+        try:
+            from backend.order070_contracts import canonical_ev_audit
+            pipeline_for_ev = audit.get("pipeline") if isinstance(audit.get("pipeline"), dict) else {}
+            ev_payload = pipeline_for_ev.get("step4_ev") if isinstance(pipeline_for_ev, dict) else {}
+            audit["canonical_ev_contract_v1"] = canonical_ev_audit(
+                model_score=(ev_payload or {}).get("adjusted_ev") if isinstance(ev_payload, dict) else None
+            )
+        except Exception as exc:
+            audit["canonical_ev_contract_v1"] = {
+                "status": "COST_MODEL_NOT_AUTHORITATIVE",
+                "authority": "DIAGNOSTIC_ONLY",
+                "error": type(exc).__name__,
+            }
         try:
             from backend.research.aud061_pipeline import classify_flat_reason
             audit["decision_waterfall_v1"] = {

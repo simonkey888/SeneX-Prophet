@@ -40,28 +40,48 @@ from .ws_server import make_router as make_ws_router
 from . import oracle_runner
 from .authoritative_score import build_authoritative_score
 from .settlement_proof import filter_proof_qualified, is_proof_qualified
-# ACT-XXVII: research layer (lazy-initialized to avoid import-time failures
-# if optional deps like shap are missing)
-try:
-    from .research import ResearchCoordinator, get_registry
-    _research_coord = ResearchCoordinator()
-    _metrics_registry = get_registry()
-except Exception as _research_init_err:  # pragma: no cover — research layer must never break the app
-    _research_coord = None
-    _metrics_registry = None
-    _research_init_err_msg = str(_research_init_err)
-else:
-    _research_init_err_msg = None
+# ACT-XXVII research is optional for the production oracle. Keep heavy
+# numpy/scipy/sklearn/shap modules out of the 512 MiB runtime until an endpoint
+# explicitly asks for research functionality.
+_research_coord = None
+_metrics_registry = None
+_research_init_err_msg = None
+_research_init_attempted = False
 
-# ACT-XXIX: anti-fragility layer (lazy-initialized; never breaks the app)
-try:
-    from .antifragility import AntiFragilityCoordinator as _AFCoord
-    _antifragility_coord = _AFCoord(start_biv=False)
-except Exception as _af_init_err:  # pragma: no cover
-    _antifragility_coord = None
-    _af_init_err_msg = str(_af_init_err)
-else:
-    _af_init_err_msg = None
+
+def _ensure_research() -> None:
+    global _research_coord, _metrics_registry, _research_init_err_msg, _research_init_attempted
+    if _research_init_attempted:
+        return
+    _research_init_attempted = True
+    try:
+        from .research import ResearchCoordinator, get_registry
+        _research_coord = ResearchCoordinator()
+        _metrics_registry = get_registry()
+        _research_init_err_msg = None
+    except Exception as exc:  # pragma: no cover — optional layer must never break app
+        _research_coord = None
+        _metrics_registry = None
+        _research_init_err_msg = str(exc)
+
+# ACT-XXIX anti-fragility is also optional on the public production path.
+_antifragility_coord = None
+_af_init_err_msg = None
+_af_init_attempted = False
+
+
+def _ensure_antifragility() -> None:
+    global _antifragility_coord, _af_init_err_msg, _af_init_attempted
+    if _af_init_attempted:
+        return
+    _af_init_attempted = True
+    try:
+        from .antifragility import AntiFragilityCoordinator as _AFCoord
+        _antifragility_coord = _AFCoord(start_biv=False)
+        _af_init_err_msg = None
+    except Exception as exc:  # pragma: no cover
+        _antifragility_coord = None
+        _af_init_err_msg = str(exc)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
 log = logging.getLogger("senecio.main")
@@ -282,9 +302,8 @@ def _get_coordinator():
         return None
 
 
-def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> dict:
-    """Build symbol authority, then evaluate diagnostically under PAPER lock."""
-    score = build_authoritative_score(rows, symbol=symbol)
+def _paper_locked_live_gate_from_score(coord, score: dict) -> dict:
+    """Evaluate one already-built authority score under the immutable PAPER lock."""
     status = coord.evaluate_live_gate(oracle_score=score)
     status.unlocked = False
     status.trade_mode = "PAPER"
@@ -312,6 +331,12 @@ def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> di
         "conditions_total": len(conditions),
     })
     return state
+
+
+def _paper_locked_live_gate_state(coord, rows: list[dict], *, symbol: str) -> dict:
+    """Compatibility wrapper; public runtime builds score exactly once per snapshot."""
+    score = build_authoritative_score(rows, symbol=symbol)
+    return _paper_locked_live_gate_from_score(coord, score)
 
 
 def _normalize_authority_symbol(symbol: str) -> str:
@@ -557,6 +582,7 @@ async def replay(day: str):
 @app.get("/api/research/state")
 async def research_state():
     """ACT-XXVII: research coordinator state + last full-pass summary."""
+    _ensure_research()
     if _research_coord is None:
         return {
             "error": "research coordinator not initialized",
@@ -587,6 +613,7 @@ async def research_run_full_pass(limit: int = Query(default=0, ge=0, le=10000)):
     research metrics + explainer fit. Returns the aggregate report.
     Pass limit=0 to use all available records.
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -604,6 +631,7 @@ async def research_calibration(method: str = "isotonic"):
 
     Returns the CalibrationReport (Brier + ECE + reliability curve before/after).
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized"}
     if _research_coord.confidences is None or _research_coord.confidences.shape[0] == 0:
@@ -623,6 +651,7 @@ async def research_calibration(method: str = "isotonic"):
 @app.get("/api/research/drift")
 async def research_drift():
     """ACT-XXVII Priority 3: drift monitor state + last warnings."""
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized"}
     return {
@@ -634,6 +663,7 @@ async def research_drift():
 @app.get("/api/research/metrics")
 async def research_metrics(window: int = Query(default=50, ge=10, le=1000)):
     """ACT-XXVII Priority 4: research metrics (IC + rolling Sharpe/PF/MDD)."""
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized"}
     if _research_coord.confidences is None or _research_coord.confidences.shape[0] == 0:
@@ -659,6 +689,7 @@ async def research_explainer_fit(
     prefer_shap: bool = Query(default=True),
 ):
     """ACT-XXVII Priority 5: fit the explainer surrogate model."""
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized"}
     if _research_coord.X is None or _research_coord.X.shape[0] == 0:
@@ -690,6 +721,7 @@ async def research_explainer_explain(prediction: dict):
     Body: a prediction dict (must contain the feature fields configured in
     ResearchCoordinator.feature_names).
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized"}
     if _research_coord.get_explainer() is None:
@@ -706,6 +738,7 @@ async def research_explainer_explain(prediction: dict):
 @app.get("/api/research/explainer/history")
 async def research_explainer_history():
     """ACT-XXVII Priority 5: feature importance history (for stability analysis)."""
+    _ensure_research()
     if _research_coord is None or _research_coord.get_explainer() is None:
         return {"error": "explainer not fitted",
                 "history": []}
@@ -720,6 +753,7 @@ async def research_explainer_history():
 @app.get("/api/observability")
 async def observability():
     """ACT-XXVII Priority 6: JSON snapshot of all Prometheus metrics."""
+    _ensure_research()
     if _metrics_registry is None:
         return {"error": "metrics registry not initialized",
                 "init_error": _research_init_err_msg}
@@ -736,6 +770,7 @@ async def prometheus_metrics():
     Returns text/plain Prometheus format (scrape target for Prometheus /
     Grafana / VictoriaMetrics / etc.).
     """
+    _ensure_research()
     if _metrics_registry is None:
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(
@@ -769,6 +804,7 @@ def _derive_returns_from_predictions() -> tuple[list[float], list[int], list[flo
       y = 1.0 if WIN/CORRECT else 0.0
       y_pred = confidence
     """
+    _ensure_research()
     if _research_coord is None or not _research_coord.predictions:
         return [], [], [], []
     rets: list[float] = []
@@ -812,6 +848,7 @@ async def research_walkforward(request: Request):
       y:          list[float] (auto-derived from predictions if absent)
       y_pred:     list[float] (auto-derived from predictions if absent)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -863,6 +900,7 @@ async def research_montecarlo(request: Request):
       gap_penalty_bps:     float (default 0.5)
       random_seed:         int (default 1337)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -914,6 +952,7 @@ async def research_statistics(request: Request):
       n_bootstrap:       int (default 1000)
       periods_per_year:  int (default 252)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -964,6 +1003,7 @@ async def research_stress(request: Request):
       gap_position:   float (default 0.5)
       outage_trades:  int (default 5)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -1015,6 +1055,7 @@ async def research_capacity(request: Request):
       fee_bps_per_trade:  float (default 2)
       capacity_target_usd: float (default 100000)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -1085,6 +1126,7 @@ async def research_report(request: Request):
       run_capacity:        bool (default true)
       persist_html:        bool (default false)
     """
+    _ensure_research()
     if _research_coord is None:
         return {"error": "research coordinator not initialized",
                 "init_error": _research_init_err_msg}
@@ -1275,6 +1317,7 @@ if FRONTEND_DIR.exists():
 @app.get("/api/antifragility/state")
 async def antifragility_state():
     """Full snapshot of the anti-fragility subsystems."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized",
                 "init_error": _af_init_err_msg,
@@ -1285,6 +1328,7 @@ async def antifragility_state():
 @app.post("/api/antifragility/invariants/run")
 async def antifragility_run_invariants():
     """Run all registered invariants and return per-invariant results."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return {"results": _antifragility_coord.run_invariants(),
@@ -1294,6 +1338,7 @@ async def antifragility_run_invariants():
 @app.post("/api/antifragility/lineage/explain")
 async def antifragility_lineage_explain(body: dict):
     """Explain a prediction's ancestry (inputs + descendants in lineage DAG)."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     prediction_id = body.get("prediction_id")
@@ -1305,6 +1350,7 @@ async def antifragility_lineage_explain(body: dict):
 @app.post("/api/antifragility/diagnostics/run")
 async def antifragility_diagnostics_run(body: dict | None = None):
     """Run self-diagnostics with optional feature/prediction inputs."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     body = body or {}
@@ -1318,6 +1364,7 @@ async def antifragility_diagnostics_run(body: dict | None = None):
 @app.get("/api/antifragility/architecture/validate")
 async def antifragility_architecture_validate():
     """Validate the actual code structure against the declared architecture spec."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return _antifragility_coord.run_architecture_validation()
@@ -1334,6 +1381,7 @@ async def antifragility_market_simulate(body: dict):
       - adversarial_kind: 'max_drawdown' | 'whipsaw_extreme' | 'tail_event'
       - regime_kind: 'bull_to_bear' | 'crash_recovery' | 'volatility_cycle'
     """
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     mode = body.get("mode", "synthetic")
@@ -1388,6 +1436,7 @@ async def antifragility_faults_inject(body: dict):
               wrong_symbol, schema_drift, time_jump, drift
       - kwargs: kind-specific parameters (duration_s, rate, etc.)
     """
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     kind = body.get("kind")
@@ -1404,6 +1453,7 @@ async def antifragility_faults_inject(body: dict):
 @app.get("/api/antifragility/faults/active")
 async def antifragility_faults_active():
     """List currently-active faults."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return {"active": _antifragility_coord.active_faults()}
@@ -1412,6 +1462,7 @@ async def antifragility_faults_active():
 @app.post("/api/antifragility/experiments/register")
 async def antifragility_experiments_register(body: dict):
     """Register a new experiment for reproducibility tracking."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     required = ("name", "kind", "params", "metrics")
@@ -1429,6 +1480,7 @@ async def antifragility_experiments_register(body: dict):
 @app.get("/api/antifragility/experiments/{experiment_id}/report")
 async def antifragility_experiments_report(experiment_id: str):
     """Generate a reproducibility report for an experiment."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return _antifragility_coord.get_reproducibility_report(experiment_id)
@@ -1437,6 +1489,7 @@ async def antifragility_experiments_report(experiment_id: str):
 @app.get("/api/antifragility/benchmarks")
 async def antifragility_benchmarks_list():
     """List registered benchmarks and recent history."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return {
@@ -1448,6 +1501,7 @@ async def antifragility_benchmarks_list():
 @app.post("/api/antifragility/benchmarks/run")
 async def antifragility_benchmarks_run():
     """Run all registered benchmarks."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     return {"results": _antifragility_coord.run_benchmarks()}
@@ -1456,6 +1510,7 @@ async def antifragility_benchmarks_run():
 @app.get("/api/antifragility/checkpoint/{subsystem}")
 async def antifragility_checkpoint_restore(subsystem: str):
     """Restore the latest clean checkpoint state for a subsystem."""
+    _ensure_antifragility()
     if _antifragility_coord is None:
         return {"error": "antifragility coordinator not initialized"}
     state = _antifragility_coord.resilience.checkpoints.restore(subsystem)

@@ -183,10 +183,14 @@ class AuthoritativeLearningTests(unittest.TestCase):
         self.assertIs(observed["core_module"], real_learning)
         self.assertIs(sys.modules.get("institutional_core"), previous)
 
-    def test_dockerfile_installs_bridge_at_historical_predictor_path(self):
-        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("mv /app/oracle/predict_only.py /app/oracle/predict_only_base.py", dockerfile)
-        self.assertIn("cp /app/oracle_runtime/predict_only.py /app/oracle/predict_only.py", dockerfile)
+    def test_canonical_root_dockerfile_preserves_frozen_predictor_without_overlay(self):
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        runner = (root / "senecio_polymarket/backend/oracle_runner.py").read_text(encoding="utf-8")
+        self.assertFalse((root / "senecio_polymarket/Dockerfile").exists())
+        self.assertNotIn("mv /app/oracle/predict_only.py", dockerfile)
+        self.assertNotIn("cp /app/oracle_runtime/predict_only.py", dockerfile)
+        self.assertIn("from oracle_runtime.predict_only import", runner)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,61 @@
+name: SENEX ORDER-070 Runtime Truth
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  order070:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Capture checked-out exact identity
+        id: exact_identity
+        shell: bash
+        run: |
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: senecio_polymarket/requirements.lock
+      - name: Install exact locked runtime
+        run: python -m pip install --require-hashes -r senecio_polymarket/requirements.lock
+      - name: ORDER-070 regression
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070
+      - name: R6 consolidated acceptance F1-F4
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070_r6_public_boundary
+      - name: Full regression suite
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+      - name: Secret scan including Markdown
+        run: python senecio_polymarket/scripts/order070_secret_scan.py
+      - name: Public OpenAPI zero mutation proof
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: |
+          python - <<'PY'
+          from fastapi.routing import APIRoute
+          from backend.main_real import app
+          routes=[r for r in app.router.routes if isinstance(r,APIRoute)]
+          posts=sum('POST' in (r.methods or set()) for r in routes)
+          print(f'PUBLIC_FASTAPI_POST_COUNT={posts}')
+          assert posts == 0
+          PY
+      - name: Seal exact-head artifact
+        run: python senecio_polymarket/scripts/order070_seal.py | tee /tmp/order070-artifact-sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: order070-sealed-${{ steps.exact_identity.outputs.head }}
+          path: senecio_polymarket/artifacts/order070-sealed.json
+          if-no-files-found: error

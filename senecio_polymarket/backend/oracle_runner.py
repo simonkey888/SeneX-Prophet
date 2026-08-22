@@ -167,7 +167,7 @@ async def _run_one_prediction(symbol: str) -> Optional[dict]:
     """Run a single prediction for a symbol. Returns the prediction dict or None."""
     # Import inside the function so module load is cheap and errors are isolated
     try:
-        from predict_only import fetch_market_snapshot, run_prediction, log_prediction, check_candle_duplicate
+        from oracle_runtime.predict_only import fetch_market_snapshot, run_prediction, log_prediction, check_candle_duplicate
     except Exception as e:
         log.exception("failed to import predict_only: %s", e)
         _state["last_error"] = f"import_error: {e}"
