@@ -1,104 +1,84 @@
-name: ORDER070 R6 Stability Resume Exact Deployed Head
+name: ORDER070 R6 Materialize Refresh Cadence Fix
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-origin-exact-deploy.yml]
 permissions:
-  contents: read
-  statuses: write
+  contents: write
 concurrency:
-  group: order070-r6-stability-resume
-  cancel-in-progress: true
+  group: order070-r6-materialize-refresh
+  cancel-in-progress: false
 jobs:
-  terminal:
+  materialize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 35
     steps:
-      - name: Publish run identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json,os,urllib.request
-          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':'pending','context':'ORDER070/R6-stability-final','description':f"run {os.environ['RUN_ID']} readback exact 7a57 + edge + 30m",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-stability/1'}
-          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
-          PY
-      - name: Checkout pristine final candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 7a57c47e7042f470ecaf024417103f00700800a7
+          ref: feat/order-070-runtime-truth-hardening
           fetch-depth: 0
-          persist-credentials: false
-          path: candidate
-      - name: Checkout ops runner
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-          path: ops
+          persist-credentials: true
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with: {python-version: '3.11'}
-      - name: Reassert final public boundary and import RSS
-        env: {PYTHONPATH: candidate/senecio_polymarket}
+      - name: Assert remote truth and install locked runtime
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C candidate rev-parse HEAD)" = 7a57c47e7042f470ecaf024417103f00700800a7
-          test "$(git -C candidate rev-parse HEAD^{tree})" = e2aed8f96547c91846caf30544d7a47e2cfa62ef
-          test -z "$(git -C candidate status --porcelain)"
-          python -m pip install --quiet --require-hashes -r candidate/senecio_polymarket/requirements.lock
-          python -m unittest -v candidate/senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          test "$(git rev-parse HEAD)" = 7a57c47e7042f470ecaf024417103f00700800a7
+          test "$(git rev-parse HEAD^{tree})" = e2aed8f96547c91846caf30544d7a47e2cfa62ef
+          test -z "$(git status --porcelain)"
+          python -m pip install --quiet --require-hashes -r senecio_polymarket/requirements.lock
+      - name: Apply minimal cadence compensation and deterministic test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('senecio_polymarket/backend/main_real.py')
+          s=p.read_text()
+          old='''async def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:\n    interval = authority_store.refresh_interval_s()\n    while True:\n        await asyncio.sleep(interval)\n        try:\n            await _snapshot(symbol, force=True)\n        except asyncio.CancelledError:\n            raise\n        except Exception as exc:\n            # The store records failure separately and retains last-known-good.\n            log.warning("authority snapshot refresh failed for %s: %s", symbol, exc)\n'''
+          new='''def _authority_refresh_delay(interval_s: float, elapsed_s: float) -> float:\n    """Keep refresh attempt cadence start-to-start so capture latency cannot consume TTL headroom."""\n    return max(0.1, float(interval_s) - max(0.0, float(elapsed_s)))\n\n\nasync def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:\n    interval = authority_store.refresh_interval_s()\n    loop = asyncio.get_running_loop()\n    # Startup already performs one forced capture; preserve the initial spacing.\n    await asyncio.sleep(interval)\n    while True:\n        started = loop.time()\n        try:\n            await _snapshot(symbol, force=True)\n        except asyncio.CancelledError:\n            raise\n        except Exception as exc:\n            # The store records failure separately and retains last-known-good.\n            log.warning("authority snapshot refresh failed for %s: %s", symbol, exc)\n        elapsed = max(0.0, loop.time() - started)\n        await asyncio.sleep(_authority_refresh_delay(interval, elapsed))\n'''
+          if s.count(old)!=1:
+              raise SystemExit('REFRESH_LOOP_ANCHOR_DRIFT')
+          p.write_text(s.replace(old,new))
+
+          t=Path('senecio_polymarket/tests/test_order_070_r6_public_boundary.py')
+          q=t.read_text()
+          anchor='''    def test_canonical_order070_surfaces_remain_public(self):\n'''
+          test='''    def test_authority_refresh_delay_compensates_capture_latency(self):\n        self.assertEqual(main_real._authority_refresh_delay(5.0, 0.0), 5.0)\n        self.assertEqual(main_real._authority_refresh_delay(5.0, 2.0), 3.0)\n        self.assertEqual(main_real._authority_refresh_delay(5.0, 7.0), 0.1)\n\n'''
+          if test not in q:
+              if q.count(anchor)!=1:
+                  raise SystemExit('TEST_ANCHOR_DRIFT')
+              q=q.replace(anchor,test+anchor)
+              t.write_text(q)
+          PY
+      - name: Exact regression and memory guard
+        env: {PYTHONPATH: senecio_polymarket}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile senecio_polymarket/backend/main_real.py senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          python -m unittest -v senecio_polymarket.tests.test_order_070_r6_public_boundary
+          python -m unittest -v senecio_polymarket.tests.test_order_070
+          python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+          python senecio_polymarket/scripts/order070_secret_scan.py
           /usr/bin/time -f '%M' -o /tmp/rss_kb python -c 'import backend.main_real'
           rss=$(tail -1 /tmp/rss_kb)
           echo "IMPORT_RSS_KB=$rss"
           test "$rss" -gt 0
           test "$rss" -lt 81920
-          echo "R6_IMPORT_RSS_KB=$rss" >> "$GITHUB_ENV"
-      - name: Fresh edge reconciliation E2E and >=30m stability
-        env:
-          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
-          CANDIDATE_DIR: candidate
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
+          test "$(git diff --name-only | wc -l)" = 2
+          test "$(git diff --name-only | sed -n '1p')" = senecio_polymarket/backend/main_real.py
+          test "$(git diff --name-only | sed -n '2p')" = senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          git diff --check
+      - name: Commit and publish same PR lane
         shell: bash
         run: |
-          set +x
           set -euo pipefail
-          test -n "${NORTHFLANK_API_TOKEN:-}"
-          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r6_stability_resume_wrapper.py
-          (cd order070-r6-final-evidence && sha256sum -c MANIFEST.sha256)
-      - name: Upload R6 stability evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: order070-r6-stability-7a57c47e
-          path: order070-r6-final-evidence/
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Publish terminal status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-          JOB_STATUS: ${{ job.status }}
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json,os,urllib.request
-          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
-          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':state,'context':'ORDER070/R6-stability-final','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-stability/1'}
-          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
-          PY
+          git config user.name 'SENEX ARQ'
+          git config user.email 'senex-arq@users.noreply.github.com'
+          git add senecio_polymarket/backend/main_real.py senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          git commit -m 'fix(order070-r6): maintain authority refresh headroom'
+          echo "NEW_HEAD=$(git rev-parse HEAD)"
+          echo "NEW_TREE=$(git rev-parse HEAD^{tree})"
+          git push origin HEAD:refs/heads/feat/order-070-runtime-truth-hardening
