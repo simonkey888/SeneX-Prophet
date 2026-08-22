@@ -1,5 +1,6 @@
 name: ORDER070 R6 Terminal Exact Head Stability
 on:
+  workflow_call:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-r6-terminal.yml]
