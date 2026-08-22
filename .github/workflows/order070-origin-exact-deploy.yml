@@ -1,3 +1,4 @@
+# ORDER-070-R7 authorized harness-only final stability trigger
 name: ORDER070 R7 Final Stability Seal
 on:
   push:
