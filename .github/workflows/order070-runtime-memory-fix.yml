@@ -2,7 +2,9 @@ name: ORDER070 Runtime Memory Fix
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
-    paths: [.github/workflows/order070-runtime-memory-fix.yml]
+    paths:
+      - .github/workflows/order070-runtime-memory-fix.yml
+      - .github/scripts/order070_apply_runtime_memory_fix.py
 permissions:
   contents: write
   statuses: write
@@ -23,7 +25,7 @@ jobs:
           import json,os,urllib.request
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
           p={'state':'pending','context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/1'}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/2'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
       - name: Checkout exact candidate branch
@@ -82,8 +84,6 @@ jobs:
         run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
       - name: Commit and push existing PR branch only
         working-directory: candidate
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git diff --check
@@ -111,6 +111,6 @@ jobs:
           state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
           p={'state':state,'context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/1'}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/2'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
