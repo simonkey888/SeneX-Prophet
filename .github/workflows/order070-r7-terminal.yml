@@ -5,6 +5,7 @@ on:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths:
       - .github/workflows/order070-r7-terminal.yml
+      - .github/scripts/order070_r7b_terminal.py
 permissions:
   contents: read
   statuses: write
@@ -60,11 +61,12 @@ jobs:
           test "$(git -C candidate rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git -C candidate rev-parse HEAD^{tree})" = "$TARGET_TREE"
           test -z "$(git -C candidate status --porcelain)"
-          python -m py_compile ops/.github/scripts/order070_r7_terminal.py
+          python -m py_compile ops/.github/scripts/order070_r7_terminal.py ops/.github/scripts/order070_r7b_terminal.py
           ! grep -q 'wrangler@4.102.0.*dev.*--remote' ops/.github/scripts/order070_r7_terminal.py
           ! grep -Eq "nf_(post|patch|delete)|nf\('(POST|PATCH|DELETE)|nf\(\"(POST|PATCH|DELETE)" ops/.github/scripts/order070_r7_terminal.py
           grep -q 'curl_probe(edge, "POST"' ops/.github/scripts/order070_r7_terminal.py
           grep -q 'curl_probe(edge, "GET", "/__order070_unknown__")' ops/.github/scripts/order070_r7_terminal.py
+          grep -q 'STATE_TRADE_MODE_CONTRADICTION' ops/.github/scripts/order070_r7b_terminal.py
 
       - name: Verify native exact-head CI remains green
         env:
@@ -91,7 +93,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r7_terminal.py
+          python ops/.github/scripts/order070_r7b_terminal.py
           (cd order070-r7-final-evidence && sha256sum -c MANIFEST.sha256)
 
       - name: Upload R7 terminal evidence
