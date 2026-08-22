@@ -6,6 +6,7 @@ on:
       - .github/workflows/order070-runtime-memory-fix.yml
       - .github/scripts/order070_r6_consolidated_fix.py
       - .github/scripts/order070_r6_update_historical_build_test.py
+      - .github/scripts/order070_r6_preserve_regression_contracts.py
 permissions:
   contents: write
   statuses: write
@@ -61,6 +62,7 @@ jobs:
         run: |
           python ../ops/.github/scripts/order070_r6_consolidated_fix.py
           python ../ops/.github/scripts/order070_r6_update_historical_build_test.py
+          python ../ops/.github/scripts/order070_r6_preserve_regression_contracts.py
       - name: Focused R6 consolidated acceptance
         working-directory: candidate
         env:
