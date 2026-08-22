@@ -1,107 +1,135 @@
-name: ORDER070 R6 Final B438 Deploy Stability Seal
+name: ORDER070 R6 Consolidated F1-F5 Materializer
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths: [.github/workflows/order070-origin-exact-deploy.yml]
 permissions:
-  contents: read
-  statuses: write
+  contents: write
 concurrency:
-  group: order070-r6-final-b438
-  cancel-in-progress: true
-env:
-  OPS_WRAPPER_REV: 1cf56060b3dbbf255951a3489e26b0307ee0259a
+  group: order070-r6-consolidated-materialize
+  cancel-in-progress: false
 jobs:
-  terminal:
+  materialize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 70
     steps:
-      - name: Publish run identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json,os,urllib.request
-          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':'pending','context':'ORDER070/R6-final-b438','description':f"run {os.environ['RUN_ID']} exact deploy + edge + 8 rounds + 30m",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-final/1'}
-          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
-          PY
-      - name: Checkout exact final candidate
+      - name: Checkout exact audited candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: b438c0d6dc156d4183929366963df988d97a5283
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
           path: candidate
-      - name: Checkout exact corrected ops wrapper
+      - name: Checkout exact ops materializer
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 1cf56060b3dbbf255951a3489e26b0307ee0259a
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
           path: ops
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with: {python-version: '3.11'}
-      - name: Reassert exact candidate public boundary and memory headroom
-        env: {PYTHONPATH: candidate/senecio_polymarket}
+      - name: Assert remote truth and install locked runtime
+        working-directory: candidate
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C candidate rev-parse HEAD)" = b438c0d6dc156d4183929366963df988d97a5283
-          test "$(git -C candidate rev-parse HEAD^{tree})" = e1e4b002aa90402517edb90412b755bc8529327e
-          test -z "$(git -C candidate status --porcelain)"
-          test "$(git -C ops rev-parse HEAD)" = "$OPS_WRAPPER_REV"
-          python -m pip install --quiet --require-hashes -r candidate/senecio_polymarket/requirements.lock
-          python -m unittest -v candidate/senecio_polymarket/tests/test_order_070_r6_public_boundary.py
-          /usr/bin/time -f '%M' -o /tmp/rss_kb python -c 'import backend.main_real'
-          rss=$(tail -1 /tmp/rss_kb)
-          echo "IMPORT_RSS_KB=$rss"
-          test "$rss" -gt 0
-          test "$rss" -lt 81920
-          echo "R6_IMPORT_RSS_KB=$rss" >> "$GITHUB_ENV"
-      - name: Exact deploy edge reconciliation E2E and 30m stability
-        env:
-          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
-          CANDIDATE_DIR: candidate
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
+          test "$(git rev-parse HEAD)" = b438c0d6dc156d4183929366963df988d97a5283
+          test "$(git rev-parse HEAD^{tree})" = e1e4b002aa90402517edb90412b755bc8529327e
+          test -z "$(git status --porcelain)"
+          python -m pip install --quiet --require-hashes -r senecio_polymarket/requirements.lock
+          sha256sum senecio_polymarket/oracle/predict_only.py senecio_polymarket/oracle_runtime/predict_only.py > /tmp/order070-frozen.before
+      - name: Apply all consolidated F1-F5 corrections locally
+        working-directory: candidate
         shell: bash
         run: |
-          set +x
           set -euo pipefail
-          test -n "${NORTHFLANK_API_TOKEN:-}"
-          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r6_terminal_v4.py
-          (cd order070-r6-final-evidence && sha256sum -c MANIFEST.sha256)
-      - name: Upload final R6 sealed evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: order070-r6-final-b438c0d6
-          path: order070-r6-final-evidence/
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Publish terminal status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-          JOB_STATUS: ${{ job.status }}
+          python ../ops/.github/scripts/order070_r6_consolidated_materialize.py
+      - name: Focused and full deterministic gates
+        working-directory: candidate
+        env: {PYTHONPATH: senecio_polymarket}
         shell: bash
         run: |
-          python - <<'PY'
-          import json,os,urllib.request
-          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
-          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':state,'context':'ORDER070/R6-final-b438','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-final/1'}
-          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          set -euo pipefail
+          python -m py_compile \
+            senecio_polymarket/backend/main_real.py \
+            senecio_polymarket/backend/authority_snapshot.py \
+            senecio_polymarket/backend/oracle_runner.py \
+            senecio_polymarket/backend/runtime_provenance.py \
+            senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          python -m unittest -v senecio_polymarket.tests.test_order_070_r6_public_boundary
+          python -m unittest -v senecio_polymarket.tests.test_order_070
+          python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+          python senecio_polymarket/scripts/order070_secret_scan.py
+          git diff --check
+      - name: Prove frozen predictor bytes unchanged and exact candidate scope
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum senecio_polymarket/oracle/predict_only.py senecio_polymarket/oracle_runtime/predict_only.py > /tmp/order070-frozen.after
+          cmp /tmp/order070-frozen.before /tmp/order070-frozen.after
+          cat > /tmp/expected-files <<'EOF'
+          .github/workflows/senex-order-070.yml
+          Dockerfile
+          edge/order070/worker.js
+          senecio_polymarket/Dockerfile
+          senecio_polymarket/backend/authority_snapshot.py
+          senecio_polymarket/backend/main_real.py
+          senecio_polymarket/backend/oracle_runner.py
+          senecio_polymarket/backend/runtime_provenance.py
+          senecio_polymarket/docs/ORDER_070_RUNTIME_TRUTH.md
+          senecio_polymarket/frontend/app.js
+          senecio_polymarket/tests/test_order_070.py
+          senecio_polymarket/tests/test_order_070_r6_public_boundary.py
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          git diff --name-only | sort > /tmp/actual-files
+          sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+          test ! -e senecio_polymarket/Dockerfile
+          ! grep -q 'mv /app/oracle/predict_only.py' Dockerfile
+          ! grep -q 'cp /app/oracle_runtime/predict_only.py' Dockerfile
+          ! grep -q 'chmod -R 777' Dockerfile
+          grep -q '^USER senex$' Dockerfile
+          grep -q 'from oracle_runtime.predict_only import' senecio_polymarket/backend/oracle_runner.py
+      - name: Build only canonical root Dockerfile
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull=false -f Dockerfile -t senex-order070-r6-candidate .
+      - name: Inspect built image security and runtime import
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_user=$(docker inspect --format '{{.Config.User}}' senex-order070-r6-candidate)
+          echo "IMAGE_USER=$image_user"
+          test "$image_user" = senex
+          uid=$(docker run --rm --entrypoint id senex-order070-r6-candidate -u)
+          echo "RUNTIME_UID=$uid"
+          test "$uid" -ne 0
+          world=$(docker run --rm --entrypoint sh senex-order070-r6-candidate -c "find /app -xdev -perm -0002 -print")
+          test -z "$world"
+          docker run --rm --entrypoint python senex-order070-r6-candidate - <<'PY'
+          import inspect
+          from backend import oracle_runner
+          src = inspect.getsource(oracle_runner._run_one_prediction)
+          assert 'oracle_runtime.predict_only' in src
+          import oracle_runtime.predict_only as runtime_predictor
+          assert runtime_predictor.__file__.endswith('/oracle_runtime/predict_only.py')
+          print('EXPLICIT_RUNTIME_IMPORT=PASS')
           PY
+      - name: Commit one candidate and push same PR lane
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'SENEX ARQ'
+          git config user.email 'senex-arq@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(order070-r6): close consolidated public and build truth gaps'
+          echo "NEW_HEAD=$(git rev-parse HEAD)"
+          echo "NEW_TREE=$(git rev-parse HEAD^{tree})"
+          git push origin HEAD:refs/heads/feat/order-070-runtime-truth-hardening
