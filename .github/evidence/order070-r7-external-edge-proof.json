@@ -1,0 +1,60 @@
+{
+  "boundary": {
+    "health": {
+      "body_sha256": "67008009b8fe6316fbda7d9020f483d9f677714d7ea14e96b4c282de497aec74",
+      "decision": "ALLOW_GET_PROXY",
+      "http": 200
+    },
+    "post_score": {
+      "body_sha256": "22593830c190203bdc58f1b164a04f6a3c3fe34104756b58112d42ad4a8b5801",
+      "decision": "DENY_METHOD",
+      "http": 405
+    },
+    "provenance": {
+      "body_sha256": "d4fb7218aa2ce86bacc6209f4af7e59d679124c3f09584ae43b6abd7d9094e96",
+      "decision": "ALLOW_GET_PROXY",
+      "http": 200
+    },
+    "ready": {
+      "body_sha256": "44718bb4b7df80c2fb22cfe06f8350aa297612f246250fe86b4e0982286dfd22",
+      "decision": "ALLOW_GET_PROXY",
+      "http": 200
+    },
+    "unknown_path": {
+      "body_sha256": "982ae074459a392c653249b0e411ecb52ebc2bbe6272e6380d256f2d6e5dacff",
+      "decision": "DENY_PATH",
+      "http": 404
+    }
+  },
+  "build_digest": "sha256:8f4511e0ac2499e3b7408843a82e7f3a5bc4cc466c296003eb363842ad2023ac",
+  "cloudflare_credentials_used": false,
+  "contract": "order070-r7-external-edge-proof-v1",
+  "edge": "https://senex-order070-readonly-proof.absorbed-crown.workers.dev",
+  "head": "4b107bfb427cb85ea84850ffd9ddd5d7a4231d94",
+  "image_digest": "sha256:431702a5e4bb08d139151b5d484428423fa3cc15927d155b768ed2142aee1084",
+  "live_e2e": {
+    "healthz": 200,
+    "live_capital_locked": true,
+    "orders_enabled": false,
+    "predictions_body_parity": true,
+    "provenance_exact": true,
+    "readyz": 200,
+    "trade_mode": "PAPER",
+    "unsafe_methods_edge": 0,
+    "unsafe_methods_origin": 0
+  },
+  "observed_at": "2026-08-22T18:34:29.283772+00:00",
+  "origin": "https://h011-web--senecio-h011--wbjggn89fnf8.code.run",
+  "reconciliation": {
+    "btc_authority_rows": 883,
+    "exact_total_predictions": 1766,
+    "generation": 21,
+    "proof_sha256": "0dda32a0b39a980056b2fbbe80805ae14a9aa9255ff5e8d0711432fd88d4831e",
+    "result": "PASS",
+    "round_count": 8,
+    "snapshot_id": "6b9c8657b028edfba8b7bba1df6dbd6681e1a0aeae925df2be2b431030dc8c20"
+  },
+  "result": "PASS",
+  "tree": "5d1d9ec806b7d0e02031726565f08ef75d5a9340",
+  "wrangler_output_sha256": "4aaf6a964b72fccf096a0d99f6d08f28811925f7f651cf96acb0823f2e824766"
+}
