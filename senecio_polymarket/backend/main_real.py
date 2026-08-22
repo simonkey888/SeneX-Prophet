@@ -40,6 +40,26 @@ OVERRIDDEN_GET_PATHS = {
     "/api/portfolio/live_gate",
 }
 
+# R6: production public routing is fail-closed for optional heavy analytics.
+# These legacy GET handlers perform lazy imports/initialization of research or
+# anti-fragility stacks. They remain available in the legacy/admin application,
+# but are never mounted by the unauthenticated production public app.
+OPTIONAL_HEAVY_PUBLIC_DENY_PREFIXES = (
+    "/api/research",
+    "/api/antifragility",
+)
+OPTIONAL_HEAVY_PUBLIC_DENY_PATHS = {
+    "/api/observability",
+    "/metrics",
+}
+
+
+def _legacy_public_route_allowed(path: str) -> bool:
+    """Default-deny legacy routes that can allocate optional heavy subsystems."""
+    if path in OPTIONAL_HEAVY_PUBLIC_DENY_PATHS:
+        return False
+    return not any(path.startswith(prefix) for prefix in OPTIONAL_HEAVY_PUBLIC_DENY_PREFIXES)
+
 
 def synthetic_demo_enabled() -> bool:
     return (os.environ.get("SENEX_ENABLE_SYNTHETIC_DEMO") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -108,10 +128,16 @@ def _build_public_app() -> FastAPI:
         lifespan=real_lifespan,
     )
     # Copy only observational HTTP routes plus static/websocket transports.
+    # R6 closes the legacy GET inheritance hole: optional heavy endpoints are
+    # explicitly absent from production even though their HTTP method is safe.
     for route in legacy.app.router.routes:
         if isinstance(route, APIRoute):
             methods = set(route.methods or set())
-            if route.path not in OVERRIDDEN_GET_PATHS and methods <= SAFE_PUBLIC_METHODS:
+            if (
+                route.path not in OVERRIDDEN_GET_PATHS
+                and methods <= SAFE_PUBLIC_METHODS
+                and _legacy_public_route_allowed(route.path)
+            ):
                 public.router.routes.append(route)
         elif isinstance(route, (Mount, WebSocketRoute)):
             public.router.routes.append(route)
