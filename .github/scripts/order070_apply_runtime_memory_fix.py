@@ -1,5 +1,5 @@
 from pathlib import Path
-import re
+import ast
 
 p=Path('senecio_polymarket/backend/main.py')
 s=p.read_text()
@@ -16,7 +16,7 @@ except Exception as _research_init_err:  # pragma: no cover — research layer m
 else:
     _research_init_err_msg = None
 '''
-new_research='''# ACT-XXVII research is optional for the production oracle.  Keep heavy
+new_research='''# ACT-XXVII research is optional for the production oracle. Keep heavy
 # numpy/scipy/sklearn/shap modules out of the 512 MiB runtime until an endpoint
 # explicitly asks for research functionality.
 _research_coord = None
@@ -73,30 +73,51 @@ assert old_research in s, 'research eager-init block drifted'
 assert old_af in s, 'antifragility eager-init block drifted'
 s=s.replace(old_research,new_research,1).replace(old_af,new_af,1)
 
-# Existing endpoint guards are the correct lazy boundary.  Ensure the optional
-# subsystem immediately before each guard, preserving all endpoint semantics.
+# Parse the still-valid source, then place one initializer at a function
+# boundary rather than before arbitrary multiline expressions. This preserves
+# syntax and avoids initializing optional analytics on the production import path.
+tree=ast.parse(s)
 lines=s.splitlines(True)
-out=[]
-for line in lines:
-    stripped=line.lstrip()
-    indent=line[:len(line)-len(stripped)]
-    helper=None
-    if stripped.startswith('if _research_coord') or stripped.startswith('if _metrics_registry'):
-        helper='_ensure_research()'
-    elif stripped.startswith('if _antifragility_coord'):
-        helper='_ensure_antifragility()'
-    if helper and (not out or out[-1].strip()!=helper):
-        out.append(indent+helper+'\n')
-    out.append(line)
-s=''.join(out)
+insertions=[]
+research_functions=[]
+antifragility_functions=[]
+for node in tree.body:
+    if not isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+        continue
+    if node.name in {'_ensure_research','_ensure_antifragility'}:
+        continue
+    names={n.id for n in ast.walk(node) if isinstance(n,ast.Name)}
+    helpers=[]
+    if names & {'_research_coord','_metrics_registry'}:
+        helpers.append('_ensure_research()')
+        research_functions.append(node.name)
+    if '_antifragility_coord' in names:
+        helpers.append('_ensure_antifragility()')
+        antifragility_functions.append(node.name)
+    if not helpers:
+        continue
+    first=node.body[0]
+    if (isinstance(first,ast.Expr) and isinstance(first.value,ast.Constant)
+            and isinstance(first.value.value,str)):
+        insertion_index=first.end_lineno
+    else:
+        insertion_index=first.lineno-1
+    indent=' ' * int(getattr(first,'col_offset',4) or 4)
+    insertions.append((insertion_index,''.join(indent+h+'\n' for h in helpers)))
 
-# Defensive contract: production import must remain lazy, while the legacy
-# endpoints still have on-demand initializers available.
+for index,text in sorted(insertions,reverse=True):
+    lines[index:index]=[text]
+s=''.join(lines)
+
+# Syntax is a hard pre-write gate. Also prove the production module now has
+# explicit on-demand boundaries for both optional heavy subsystems.
+ast.parse(s)
 assert '_research_init_attempted = False' in s
 assert '_af_init_attempted = False' in s
-assert s.count('_ensure_research()') >= 8
-assert s.count('_ensure_antifragility()') >= 5
+assert len(research_functions) >= 8, research_functions
+assert len(antifragility_functions) >= 5, antifragility_functions
 p.write_text(s)
-print('PATCH=OPTIONAL_ANALYTICS_TRUE_LAZY_INIT')
-print('RESEARCH_GUARDS='+str(s.count('_ensure_research()')))
-print('ANTIFRAGILITY_GUARDS='+str(s.count('_ensure_antifragility()')))
+print('PATCH=OPTIONAL_ANALYTICS_TRUE_LAZY_INIT_R2')
+print('RESEARCH_FUNCTIONS='+','.join(research_functions))
+print('ANTIFRAGILITY_FUNCTIONS='+','.join(antifragility_functions))
+print('FINAL_AST_PARSE=PASS')
