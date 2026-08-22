@@ -1,4 +1,4 @@
-name: ORDER070 R7 Harness-Only Terminal
+name: ORDER070 R7 Final Stability Seal
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
@@ -7,7 +7,7 @@ permissions:
   contents: read
   statuses: write
 concurrency:
-  group: order070-r7-harness-only-terminal
+  group: order070-r7-final-stability
   cancel-in-progress: false
 jobs:
   terminal:
@@ -17,6 +17,7 @@ jobs:
       TARGET_SHA: 4b107bfb427cb85ea84850ffd9ddd5d7a4231d94
       TARGET_TREE: 5d1d9ec806b7d0e02031726565f08ef75d5a9340
       CANDIDATE_DIR: candidate
+      OPS_DIR: ops
       NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
     steps:
       - name: Publish run identity
@@ -30,8 +31,8 @@ jobs:
           python - <<'PY'
           import json,os,urllib.request
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':'pending','context':'ORDER070/R7-harness-terminal','description':f"run {os.environ['RUN_ID']} passive ready + edge + 30m stability",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r7-status/1'}
+          p={'state':'pending','context':'ORDER070/R7-final-stability','description':f"run {os.environ['RUN_ID']} exact origin 30m stability seal",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r7-stability-status/1'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
       - name: Checkout immutable candidate
@@ -41,39 +42,40 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: candidate
-      - name: Checkout exact ops harness
+      - name: Checkout exact ops evidence runner
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Assert candidate frozen and R7 harness contract
+      - name: Assert immutable R7 contract
         shell: bash
         run: |
           set -euo pipefail
           test "$(git -C candidate rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git -C candidate rev-parse HEAD^{tree})" = "$TARGET_TREE"
           test -z "$(git -C candidate status --porcelain)"
-          ! grep -q 'start_remote_dev' ops/.github/scripts/order070_r7_harness_only_terminal.py
-          ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_harness_only_terminal.py
-          ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_harness_only_terminal.py
-          grep -q 'R7_PASSIVE_READINESS_DIRECT_CURL' ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
-          python -m py_compile ops/.github/scripts/order070_r7_harness_only_terminal.py ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
-      - name: Execute R7 terminal harness only
+          test "$(sha256sum ops/.github/evidence/order070-r7-external-edge-proof.json | awk '{print $1}')" = '4b5b213822a0d7bf9660d661bfc32e19f8763780189046571a98fc771e62fd53'
+          ! grep -q "method='POST'" ops/.github/scripts/order070_r7_stability_only.py
+          ! grep -q "method='PATCH'" ops/.github/scripts/order070_r7_stability_only.py
+          ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_stability_only.py
+          ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_stability_only.py
+          python -m py_compile ops/.github/scripts/order070_r7_stability_only.py
+      - name: Observe and seal 30 minute stability
         shell: bash
         run: |
           set +x
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
+          python ops/.github/scripts/order070_r7_stability_only.py
           (cd order070-r7-final-evidence && sha256sum -c MANIFEST.sha256)
-      - name: Upload R7 terminal evidence
+      - name: Upload terminal R7 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: order070-r7-terminal-4b107bfb427cb85ea84850ffd9ddd5d7a4231d94
+          name: order070-r7-final-sealed-4b107bfb427cb85ea84850ffd9ddd5d7a4231d94
           path: order070-r7-final-evidence/
           if-no-files-found: warn
           retention-days: 30
@@ -91,7 +93,7 @@ jobs:
           import json,os,urllib.request
           state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':state,'context':'ORDER070/R7-harness-terminal','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r7-status/1'}
+          p={'state':state,'context':'ORDER070/R7-final-stability','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r7-stability-status/1'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
