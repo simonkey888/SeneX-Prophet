@@ -12,7 +12,7 @@ concurrency:
 jobs:
   terminal:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 60
     env:
       TARGET_SHA: 4b107bfb427cb85ea84850ffd9ddd5d7a4231d94
       TARGET_TREE: 5d1d9ec806b7d0e02031726565f08ef75d5a9340
@@ -30,7 +30,7 @@ jobs:
           python - <<'PY'
           import json,os,urllib.request
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':'pending','context':'ORDER070/R7-harness-terminal','description':f"run {os.environ['RUN_ID']} direct edge + reconciliation + 30m stability",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          p={'state':'pending','context':'ORDER070/R7-harness-terminal','description':f"run {os.environ['RUN_ID']} passive ready + edge + 30m stability",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
           h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r7-status/1'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
@@ -58,8 +58,8 @@ jobs:
           ! grep -q 'start_remote_dev' ops/.github/scripts/order070_r7_harness_only_terminal.py
           ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_harness_only_terminal.py
           ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_harness_only_terminal.py
-          grep -q 'R7_DIRECT_CURL_EDGE' ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
-          python -m py_compile ops/.github/scripts/order070_r7_harness_only_terminal.py ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
+          grep -q 'R7_PASSIVE_READINESS_DIRECT_CURL' ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
+          python -m py_compile ops/.github/scripts/order070_r7_harness_only_terminal.py ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
       - name: Execute R7 terminal harness only
         shell: bash
         run: |
@@ -67,7 +67,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
+          python ops/.github/scripts/order070_r7_harness_only_terminal_v3.py
           (cd order070-r7-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload R7 terminal evidence
         if: always()
