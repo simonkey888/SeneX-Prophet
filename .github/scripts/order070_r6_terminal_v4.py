@@ -4,6 +4,8 @@ from pathlib import Path
 
 OPS = Path(__file__).resolve().parent
 BASE = OPS / "order070_r6_terminal.py"
+OLD_HEAD = "d166495e9a74f528ccce1adeb5ce97a281b175cf"
+OLD_TREE = "6106f1c2f39b4509d3a237eb807db5d45feb7463"
 NEW_HEAD = "b438c0d6dc156d4183929366963df988d97a5283"
 NEW_TREE = "e1e4b002aa90402517edb90412b755bc8529327e"
 NATIVE_CI = {
@@ -19,8 +21,10 @@ EXPECTED_CHANGED = [
 ]
 
 src = BASE.read_text()
-src = src.replace("d166495e9a74f528ccce1adeb5ce97a281b175cf", NEW_HEAD)
-src = src.replace("6106f1c2f39b4509d3a237eb807db5d45feb7463", NEW_TREE)
+if OLD_HEAD not in src or OLD_TREE not in src:
+    raise RuntimeError("R6_V4_BASE_IDENTITY_ANCHOR_DRIFT")
+src = src.replace(OLD_HEAD, NEW_HEAD)
+src = src.replace(OLD_TREE, NEW_TREE)
 src = src.replace(
     "if changed!=['senecio_polymarket/backend/main.py']: raise RuntimeError(f'R6_SCOPE_DRIFT:{changed}')",
     "if sorted(changed)!=sorted(" + repr(EXPECTED_CHANGED) + "): raise RuntimeError(f'R6_SCOPE_DRIFT:{changed}')",
@@ -35,7 +39,7 @@ src = src.replace(
 )
 src = src.replace("'lineLimit':2000", "'lineLimit':1000")
 src = src.replace("print('READY_FOR_AUD')", "print('BASE_R6_GATE_PASS')")
-if src.count(NEW_HEAD) < 2 or src.count(NEW_TREE) < 2:
+if OLD_HEAD in src or OLD_TREE in src or NEW_HEAD not in src or NEW_TREE not in src:
     raise RuntimeError("R6_V4_IDENTITY_ADAPTATION_FAILED")
 
 ns = {"__name__": "__main__", "__file__": str(BASE)}
