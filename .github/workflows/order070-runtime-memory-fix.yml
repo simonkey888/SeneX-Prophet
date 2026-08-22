@@ -1,17 +1,17 @@
-name: ORDER070 Runtime Memory Fix
+name: ORDER070 R6 Consolidated F1-F5 Materializer
 on:
   push:
     branches: [ops/senex-zero-cost-audit-20260809]
     paths:
       - .github/workflows/order070-runtime-memory-fix.yml
-      - .github/scripts/order070_apply_runtime_memory_fix.py
+      - .github/scripts/order070_r6_consolidated_fix.py
 permissions:
   contents: write
   statuses: write
 jobs:
-  fix:
+  materialize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Publish run identity
         env:
@@ -24,8 +24,8 @@ jobs:
           python - <<'PY'
           import json,os,urllib.request
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':'pending','context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/2'}
+          p={'state':'pending','context':'ORDER070/R6-consolidated-materialize','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-materializer/1'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
       - name: Checkout exact candidate branch
@@ -34,19 +34,20 @@ jobs:
           ref: feat/order-070-runtime-truth-hardening
           fetch-depth: 0
           path: candidate
-      - name: Checkout ops patch
+      - name: Checkout exact ops materializer
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ops/senex-zero-cost-audit-20260809
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
           path: ops
-      - name: Guard exact pre-fix candidate
+      - name: Guard audited pre-fix candidate
         working-directory: candidate
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "483b389a83610992800181c0a21b5a337009f7b4"
-          test "$(git rev-parse HEAD^{tree})" = "0494d3d4066f94a9dd055d81c07a3633a243ec2f"
+          test "$(git rev-parse HEAD)" = "b438c0d6dc156d4183929366963df988d97a5283"
+          test "$(git rev-parse HEAD^{tree})" = "e1e4b002aa90402517edb90412b755bc8529327e"
+          test -z "$(git status --porcelain)"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -54,48 +55,101 @@ jobs:
           cache-dependency-path: candidate/senecio_polymarket/requirements.lock
       - name: Install exact locked runtime
         run: python -m pip install --require-hashes -r candidate/senecio_polymarket/requirements.lock
-      - name: Apply minimal lazy-init fix
+      - name: Apply consolidated F1-F5 patch
         working-directory: candidate
-        run: python ../ops/.github/scripts/order070_apply_runtime_memory_fix.py
-      - name: Verify lazy import headroom
+        run: python ../ops/.github/scripts/order070_r6_consolidated_fix.py
+      - name: Focused R6 consolidated acceptance
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070_r6_public_boundary
+      - name: ORDER-070 regression
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070
+      - name: Full deterministic regression
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+      - name: Secret scan
+        working-directory: candidate
+        run: python senecio_polymarket/scripts/order070_secret_scan.py
+      - name: Verify production import headroom
         working-directory: candidate
         env:
           PYTHONPATH: senecio_polymarket
         run: |
           python - <<'PY'
-          import sys
           import backend.main_real
-          legacy=sys.modules['backend.main']
-          assert legacy._research_init_attempted is False
-          assert legacy._af_init_attempted is False
           rss_kb=next(int(x.split()[1]) for x in open('/proc/self/status') if x.startswith('VmRSS:'))
-          print(f'POST_FIX_IMPORT_RSS_MB={rss_kb/1024:.3f}')
+          print(f'IMPORT_RSS_KB={rss_kb}')
           assert rss_kb < 80*1024, rss_kb
           PY
-      - name: ORDER-070 exact regression
-        working-directory: candidate
-        env:
-          PYTHONPATH: senecio_polymarket
-        run: python -m unittest -v senecio_polymarket.tests.test_order_070
-      - name: Full regression suite
-        working-directory: candidate
-        env:
-          PYTHONPATH: senecio_polymarket
-        run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
-      - name: Commit and push existing PR branch only
+      - name: Static security and build-boundary gates
         working-directory: candidate
         run: |
           set -euo pipefail
+          test ! -e senecio_polymarket/Dockerfile
+          ! grep -R "chmod -R 777 /app/data" Dockerfile
+          ! grep -R "mv /app/oracle/predict_only.py\|cp /app/oracle_runtime/predict_only.py" Dockerfile
+          grep -q '^USER senex:senex$' Dockerfile
+          grep -q 'from oracle_runtime.predict_only import' senecio_polymarket/backend/oracle_runner.py
+          test "$(grep -c 'from predict_only import' senecio_polymarket/backend/oracle_runner.py || true)" = 0
           git diff --check
-          git status --short
+      - name: Commit one consolidated candidate locally
+        working-directory: candidate
+        run: |
+          set -euo pipefail
           test -n "$(git status --porcelain)"
           git config user.name "senex-order070-arq"
           git config user.email "senex-order070-arq@users.noreply.github.com"
-          git add senecio_polymarket/backend/main.py
-          git commit -m "ORDER-070: lazy-load optional analytics for runtime headroom"
+          git add -A
+          git commit -m "ORDER-070-R6: close consolidated runtime truth gates"
+          echo "NEW_HEAD=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "NEW_TREE=$(git rev-parse HEAD^{tree})" >> "$GITHUB_ENV"
+      - name: Compute canonical build digest
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          from backend.runtime_provenance import canonical_build_digest
+          print('NEW_BUILD_DIGEST='+canonical_build_digest())
+          PY
+      - name: Build ONLY canonical root Dockerfile
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          docker build --pull=false -f Dockerfile \
+            --build-arg SENEX_SOURCE_COMMIT="$NEW_HEAD" \
+            --build-arg SENEX_SOURCE_TREE="$NEW_TREE" \
+            --build-arg SENEX_BUILD_DIGEST="$NEW_BUILD_DIGEST" \
+            --build-arg SENEX_IMAGE_DIGEST=unknown \
+            -t senex-order070-r6-candidate .
+      - name: Inspect built image runtime authority
+        run: |
+          set -euo pipefail
+          user="$(docker inspect --format '{{.Config.User}}' senex-order070-r6-candidate)"
+          echo "IMAGE_CONFIG_USER=$user"
+          test "$user" = "senex:senex"
+          uid="$(docker run --rm --entrypoint sh senex-order070-r6-candidate -c 'id -u')"
+          echo "IMAGE_RUNTIME_UID=$uid"
+          test "$uid" != 0
+          ww="$(docker run --rm --entrypoint sh senex-order070-r6-candidate -c "find /app -xdev -type d -perm -0002 -print")"
+          printf 'WORLD_WRITABLE_APP_PATHS=%s\n' "$ww"
+          test -z "$ww"
+          docker run --rm --entrypoint python senex-order070-r6-candidate -c "from backend import oracle_runner; import inspect; s=inspect.getsource(oracle_runner._run_one_prediction); assert 'oracle_runtime.predict_only' in s; print('EXPLICIT_RUNTIME_IMPORT=PASS')"
+      - name: Push existing PR branch only
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "b438c0d6dc156d4183929366963df988d97a5283"
           git push origin HEAD:feat/order-070-runtime-truth-hardening
           echo "CORRECTED_HEAD=$(git rev-parse HEAD)"
           echo "CORRECTED_TREE=$(git rev-parse HEAD^{tree})"
+          echo "CANONICAL_BUILD_DIGEST=$NEW_BUILD_DIGEST"
       - name: Publish terminal status
         if: always()
         env:
@@ -110,7 +164,7 @@ jobs:
           import json,os,urllib.request
           state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
           u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
-          p={'state':state,'context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
-          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/2'}
+          p={'state':state,'context':'ORDER070/R6-consolidated-materialize','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}" ,'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-materializer/1'}
           with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
           PY
