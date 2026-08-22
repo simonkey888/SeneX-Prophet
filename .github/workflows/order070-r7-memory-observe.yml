@@ -1,0 +1,56 @@
+name: ORDER070 R7 Memory Observe
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-r7-memory-observe.yml]
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+    steps:
+      - name: GET-only live memory distribution
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python - <<'PY'
+          import datetime as dt,json,os,statistics,urllib.parse,urllib.request
+          api='https://api.northflank.com/v1'; project='seneciobot'; service='senecio-h011'
+          h={'Authorization':f"Bearer {os.environ['NORTHFLANK_API_TOKEN']}",'Accept':'application/json','User-Agent':'senex-r7-memory-observe/1'}
+          def get(path,q=None):
+            u=api+path+(('?'+urllib.parse.urlencode(q,doseq=True)) if q else '')
+            with urllib.request.urlopen(urllib.request.Request(u,headers=h),timeout=60) as r: return json.load(r).get('data',{})
+          cs=get(f'/projects/{project}/services/{service}/containers',{'per_page':100})
+          rows=cs.get('containers',cs) if isinstance(cs,dict) else cs
+          running=sorted(str(x.get('name')) for x in rows if isinstance(x,dict) and x.get('status')=='TASK_RUNNING')
+          end=dt.datetime.now(dt.timezone.utc); start=end-dt.timedelta(minutes=12)
+          m=get(f'/projects/{project}/services/{service}/metrics',[('queryType','range'),('startTime',start.isoformat()),('endTime',end.isoformat()),('metricTypes','memory')])
+          obj=(m or {}).get('memory',{}); unit=((obj.get('metricInfo') or {}).get('metricUnit') or 'unknown'); pts=[]
+          for s in obj.get('values',[]):
+            cid=(s.get('metadata') or {}).get('containerId')
+            for p in s.get('data') or []:
+              try:
+                ts,val=(p[0],float(p[1])) if isinstance(p,(list,tuple)) else (p.get('timestamp') or p.get('time') or p.get('ts'),float(p.get('value')))
+                if not running or cid in running: pts.append((ts,cid,val))
+              except Exception: pass
+          vals=sorted(v for _,_,v in pts)
+          if not vals: raise SystemExit('MEMORY_POINTS=0')
+          if unit.lower()=='mb': vals_pct=sorted(v/512.0*100 for v in vals)
+          else: vals_pct=vals
+          def q(x,f): return x[min(len(x)-1,max(0,round((len(x)-1)*f)))]
+          print('READ_ONLY=YES')
+          print('RUNNING_CONTAINERS='+json.dumps(running))
+          print('MEMORY_UNIT='+str(unit))
+          print('MEMORY_POINTS='+str(len(vals_pct)))
+          print(f'MEMORY_P50_PCT={q(vals_pct,.50):.6f}')
+          print(f'MEMORY_P95_PCT={q(vals_pct,.95):.6f}')
+          print(f'MEMORY_P99_PCT={q(vals_pct,.99):.6f}')
+          print(f'MEMORY_MAX_PCT={max(vals_pct):.6f}')
+          print('POINTS_GE90='+str(sum(v>=90 for v in vals_pct)))
+          PY
