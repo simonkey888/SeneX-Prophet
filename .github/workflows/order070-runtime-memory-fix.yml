@@ -1,0 +1,116 @@
+name: ORDER070 Runtime Memory Fix
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-runtime-memory-fix.yml]
+permissions:
+  contents: write
+  statuses: write
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Publish run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':'pending','context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: feat/order-070-runtime-truth-hardening
+          fetch-depth: 0
+          path: candidate
+      - name: Checkout ops patch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ops/senex-zero-cost-audit-20260809
+          fetch-depth: 1
+          persist-credentials: false
+          path: ops
+      - name: Guard exact pre-fix candidate
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "483b389a83610992800181c0a21b5a337009f7b4"
+          test "$(git rev-parse HEAD^{tree})" = "0494d3d4066f94a9dd055d81c07a3633a243ec2f"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: candidate/senecio_polymarket/requirements.lock
+      - name: Install exact locked runtime
+        run: python -m pip install --require-hashes -r candidate/senecio_polymarket/requirements.lock
+      - name: Apply minimal lazy-init fix
+        working-directory: candidate
+        run: python ../ops/.github/scripts/order070_apply_runtime_memory_fix.py
+      - name: Verify lazy import headroom
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: |
+          python - <<'PY'
+          import sys
+          import backend.main_real
+          legacy=sys.modules['backend.main']
+          assert legacy._research_init_attempted is False
+          assert legacy._af_init_attempted is False
+          rss_kb=next(int(x.split()[1]) for x in open('/proc/self/status') if x.startswith('VmRSS:'))
+          print(f'POST_FIX_IMPORT_RSS_MB={rss_kb/1024:.3f}')
+          assert rss_kb < 80*1024, rss_kb
+          PY
+      - name: ORDER-070 exact regression
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070
+      - name: Full regression suite
+        working-directory: candidate
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+      - name: Commit and push existing PR branch only
+        working-directory: candidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          git status --short
+          test -n "$(git status --porcelain)"
+          git config user.name "senex-order070-arq"
+          git config user.email "senex-order070-arq@users.noreply.github.com"
+          git add senecio_polymarket/backend/main.py
+          git commit -m "ORDER-070: lazy-load optional analytics for runtime headroom"
+          git push origin HEAD:feat/order-070-runtime-truth-hardening
+          echo "CORRECTED_HEAD=$(git rev-parse HEAD)"
+          echo "CORRECTED_TREE=$(git rev-parse HEAD^{tree})"
+      - name: Publish terminal status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':state,'context':'ORDER070/runtime-memory-fix','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-memory-fix/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
