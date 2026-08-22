@@ -13,6 +13,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Capture checked-out exact identity
+        id: exact_identity
+        shell: bash
+        run: |
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -24,6 +30,10 @@ jobs:
         env:
           PYTHONPATH: senecio_polymarket
         run: python -m unittest -v senecio_polymarket.tests.test_order_070
+      - name: R6 consolidated acceptance F1-F4
+        env:
+          PYTHONPATH: senecio_polymarket
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070_r6_public_boundary
       - name: Full regression suite
         env:
           PYTHONPATH: senecio_polymarket
@@ -46,6 +56,6 @@ jobs:
         run: python senecio_polymarket/scripts/order070_seal.py | tee /tmp/order070-artifact-sha.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: order070-sealed-${{ github.sha }}
+          name: order070-sealed-${{ steps.exact_identity.outputs.head }}
           path: senecio_polymarket/artifacts/order070-sealed.json
           if-no-files-found: error

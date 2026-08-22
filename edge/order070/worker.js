@@ -3,7 +3,8 @@ const SAFE = new Set(["GET", "HEAD"]);
 const API_PATHS = new Set([
   "/api/health", "/healthz", "/readyz", "/openapi.json",
   "/api/oracle/score", "/api/oracle/state", "/api/portfolio/live_gate",
-  "/api/authority/snapshot", "/api/runtime/provenance", "/api/market-context"
+  "/api/authority/snapshot", "/api/runtime/provenance", "/api/market-context",
+  "/api/oracle/predictions/db"
 ]);
 function decision(body, status, decision) {
   return new Response(body, {status, headers: {

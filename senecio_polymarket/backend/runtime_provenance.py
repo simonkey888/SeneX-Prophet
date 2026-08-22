@@ -23,8 +23,7 @@ def _env_first(*names: str) -> str | None:
 def canonical_build_digest(root: Path | None = None) -> str:
     root = root or Path(__file__).resolve().parents[2]
     files = [
-        root / "senecio_polymarket" / "Dockerfile",
-        root / "senecio_polymarket" / "requirements.txt",
+        root / "Dockerfile",
         root / "senecio_polymarket" / "requirements.lock",
         root / "senecio_polymarket" / "start_single_authority.sh",
     ]

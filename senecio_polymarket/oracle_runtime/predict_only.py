@@ -1,8 +1,8 @@
 """Runtime bridge for the production ``predict_only`` module.
 
-The Docker image preserves the original predictor as ``predict_only_base.py``
-and installs this module at ``/app/oracle/predict_only.py``. Every original
-function is re-exported unchanged except ``run_prediction``.
+The canonical runtime imports this bridge explicitly as
+``oracle_runtime.predict_only``. The frozen original predictor remains at
+``/app/oracle/predict_only.py`` and is loaded read-only; no build-time overlay is used.
 
 Production additions:
 - bind the proof-qualified learning + real-market SingleDecisionCore;
@@ -30,9 +30,9 @@ from oracle_runtime import institutional_core_real as _learning_core
 _THIS_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _THIS_DIR.parent
 _ORACLE_DIR = _ROOT_DIR / "oracle"
-_BASE_PATH = _ORACLE_DIR / "predict_only_base.py"
+_BASE_PATH = _ORACLE_DIR / "predict_only.py"
 if not _BASE_PATH.exists():
-    _BASE_PATH = _ORACLE_DIR / "predict_only.py"
+    raise ImportError(f"canonical predictor missing: {_BASE_PATH}")
 
 _spec = importlib.util.spec_from_file_location("_senex_predict_only_base", _BASE_PATH)
 if _spec is None or _spec.loader is None:

@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
-from fastapi.routing import APIRoute
-from starlette.routing import Mount, WebSocketRoute
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import main as legacy
 from . import oracle_runner
@@ -33,32 +33,15 @@ _boros = get_boros_adapter()
 _kalshi = get_kalshi_adapter()
 
 SAFE_PUBLIC_METHODS = {"GET", "HEAD", "OPTIONS"}
-OVERRIDDEN_GET_PATHS = {
-    "/api/health",
-    "/api/oracle/state",
-    "/api/oracle/score",
-    "/api/portfolio/live_gate",
-}
-
-# R6: production public routing is fail-closed for optional heavy analytics.
-# These legacy GET handlers perform lazy imports/initialization of research or
-# anti-fragility stacks. They remain available in the legacy/admin application,
-# but are never mounted by the unauthenticated production public app.
-OPTIONAL_HEAVY_PUBLIC_DENY_PREFIXES = (
-    "/api/research",
-    "/api/antifragility",
-)
-OPTIONAL_HEAVY_PUBLIC_DENY_PATHS = {
-    "/api/observability",
-    "/metrics",
-}
+PUBLIC_AUTHORITY_SYMBOL = "BTCUSDT"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
-def _legacy_public_route_allowed(path: str) -> bool:
-    """Default-deny legacy routes that can allocate optional heavy subsystems."""
-    if path in OPTIONAL_HEAVY_PUBLIC_DENY_PATHS:
-        return False
-    return not any(path.startswith(prefix) for prefix in OPTIONAL_HEAVY_PUBLIC_DENY_PREFIXES)
+def _validate_public_symbol(value: str | None) -> str:
+    normalized = normalize_symbol(value)
+    if normalized != PUBLIC_AUTHORITY_SYMBOL:
+        raise HTTPException(status_code=404, detail="PUBLIC_AUTHORITY_SYMBOL_NOT_ALLOWED")
+    return normalized
 
 
 def synthetic_demo_enabled() -> bool:
@@ -124,27 +107,23 @@ async def real_lifespan(public_app: FastAPI):
 def _build_public_app() -> FastAPI:
     public = FastAPI(
         title="SENEX PUBLIC READ-ONLY",
-        version="ORDER-070-R1",
+        version="ORDER-070-R6",
         lifespan=real_lifespan,
     )
-    # Copy only observational HTTP routes plus static/websocket transports.
-    # R6 closes the legacy GET inheritance hole: optional heavy endpoints are
-    # explicitly absent from production even though their HTTP method is safe.
-    for route in legacy.app.router.routes:
-        if isinstance(route, APIRoute):
-            methods = set(route.methods or set())
-            if (
-                route.path not in OVERRIDDEN_GET_PATHS
-                and methods <= SAFE_PUBLIC_METHODS
-                and _legacy_public_route_allowed(route.path)
-            ):
-                public.router.routes.append(route)
-        elif isinstance(route, (Mount, WebSocketRoute)):
-            public.router.routes.append(route)
+    if FRONTEND_DIR.exists():
+        public.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
     return public
 
 
 app = _build_public_app()
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard_root():
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    return JSONResponse({"error": "frontend not built"}, status_code=404)
 
 
 @app.middleware("http")
@@ -209,11 +188,19 @@ async def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:
 
 
 async def _snapshot(symbol: str = "BTCUSDT", *, force: bool = False):
-    return await authority_store.get(
-        normalize_symbol(symbol),
-        live_gate_builder=_live_gate_from_score,
-        force=force,
-    )
+    normalized = _validate_public_symbol(symbol)
+    if force:
+        return await authority_store.get(
+            normalized,
+            live_gate_builder=_live_gate_from_score,
+            force=True,
+        )
+    snap, refresh = authority_store.observe(normalized)
+    if snap is None:
+        raise HTTPException(status_code=503, detail="NO_VALID_AUTHORITY_GENERATION")
+    if refresh.get("snapshot_stale") or refresh.get("last_refresh_error") is not None:
+        raise HTTPException(status_code=503, detail="AUTHORITY_GENERATION_STALE_OR_ERROR")
+    return snap
 
 
 # Compatibility callable retained for established unit tests. Public routing uses
@@ -270,6 +257,28 @@ async def public_authority_snapshot(symbol: str = Query(default="BTCUSDT")):
     return snap.to_dict(authority_store.refresh_status(snap.symbol))
 
 
+@app.get("/api/oracle/predictions/db")
+async def public_predictions_db(
+    limit: int = Query(default=50, ge=1, le=50),
+    symbol: str = Query(default="BTCUSDT"),
+):
+    snap = await _snapshot(symbol)
+    rows = authority_store.recent_predictions(snap.symbol, limit=limit)
+    return {
+        "source": "authority_snapshot_cache",
+        "symbol": snap.symbol,
+        "bounded": True,
+        "limit": int(limit),
+        "count": len(rows),
+        "total_in_db": snap.exact_total_predictions,
+        "exact_count_complete": snap.exact_count_complete,
+        "authority_snapshot_id": snap.snapshot_id,
+        "authority_generation": snap.generation,
+        "authority_canonical_sha256": snap.canonical_sha256,
+        "predictions": rows,
+    }
+
+
 @app.get("/api/runtime/provenance")
 async def public_runtime_provenance():
     return runtime_provenance()
@@ -296,7 +305,7 @@ async def compatibility_health():
 @app.get("/readyz")
 async def readyz(symbol: str = Query(default="BTCUSDT")):
     """Observational fail-closed readiness over the current shared generation."""
-    normalized = normalize_symbol(symbol)
+    normalized = _validate_public_symbol(symbol)
     try:
         snap, refresh = authority_store.observe(normalized)
     except Exception as exc:

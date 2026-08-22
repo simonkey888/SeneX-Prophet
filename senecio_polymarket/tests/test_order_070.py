@@ -372,8 +372,13 @@ class BuildEdgeSecretTests(unittest.TestCase):
         lock=(ROOT/"senecio_polymarket/requirements.lock").read_text()
         self.assertIn("--hash=sha256:",lock)
         self.assertIn("setuptools==",lock)
-        docker=(ROOT/"senecio_polymarket/Dockerfile").read_text()
+        docker=(ROOT/"Dockerfile").read_text()
+        self.assertFalse((ROOT/"senecio_polymarket/Dockerfile").exists())
         self.assertIn("--require-hashes -r requirements.lock",docker)
+        self.assertIn("USER senex:senex",docker)
+        self.assertNotIn("chmod -R 777",docker)
+        self.assertNotIn("mv /app/oracle/predict_only.py",docker)
+        self.assertNotIn("cp /app/oracle_runtime/predict_only.py",docker)
 
     def test_edge_deny_is_before_origin_fetch_and_has_no_secret_binding(self):
         src=(ROOT/"edge/order070/worker.js").read_text()

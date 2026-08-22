@@ -327,7 +327,7 @@
   function renderPredictions(payload) {
     const rows = Array.isArray(payload.predictions) ? payload.predictions : [];
     state.predictions = rows;
-    $('#oracle-pred-meta').textContent = `[API_DERIVED] ${payload.total_in_db ?? 'UNKNOWN'} total_in_db · CROSS-SYMBOL · showing ${rows.length}`;
+    $('#oracle-pred-meta').textContent = `[API_DERIVED] ${payload.total_in_db ?? 'UNKNOWN'} total_in_db · BTCUSDT · bounded cache · showing ${rows.length}`;
     const body = $('#oracle-table tbody');
     body.innerHTML = rows.slice(0, 30).map((row) => {
       const step2 = step2Of(row);
@@ -425,7 +425,7 @@
 
   async function refreshPredictions() {
     try {
-      const payload = await getJSON('/api/oracle/predictions/db?limit=50');
+      const payload = await getJSON('/api/oracle/predictions/db?limit=50&symbol=BTCUSDT');
       renderPredictions(payload);
       domainSuccess('predictions');
     } catch (error) {
@@ -450,8 +450,10 @@
 
   renderDomainHealth();
   refreshContext();
-  refreshOracle();
+  refreshScore();
+  refreshPredictions();
   setInterval(refreshContext, 2000);
-  setInterval(refreshOracle, 10000);
+  setInterval(refreshScore, 10000);
+  setInterval(refreshPredictions, 60000);
   setInterval(renderDomainHealth, 1000);
 })();

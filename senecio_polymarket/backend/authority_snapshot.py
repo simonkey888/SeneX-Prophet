@@ -111,29 +111,38 @@ class _CapturedAuthority:
     score: dict[str, Any]
     live_gate: dict[str, Any]
     provenance: dict[str, Any]
+    recent_predictions: tuple[dict[str, Any], ...]
 
 
 class AuthoritySnapshotStore:
     """Publishes immutable last-known-good generations and tracks refresh state separately."""
 
     def __init__(self, ttl_s: float | None = None) -> None:
-        self.ttl_s = float(
-            ttl_s
-            if ttl_s is not None
-            else os.environ.get("SENEX_AUTHORITY_SNAPSHOT_TTL_SEC", "10")
+        self._runtime_policy = ttl_s is None
+        self._refresh_period_s = max(
+            300.0, float(os.environ.get("SENEX_AUTHORITY_REFRESH_INTERVAL_SEC", "300"))
         )
+        if ttl_s is None:
+            configured_ttl = float(os.environ.get("SENEX_AUTHORITY_SNAPSHOT_TTL_SEC", "600"))
+            self.ttl_s = max(configured_ttl, self._refresh_period_s + 120.0)
+        else:
+            self.ttl_s = float(ttl_s)
         self._cache: dict[str, AuthoritySnapshot] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._generation: dict[str, int] = {}
         self._refresh: dict[str, dict[str, Any]] = {}
+        self._recent: dict[str, tuple[dict[str, Any], ...]] = {}
 
     def clear(self) -> None:
         self._cache.clear()
         self._locks.clear()
         self._generation.clear()
         self._refresh.clear()
+        self._recent.clear()
 
     def refresh_interval_s(self) -> float:
+        if self._runtime_policy:
+            return self._refresh_period_s
         ttl = max(0.0, self.ttl_s)
         if ttl <= 0.0:
             return 1.0
@@ -197,6 +206,12 @@ class AuthoritySnapshotStore:
             raise ValueError("AUTHORITY_SYMBOL_REQUIRED")
         return self._cache.get(normalized), self.refresh_status(normalized)
 
+    def recent_predictions(self, symbol: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Return a bounded copy of the current lifecycle-captured rows; no I/O or mutation."""
+        normalized = normalize_symbol(symbol)
+        bounded = max(1, min(int(limit), 50))
+        return copy.deepcopy(list(self._recent.get(normalized, ()))[:bounded])
+
     def _fresh(self, symbol: str) -> bool:
         status = self.refresh_status(symbol)
         return (
@@ -240,6 +255,7 @@ class AuthoritySnapshotStore:
                     return cached
                 raise error from exc
 
+            self._recent[normalized] = tuple(copy.deepcopy(captured.recent_predictions))
             if cached is not None and cached.canonical_sha256 == captured.canonical_sha256:
                 # Byte-equivalent authority content revalidates freshness without rotating identity.
                 self._mark_success(normalized)
@@ -301,6 +317,7 @@ class AuthoritySnapshotStore:
             raise AuthoritySnapshotRefreshError("EXACT_COUNT:RESPONSE_NOT_INT")
 
         rows = _canonical_rows(history_result)
+        recent_predictions = tuple(copy.deepcopy(list(reversed(rows[-50:]))))
         exact_total = int(count_result)
         score = build_authoritative_score(rows, symbol=symbol)
         score["authority_history_complete"] = True
@@ -347,6 +364,7 @@ class AuthoritySnapshotStore:
             score=score,
             live_gate=live_gate,
             provenance=provenance,
+            recent_predictions=recent_predictions,
         )
 
 
