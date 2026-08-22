@@ -1,0 +1,36 @@
+name: ORDER070 Runtime Event Forensics
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-runtime-event-forensics.yml]
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  forensics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Northflank runtime forensics
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python .github/scripts/order070_runtime_event_forensics.py
+      - name: Upload runtime forensics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-runtime-forensics
+          path: order070-runtime-forensics/
+          if-no-files-found: warn
+          retention-days: 30
