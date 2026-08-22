@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/order070-runtime-memory-fix.yml
       - .github/scripts/order070_r6_consolidated_fix.py
+      - .github/scripts/order070_r6_update_historical_build_test.py
 permissions:
   contents: write
   statuses: write
@@ -57,7 +58,9 @@ jobs:
         run: python -m pip install --require-hashes -r candidate/senecio_polymarket/requirements.lock
       - name: Apply consolidated F1-F5 patch
         working-directory: candidate
-        run: python ../ops/.github/scripts/order070_r6_consolidated_fix.py
+        run: |
+          python ../ops/.github/scripts/order070_r6_consolidated_fix.py
+          python ../ops/.github/scripts/order070_r6_update_historical_build_test.py
       - name: Focused R6 consolidated acceptance
         working-directory: candidate
         env:
