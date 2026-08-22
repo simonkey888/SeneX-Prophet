@@ -185,10 +185,18 @@ def _live_gate_from_score(score: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _authority_refresh_delay(interval_s: float, elapsed_s: float) -> float:
+    """Keep refresh attempt cadence start-to-start so capture latency cannot consume TTL headroom."""
+    return max(0.1, float(interval_s) - max(0.0, float(elapsed_s)))
+
+
 async def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:
     interval = authority_store.refresh_interval_s()
+    loop = asyncio.get_running_loop()
+    # Startup already performs one forced capture; preserve the initial spacing.
+    await asyncio.sleep(interval)
     while True:
-        await asyncio.sleep(interval)
+        started = loop.time()
         try:
             await _snapshot(symbol, force=True)
         except asyncio.CancelledError:
@@ -196,6 +204,8 @@ async def _authority_refresh_loop(symbol: str = "BTCUSDT") -> None:
         except Exception as exc:
             # The store records failure separately and retains last-known-good.
             log.warning("authority snapshot refresh failed for %s: %s", symbol, exc)
+        elapsed = max(0.0, loop.time() - started)
+        await asyncio.sleep(_authority_refresh_delay(interval, elapsed))
 
 
 async def _snapshot(symbol: str = "BTCUSDT", *, force: bool = False):

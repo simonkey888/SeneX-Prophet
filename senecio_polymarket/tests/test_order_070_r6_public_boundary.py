@@ -60,6 +60,11 @@ class Order070R6PublicBoundaryTests(unittest.TestCase):
             )
         )
 
+    def test_authority_refresh_delay_compensates_capture_latency(self):
+        self.assertEqual(main_real._authority_refresh_delay(5.0, 0.0), 5.0)
+        self.assertEqual(main_real._authority_refresh_delay(5.0, 2.0), 3.0)
+        self.assertEqual(main_real._authority_refresh_delay(5.0, 7.0), 0.1)
+
     def test_canonical_order070_surfaces_remain_public(self):
         paths = self._paths(main_real.app)
         required = {
