@@ -1,0 +1,69 @@
+name: ORDER070 Runtime Root Cause R2
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-runtime-root-cause-r2.yml]
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Publish run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':'pending','context':'ORDER070/runtime-root-cause-r2','description':f"run {os.environ['RUN_ID']} started",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-root-cause-r2/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect runtime root cause
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python .github/scripts/order070_runtime_root_cause_r2.py
+      - name: Upload root-cause evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-runtime-root-cause-r2
+          path: order070-runtime-root-cause-r2/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish terminal status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          state='success' if os.environ['JOB_STATUS']=='success' else 'failure'
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':state,'context':'ORDER070/runtime-root-cause-r2','description':f"run {os.environ['RUN_ID']} {state}",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-runtime-root-cause-r2/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
