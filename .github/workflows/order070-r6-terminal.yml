@@ -1,0 +1,264 @@
+name: ORDER070 R6 Terminal Exact Head Stability
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-r6-terminal.yml]
+permissions:
+  contents: read
+  statuses: write
+concurrency:
+  group: order070-r6-terminal
+  cancel-in-progress: true
+env:
+  TARGET_SHA: d166495e9a74f528ccce1adeb5ce97a281b175cf
+  TARGET_TREE: 6106f1c2f39b4509d3a237eb807db5d45feb7463
+jobs:
+  announce:
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.meta.outputs.run_id }}
+    steps:
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import json,os,urllib.request
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':'pending','context':'ORDER070/R6-terminal','description':f"run {os.environ['RUN_ID']} exact gates + deploy + 30m stability",'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-status/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
+
+  order070:
+    needs: announce
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11', cache: pip, cache-dependency-path: senecio_polymarket/requirements.lock}
+      - name: Assert exact candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
+      - name: Install exact locked runtime
+        run: python -m pip install --require-hashes -r senecio_polymarket/requirements.lock
+      - name: ORDER-070 regression
+        env: {PYTHONPATH: senecio_polymarket}
+        run: python -m unittest -v senecio_polymarket.tests.test_order_070
+      - name: Full regression suite
+        env: {PYTHONPATH: senecio_polymarket}
+        run: python -m unittest discover -s senecio_polymarket/tests -p 'test_*.py'
+      - name: Secret scan including Markdown
+        run: python senecio_polymarket/scripts/order070_secret_scan.py
+      - name: Public OpenAPI zero mutation proof
+        env: {PYTHONPATH: senecio_polymarket}
+        run: |
+          python - <<'PY'
+          from fastapi.routing import APIRoute
+          from backend.main_real import app
+          routes=[r for r in app.router.routes if isinstance(r,APIRoute)]
+          posts=sum('POST' in (r.methods or set()) for r in routes)
+          unsafe=sum(bool({'POST','PUT','PATCH','DELETE'} & set(r.methods or set())) for r in routes)
+          print(f'PUBLIC_FASTAPI_POST_COUNT={posts} PUBLIC_FASTAPI_UNSAFE_COUNT={unsafe}')
+          assert posts == 0 and unsafe == 0
+          PY
+      - name: Seal exact-head artifact
+        run: python senecio_polymarket/scripts/order070_seal.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: order070-r6-exact-seal-d166495e
+          path: senecio_polymarket/artifacts/order070-sealed.json
+          if-no-files-found: error
+
+  score001:
+    needs: announce
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, persist-credentials: false, fetch-depth: 1}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.11'}
+      - run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - run: pip install -r senecio_polymarket/requirements.txt
+      - run: sh -n senecio_polymarket/start_single_authority.sh
+      - run: python -m py_compile senecio_polymarket/backend/oracle_runner.py senecio_polymarket/backend/supabase_client.py
+      - name: Single-settlement-authority invariant
+        run: |
+          ! grep -q 'oracle_verifier.py' senecio_polymarket/start_single_authority.sh
+          grep -q 'start_single_authority.sh /start.sh' senecio_polymarket/Dockerfile
+          grep -q 'start_single_authority.sh /app/start.sh' senecio_polymarket/Dockerfile
+          grep -q 'WINDOW_1H_S' senecio_polymarket/backend/oracle_runner.py
+          grep -q 'update_outcome_dual' senecio_polymarket/backend/oracle_runner.py
+          ! test -e senecio_polymarket/oracle/oracle_verifier.py
+      - name: Legacy launcher isolation invariant
+        run: |
+          ! grep -q 'oracle_verifier.py' senecio_polymarket/Dockerfile
+          ! test -e senecio_polymarket/oracle/oracle_verifier.py
+
+  score002:
+    needs: announce
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, persist-credentials: false, fetch-depth: 0}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.11'}
+      - run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - working-directory: senecio_polymarket
+        run: pip install -r requirements.txt
+      - name: Compile reconciliation and proof gates
+        working-directory: senecio_polymarket
+        run: |
+          python -m py_compile backend/settlement_reconciler.py backend/settlement_proof.py backend/supabase_client.py backend/oracle_runner.py backend/main.py backend/forensics/pipeline.py backend/research/coordinator.py
+          sh -n start_single_authority.sh
+      - name: Deterministic SCORE-002 behavioral tests
+        working-directory: senecio_polymarket
+        run: python -m unittest discover -s tests -p 'test_senex_score_002.py' -v
+      - name: Repository test suite
+        working-directory: senecio_polymarket
+        run: python -m unittest discover -s tests -v
+      - name: Repair-only query boundary
+        working-directory: senecio_polymarket
+        run: |
+          grep -q '"outcome": "in.(WIN,LOSS)"' backend/settlement_reconciler.py
+          ! grep -q '"outcome": "is.null"' backend/settlement_reconciler.py
+          grep -q '"audit->outcomes_dual": "is.null"' backend/settlement_reconciler.py
+          grep -q 'outcomes_dual' backend/settlement_reconciler.py
+          grep -q 'primary_window.*1h' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/settlement_reconciler.py
+          grep -q 'SUPABASE_URL.*os.environ.get' backend/supabase_client.py
+          grep -q 'SUPABASE_KEY.*os.environ.get' backend/supabase_client.py
+          if grep -RInE 'supabase\.co|sb_publishable_[A-Za-z0-9_-]+' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' .; then exit 1; fi
+          grep -q 'origin-price-v1' backend/oracle_runner.py
+          grep -q 'filter_proof_qualified' backend/main.py
+          grep -q 'is_proof_qualified' backend/oracle_runner.py
+          grep -q 'is_proof_qualified' backend/forensics/pipeline.py
+          grep -q 'is_proof_qualified' backend/research/coordinator.py
+          ! grep -n 'patch = {"outcome"' backend/settlement_reconciler.py
+      - working-directory: senecio_polymarket
+        run: python -m compileall -q .
+      - name: Repo-wide raw outcome audit
+        working-directory: senecio_polymarket
+        run: grep -RInE 'outcome[[:space:]]*(in|==)|get\("outcome"\).*WIN|outcome.*LOSS' --include='*.py' backend oracle tests || true
+
+  smoke:
+    needs: announce
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, persist-credentials: false, fetch-depth: 0, fetch-tags: true}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.11', cache: pip, cache-dependency-path: senecio_polymarket/requirements.txt}
+      - run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - working-directory: senecio_polymarket
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Verify freeze tag
+        working-directory: senecio_polymarket
+        run: git rev-parse --verify refs/tags/PRE_LONG_FIX_FREEZE
+      - name: Smoke T1-T12
+        working-directory: senecio_polymarket
+        run: python -m scripts.act_final_audit_smoke
+
+  memory_guard:
+    needs: announce
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      rss_kb: ${{ steps.rss.outputs.rss_kb }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: python -m pip install --require-hashes -r senecio_polymarket/requirements.lock
+      - name: Security and scope guard
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$TARGET_TREE"
+          test "$(git diff --name-only 483b389a83610992800181c0a21b5a337009f7b4..HEAD | wc -l)" = 1
+          test "$(git diff --name-only 483b389a83610992800181c0a21b5a337009f7b4..HEAD)" = senecio_polymarket/backend/main.py
+          python -m py_compile senecio_polymarket/backend/main.py
+      - id: rss
+        name: Import RSS hard gate
+        env: {PYTHONPATH: senecio_polymarket}
+        run: |
+          /usr/bin/time -f '%M' -o /tmp/rss_kb python -c 'import backend.main_real'
+          rss=$(cat /tmp/rss_kb | tail -1)
+          echo "IMPORT_RSS_KB=$rss"
+          test "$rss" -gt 0
+          test "$rss" -lt 81920
+          echo "rss_kb=$rss" >> "$GITHUB_OUTPUT"
+
+  deploy_stability:
+    needs: [order070, score001, score002, smoke, memory_guard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    env:
+      CANDIDATE_DIR: candidate
+      R6_IMPORT_RSS_KB: ${{ needs.memory_guard.outputs.rss_kb }}
+      NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: d166495e9a74f528ccce1adeb5ce97a281b175cf, fetch-depth: 0, persist-credentials: false, path: candidate}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {ref: ${{ github.sha }}, fetch-depth: 1, persist-credentials: false, path: ops}
+      - name: Execute R6 exact deploy and stability seal
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test -n "${NORTHFLANK_API_TOKEN:-}"
+          echo "::add-mask::${NORTHFLANK_API_TOKEN}"
+          python ops/.github/scripts/order070_r6_terminal.py
+          (cd order070-r6-final-evidence && sha256sum -c MANIFEST.sha256)
+      - name: Upload terminal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order070-r6-terminal-d166495e
+          path: order070-r6-final-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  terminal_status:
+    if: always()
+    needs: [order070, score001, score002, smoke, memory_guard, deploy_stability]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          O: ${{ needs.order070.result }}
+          S1: ${{ needs.score001.result }}
+          S2: ${{ needs.score002.result }}
+          SM: ${{ needs.smoke.result }}
+          MG: ${{ needs.memory_guard.result }}
+          DS: ${{ needs.deploy_stability.result }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,urllib.request
+          vals=[os.environ[x] for x in ('O','S1','S2','SM','MG','DS')]
+          state='success' if all(x=='success' for x in vals) else 'failure'
+          desc=f"run {os.environ['RUN_ID']} "+','.join(vals)
+          u=f"https://api.github.com/repos/{os.environ['REPO']}/statuses/{os.environ['SHA']}"
+          p={'state':state,'context':'ORDER070/R6-terminal','description':desc[:140],'target_url':f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"}
+          h={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json','Content-Type':'application/json','User-Agent':'senex-r6-status/1'}
+          with urllib.request.urlopen(urllib.request.Request(u,data=json.dumps(p).encode(),headers=h,method='POST'),timeout=30) as r: print(r.status)
+          PY
