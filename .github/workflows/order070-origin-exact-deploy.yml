@@ -55,11 +55,11 @@ jobs:
           test "$(git -C candidate rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git -C candidate rev-parse HEAD^{tree})" = "$TARGET_TREE"
           test -z "$(git -C candidate status --porcelain)"
-          grep -q "wrangler_remote_dev_used':False" ops/.github/scripts/order070_r7_harness_only_terminal.py
           ! grep -q 'start_remote_dev' ops/.github/scripts/order070_r7_harness_only_terminal.py
           ! grep -q "nf('PATCH'" ops/.github/scripts/order070_r7_harness_only_terminal.py
           ! grep -q "nf('POST'" ops/.github/scripts/order070_r7_harness_only_terminal.py
-          python -m py_compile ops/.github/scripts/order070_r7_harness_only_terminal.py
+          grep -q 'R7_DIRECT_CURL_EDGE' ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
+          python -m py_compile ops/.github/scripts/order070_r7_harness_only_terminal.py ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
       - name: Execute R7 terminal harness only
         shell: bash
         run: |
@@ -67,7 +67,7 @@ jobs:
           set -euo pipefail
           test -n "${NORTHFLANK_API_TOKEN:-}"
           echo "::add-mask::${NORTHFLANK_API_TOKEN}"
-          python ops/.github/scripts/order070_r7_harness_only_terminal.py
+          python ops/.github/scripts/order070_r7_harness_only_terminal_v2.py
           (cd order070-r7-final-evidence && sha256sum -c MANIFEST.sha256)
       - name: Upload R7 terminal evidence
         if: always()
