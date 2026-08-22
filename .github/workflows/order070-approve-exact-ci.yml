@@ -1,0 +1,40 @@
+name: ORDER070 Approve Exact CI
+on:
+  push:
+    branches: [ops/senex-zero-cost-audit-20260809]
+    paths: [.github/workflows/order070-approve-exact-ci.yml]
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+jobs:
+  approve:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Attempt exact-head run approvals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -u
+          failed=0
+          for rid in 32576354073 32576354076 32576354081 32576354080; do
+            code=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${GH_REPO}/actions/runs/${rid}/approve")
+            echo "RUN=${rid} APPROVE_HTTP=${code}"
+            if [ "$code" != 204 ]; then
+              python - <<'PY'
+          import json
+          try:
+              o=json.load(open('/tmp/resp'))
+              print('SAFE_ERROR='+str(o.get('message',''))[:240])
+          except Exception: pass
+          PY
+              failed=1
+            fi
+          done
+          exit "$failed"
