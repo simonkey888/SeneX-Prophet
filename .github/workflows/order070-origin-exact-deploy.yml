@@ -11,3 +11,4 @@ jobs:
   terminal:
     uses: ./.github/workflows/order070-r6-terminal.yml
     secrets: inherit
+# R6 trigger: pristine deploy_stability checkout; candidate d166495e unchanged.
